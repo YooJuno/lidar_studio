@@ -32,7 +32,7 @@ cmake --build build --parallel 2
 
 ## 사용
 
-입력 없이 실행한 뒤 **Open file**에서 `.bin`, `.npy`, `.pcd`, `.mcap`, `.db3` 또는 bag 폴더의 `metadata.yaml`을 선택합니다. 파일을 창에 드롭하거나 명령행으로 열 수도 있습니다.
+입력 없이 실행한 뒤 **Open... → Open file...**에서 `.bin`, `.npy`, `.pcd`, `.mcap`, `.db3` 또는 bag 폴더의 `metadata.yaml`을 선택합니다. 파일을 창에 드롭하거나 명령행으로 열 수도 있습니다.
 
 ```bash
 ./build/lidar_studio /path/to/scan.bin

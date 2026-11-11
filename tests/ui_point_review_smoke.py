@@ -22,6 +22,7 @@ def main():
     repo=Path(__file__).resolve().parents[1];args.output.mkdir(parents=True,exist_ok=True)
     out=Path(tempfile.mkdtemp(prefix='review-',dir=args.output.resolve()));private=out/'private';(private/'build').mkdir(parents=True)
     shutil.copy2(args.viewer.resolve(),private/'build/lidar_studio');shutil.copytree(repo/'config',private/'config')
+    shutil.copytree(repo/'python/lidar_training',private/'python/lidar_training')
     (private/'config/profiles/rosbag.cfg').write_text('ground_removal_enabled=0\nclustering_enabled=0\ndetection_enabled=0\nroi_count=0\nloop_playback=1\n')
     bag=out/'bag';write_fixture(bag);data=out/'Dataset_with_spaces';fixture(data)
     for n in range(2):
@@ -64,6 +65,8 @@ def main():
         check('folder_review_shows_point_labels',True)
         x,y,r,b=controls.rect('dataset_list');check('sample_list_uses_the_available_panel_height',b-y>300)
         capture(x11,window,out/'02_review_layout.png');check('bag_advances_in_the_background','Background frame 0 'in log_path.read_text()[fresh:])
+        controls.click('open_training');controls.rect('training_epochs');controls.click('training_hide')
+        check('training_is_accessible_from_the_review_workspace',len(windows())==1)
         controls.drag((1100,400),(1170,435));x11.wheel(window,1100,400,3);view=camera()
         fresh=len(log_path.read_text());controls.click('dataset_next');wait(lambda:cameras(fresh)and cameras(fresh)[-1][0]==1)
         check('3d_camera_and_zoom_stay_fixed_on_next_sample',same_view(view,camera()))

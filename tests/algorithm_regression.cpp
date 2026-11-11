@@ -226,6 +226,36 @@ void TestFugSegSensorContract()
   Check(translated.ground_points.size()==count,"FugSeg did not respect the calibrated ground Z reference");
 }
 
+void TestGroundWorkspaceReuse()
+{
+  std::vector<KittiPoint> scene;
+  for(int x=-30;x<=30;++x) for(int y=-30;y<=30;++y)
+    scene.push_back({x*.25f,y*.25f,0,static_cast<float>(scene.size())});
+  for(int i=0;i<50;++i) scene.push_back({4,2,.5f+i*.03f,static_cast<float>(scene.size())});
+  const auto equal=[](const auto & a,const auto & b) {
+    return a.size()==b.size() && (a.empty() || std::memcmp(a.data(),b.data(),a.size()*sizeof(KittiPoint))==0);
+  };
+  for(const auto * mode:{"fugseg","gseg3d"}) {
+    GroundRemovalParams params;params.enabled=true;params.mode=mode;params.use_cuda=false;
+    const auto reference=RunGroundSegmentation(scene,params);
+    for(const auto position:{std::size_t{0},scene.size()/2,scene.size()}) {
+      auto invalid=scene;
+      invalid.insert(invalid.begin()+static_cast<std::ptrdiff_t>(position),
+        {std::numeric_limits<float>::quiet_NaN(),0,0,-5});
+      const auto result=RunGroundSegmentation(invalid,params);
+      Check(equal(result.ground_points,reference.ground_points),"Nonfinite sample changed finite ground labels");
+      auto others=result.non_ground_points;
+      Check(others.size()==reference.non_ground_points.size()+1,"Nonfinite sample was lost");
+      others.erase(std::remove_if(others.begin(),others.end(),[](const auto & p){return !std::isfinite(p.x);}),others.end());
+      Check(equal(others,reference.non_ground_points),"Nonfinite sample changed obstacle ordering or attributes");
+      RunGroundSegmentation(std::vector<KittiPoint>(3,{1,0,0,0}),params);
+      const auto restored=RunGroundSegmentation(scene,params);
+      Check(equal(restored.ground_points,reference.ground_points) && equal(restored.non_ground_points,reference.non_ground_points),
+        "A different scan left stale data in a ground workspace");
+    }
+  }
+}
+
 void TestGroundQuality()
 {
   for (const float slope : {0.f,.12f}) {
@@ -317,6 +347,7 @@ void RunAlgorithmRegressionTests()
   TestGroundQuality();
   TestLongRampAndSourceAttributes();
   TestFugSegSensorContract();
+  TestGroundWorkspaceReuse();
   bool rejected=false;
   try {GroundRemovalParams invalid;invalid.mode="unknown";RunGroundSegmentation({},invalid);}
   catch (const std::invalid_argument &) {rejected=true;}

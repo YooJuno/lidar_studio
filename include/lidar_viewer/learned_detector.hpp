@@ -13,6 +13,7 @@ struct DetectorResult {
   std::vector<algorithms::Detection> detections;
   float latency_ms{0};
   std::string detail, error;
+  double processing_ms{0}; // Packing, IPC and inference; excludes startup/queue wait.
 };
 struct DetectorStatus {
   bool configured{false}, ready{false}, failed{false};

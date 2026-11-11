@@ -128,7 +128,11 @@ GroundRemovalResult RunGroundRemovalGSeg3D(
   }
 
   using PointType = pcl::PointXYZI;
-  auto cloud = std::make_shared<pcl::PointCloud<PointType>>();
+  static thread_local auto cloud=std::make_shared<pcl::PointCloud<PointType>>();
+  cloud->points.clear();
+  if(cloud->points.capacity()/4>std::max<std::size_t>(input.size(),65536)) {
+    decltype(cloud->points) fresh;fresh.swap(cloud->points);
+  }
   cloud->points.reserve(input.size());
   // The pinned GSeg3D core reads XYZ only and copies every output point.
   // Use its unused intensity channel as an exact source index, then restore
@@ -164,7 +168,9 @@ GroundRemovalResult RunGroundRemovalGSeg3D(
     input_indices.reserve(input.size());
     for (std::size_t index=0;index<input.size();++index) input_indices[MakeKey(input[index])].push_back(index);
   }
-  std::vector<unsigned char> ground(input.size(),0);
+  static thread_local std::vector<unsigned char> ground;
+  if(ground.capacity()/4>std::max<std::size_t>(input.size(),65536)) std::vector<unsigned char>().swap(ground);
+  ground.assign(input.size(),0);
   for (const auto & point:phase_two_result.first->points) {
     if (indexed) {
       if (!std::isfinite(point.intensity) || point.intensity<0 ||

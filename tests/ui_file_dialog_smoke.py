@@ -6,12 +6,14 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import tempfile
 import time
 import traceback
 
 from ui_gl_smoke import X11, capture, settings_inventory
+from ui_controls import Controls
 
 
 def main():
@@ -25,8 +27,14 @@ def main():
     viewer, bag, target = [p.expanduser().resolve() for p in (args.viewer, args.bag, args.target)]
     args.output.mkdir(parents=True, exist_ok=True)
     output = Path(tempfile.mkdtemp(prefix="file-dialog-", dir=args.output.resolve()))
+    private = output / "private"
+    (private / "build").mkdir(parents=True)
+    shutil.copytree(repo / "config", private / "config")
+    isolated_viewer = private / "build/lidar_studio"
+    shutil.copy2(viewer, isolated_viewer)
+    viewer = isolated_viewer
     env = dict(os.environ, XDG_CONFIG_HOME=str(output / "isolated_config"),
-        GSETTINGS_BACKEND="memory", GTK_USE_PORTAL="0", NO_AT_BRIDGE="1")
+        GSETTINGS_BACKEND="memory", GTK_USE_PORTAL="0", NO_AT_BRIDGE="1", LIDAR_VIEWER_UI_TRACE="1")
     # A registered recording must populate the library without being opened.
     library = Path(env["XDG_CONFIG_HOME"]) / "lidar_viewer/data_folders.cfg"
     library.parent.mkdir(parents=True)
@@ -138,7 +146,8 @@ def main():
             x11.key(window, "space"); x11.key(window, "n"); x11.key(window, "p")
             alive()
             result["checks"]["empty_playback_controls_are_safe"] = "Indexing ROS" not in log_path.read_text(errors="replace")
-            x11.click(window, 240, 30)
+            controls = Controls(x11, window, log_path)
+            controls.click("open_input"); controls.click("open_input_file")
             wait_for(chooser_window)
             x11.key(chooser_window(), "Escape")
             wait_for(lambda: not chooser_window())
@@ -147,13 +156,15 @@ def main():
             result["checks"]["cancel_from_empty_keeps_viewer_open"] = "Opened bag:" not in log_path.read_text(errors="replace")
             result["stage"] = "first_bag_selection"
             x11.focus(window)
-            x11.click(window, 240, 30)
+            controls = Controls(x11, window, log_path)
+            controls.click("open_input"); controls.click("open_input_file")
             choose(bag / "metadata.yaml", "01_button_chooser")
             wait_for(lambda: f'Opened bag: "{bag}"' in log_path.read_text(errors="replace"))
             capture(x11, window, output / "02_selected_bag.png")
             result["checks"]["selected_metadata_opens_bag"] = bag.name in log_path.read_text(errors="replace")
-            # The Open file button opens the system chooser; cancellation is benign.
-            x11.click(window, 240, 30)
+            # Open > Open file invokes the system chooser; cancellation is benign.
+            controls = Controls(x11, window, log_path)
+            controls.click("open_input"); controls.click("open_input_file")
             result["stage"] = "runtime_cancel"
             wait_for(chooser_window)
             x11.key(chooser_window(), "Escape")

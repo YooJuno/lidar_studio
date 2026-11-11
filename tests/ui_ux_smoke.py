@@ -38,6 +38,14 @@ def main():
      check('bin_folder_is_one_continuous_sequence','Source frames 0 11' in log_path.read_text())
      first=capture(x,window,out/'01_playing.png');time.sleep(.35);second=capture(x,window,out/'02_motion.png')
      check('bin_sequence_playback_moves',changed_pixels(first,second,(390,180,1540,750))>80)
+     c.click('open_input');c.rect('open_input_file');c.rect('open_input_folder')
+     capture(x,window,out/'02_open_menu.png');x.key(window,'Escape')
+     check('one_open_menu_groups_file_and_folder_actions',True)
+     c.click('tab_Ground');c.rect('ground_settings')
+     capture(x,window,out/'02_ground_simple.png');c.click('ground_settings')
+     capture(x,window,out/'02_ground_settings.png');c.click('ground_settings')
+     c.rect('ground_average');c.rect('object_average')
+     check('analysis_controls_separate_display_method_and_advanced_settings',True)
      x.resize(window,1600,720);c.click('tab_Align');tabs=c.rect('tab_Objects');x.wheel(window,200,500,-20)
      offset=len(log_path.read_text());check('navigation_does_not_scroll_with_settings',c.rect('tab_Objects',after=offset)==tabs)
      c.click('tab_Objects');c.rect('tracking_ids')
@@ -48,6 +56,11 @@ def main():
      check('divider_resize_is_persisted',profile.exists() and 420<=float(prefs()['inspector_width'])<=440)
      resized=capture(x,window,out/'03_wider_panel.png');time.sleep(.35);later=capture(x,window,out/'04_motion_after_resize.png')
      check('resized_canvas_keeps_advancing',changed_pixels(resized,later,(550,180,1540,750))>80)
+     x.resize(window,800,600);time.sleep(.25)
+     capture(x,window,out/'04_compact_window.png')
+     for name in ['open_input','open_dataset','open_training','tab_Objects','timeline']:
+      left,top,right,bottom=c.rect(name);check('compact_'+name,0<=left<right<=800 and 0<=top<bottom<=600)
+     x.resize(window,1600,960)
      c.chord('s');user=out/'settings/lidar_viewer/profiles/default.cfg'
      saved=user if user.exists() else private/'config/profiles/default.cfg'
      check('panel_width_is_not_a_data_setting','inspector_width=' not in saved.read_text())

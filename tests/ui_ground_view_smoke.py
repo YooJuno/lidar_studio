@@ -28,11 +28,12 @@ def main():
     points += [(4+x*.06,4+y*.06,.4+z*.1,.9) for x in range(-5,6) for y in range(-5,6) for z in range(15)]
     fixture.write_bytes(b''.join(struct.pack('ffff',*point) for point in points))
     viewer=private/'build/lidar_viewer';shutil.copy2(args.viewer.resolve(),viewer)
-    env=dict(os.environ,XDG_CONFIG_HOME=str(output/'isolated'));before=settings_inventory(repo)
+    env=dict(os.environ,XDG_CONFIG_HOME=str(output/'isolated'),LIDAR_VIEWER_UI_TRACE='1');before=settings_inventory(repo)
     process=x11=window=None;result={'status':'started','checks':{},'output':str(output)}
     def check(label,value):
         result['checks'][label]=bool(value)
         if not value:raise AssertionError(label)
+    def averages():return [tuple(map(float,m))for m in re.findall(r'Stage averages: ground (\d+) ([-.\d]+) object (\d+) ([-.\d]+)',(output/'viewer.log').read_text(errors='replace'))]
     def event(key,down):
         code=x11.x.XKeysymToKeycode(x11.display,x11.x.XStringToKeysym(key.encode()));x11.xt.XTestFakeKeyEvent(x11.display,code,down,0)
     def save():
@@ -60,9 +61,13 @@ def main():
             x11.focus(window);x11.resize(window,1600,960);x11.click(window,155,140)
             select(1);save();ground=inspect();ground_image=capture(x11,window,output/'01_ground_only.png')
             check('ground_only_enables_segmentation_and_persists',ground[0]=='ground' and ground[1]==ground[2] and ground[2]>0 and ground[3]>0)
+            time.sleep(1.1);measured=averages()[-1]
+            check('ground_average_measures_completed_algorithm_only',measured[0]==1 and measured[1]>=0 and measured[2]==0 and measured[3]==-1)
             select(2);save();obstacles=inspect();obstacle_image=capture(x11,window,output/'02_obstacles_only.png')
             check('obstacles_only_persists',obstacles[0]=='obstacles' and obstacles[1]==obstacles[3])
             select(0);save();all_points=inspect();capture(x11,window,output/'03_all_points.png')
+            time.sleep(1.1)
+            check('display_switches_reuse_classification_and_timing',averages()[-1]==measured)
             check('views_partition_the_same_classification',all_points[1]==ground[1]+obstacles[1] and all_points[2:4]==ground[2:4]==obstacles[2:4])
             check('actual_render_changes_by_class',changed_pixels(ground_image,obstacle_image,(700,220,1200,650))>200)
             def red_count(picture):

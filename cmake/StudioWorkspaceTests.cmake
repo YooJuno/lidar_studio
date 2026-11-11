@@ -1,3 +1,6 @@
+add_executable(processing_average_smoke_test "${CMAKE_CURRENT_SOURCE_DIR}/tests/processing_average_smoke.cpp")
+target_include_directories(processing_average_smoke_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+add_test(NAME processing_average_smoke_test COMMAND processing_average_smoke_test)
 add_executable(dataset_smoke_test "${CMAKE_CURRENT_SOURCE_DIR}/tests/dataset_smoke.cpp")
 target_link_libraries(dataset_smoke_test PRIVATE lidar_viewer_export)
 add_test(NAME dataset_smoke_test COMMAND dataset_smoke_test)

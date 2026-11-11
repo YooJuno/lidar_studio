@@ -5,7 +5,7 @@
 
 namespace lidar_viewer
 {
-enum class UiIcon {Select, Box, Fit, Copy, Trash, Undo, Redo, Eye, Focus, Plus, Settings, Play, Pause, Previous, Next, Folder, Live, Export, Power, Rename};
+enum class UiIcon {Cloud, Select, Box, Fit, Copy, Trash, Undo, Redo, Eye, Focus, Plus, Settings, Play, Pause, Previous, Next, Folder, Live, Export, Power, Rename};
 
 inline void DrawUiIcon(ImDrawList * draw, UiIcon icon, ImVec2 origin, float size, ImU32 color)
 {
@@ -13,6 +13,10 @@ inline void DrawUiIcon(ImDrawList * draw, UiIcon icon, ImVec2 origin, float size
   const float stroke=1.5f*size/18.f;
   const auto line=[&](float x,float y,float a,float b){draw->AddLine(p(x,y),p(a,b),color,stroke);};
   switch (icon) {
+    case UiIcon::Cloud:
+      for(const auto & dot: {ImVec2(.2f,.35f),ImVec2(.48f,.2f),ImVec2(.75f,.32f),ImVec2(.33f,.68f),ImVec2(.7f,.72f)})
+        draw->AddCircleFilled(p(dot.x,dot.y),.065f*size,color,8);
+      break;
     case UiIcon::Select:
       line(.2f,.12f,.8f,.56f);line(.8f,.56f,.51f,.59f);line(.51f,.59f,.38f,.86f);line(.38f,.86f,.2f,.12f);break;
     case UiIcon::Rename:

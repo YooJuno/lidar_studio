@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <chrono>
 #include <stdexcept>
 #include <condition_variable>
 #include <cstring>
@@ -126,18 +127,20 @@ struct Request {
 };
 DetectorResult ReadReply(Child & child,float yaw) {
   std::array<char,4> magic{};DetectorResult result;std::uint32_t count=0,length=0;
-  child.Read(magic.data(),4);child.Read(&result.revision,8);child.Read(&count,4);
-  child.Read(&result.latency_ms,4);child.Read(&length,4);
+  std::array<char,24> header{};child.Read(header.data(),header.size());
+  std::memcpy(magic.data(),header.data(),4);std::memcpy(&result.revision,header.data()+4,8);
+  std::memcpy(&count,header.data()+12,4);std::memcpy(&result.latency_ms,header.data()+16,4);std::memcpy(&length,header.data()+20,4);
   const std::string tag(magic.data(),4);
   if ((tag!="LDR1" && tag!="LDE1") || count>4096 || length>16384)
     throw std::runtime_error("Invalid detector reply");
   result.detail.resize(length);child.Read(result.detail.data(),length);
   if (tag=="LDE1") {result.error=result.detail;if (count) throw std::runtime_error("Invalid detector error reply");}
   result.detections.reserve(count);
-  for (std::uint32_t i=0;i<count;++i) {
-    std::array<float,9> box{};child.Read(box.data(),36);
+  // Read the contiguous wire payload once instead of issuing one pipe read per box.
+  static thread_local std::vector<std::array<float,9>> boxes;
+  boxes.resize(count);child.Read(boxes.data(),static_cast<std::size_t>(count)*36);
+  for (const auto & box:boxes)
     result.detections.push_back(algorithms::DecodeCenterPointBox(box.data(),yaw));
-  }
   return result;
 }
 } // namespace
@@ -199,6 +202,7 @@ void LearnedDetector::Start(const std::filesystem::path & root,const std::string
         {std::unique_lock<std::mutex> lock(impl_->mutex);impl_->cv.wait(lock,[this]{return impl_->stop || impl_->pending.has_value();});
           if (impl_->stop) break;
           request=std::move(*impl_->pending);impl_->pending.reset();}
+        const auto processing_started=std::chrono::steady_clock::now();
         xyz.clear();xyz.reserve(request.scan->size()*3);
         const float c=std::cos(request.yaw),s=std::sin(request.yaw);
         for (const auto & point:*request.scan) {
@@ -206,9 +210,12 @@ void LearnedDetector::Start(const std::filesystem::path & root,const std::string
         }
         request.scan.reset();
         const std::uint32_t count=static_cast<std::uint32_t>(xyz.size()/3);
-        impl_->child.Write("LDQ1",4);impl_->child.Write(&request.revision,8);impl_->child.Write(&count,4);impl_->child.Write(&request.threshold,4);
+        std::array<char,20> header{};std::memcpy(header.data(),"LDQ1",4);
+        std::memcpy(header.data()+4,&request.revision,8);std::memcpy(header.data()+12,&count,4);std::memcpy(header.data()+16,&request.threshold,4);
+        impl_->child.Write(header.data(),header.size());
         impl_->child.Write(xyz.data(),xyz.size()*sizeof(float));
         auto result=ReadReply(impl_->child,request.yaw);
+        result.processing_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-processing_started).count();
         if (result.revision!=request.revision) throw std::runtime_error("Detector frame revision mismatch");
         std::lock_guard<std::mutex> lock(impl_->mutex);impl_->result=std::move(result);
       }

@@ -126,7 +126,11 @@ void TrainingWorkspace::Draw(bool & open,const fs::path & active_dataset,float s
   } catch(const std::exception & error) {state.error=error.what();}
   ImGui::SetNextWindowSize({std::min(820*scale,ImGui::GetIO().DisplaySize.x-32*scale),std::min(760*scale,ImGui::GetIO().DisplaySize.y-32*scale)},ImGuiCond_FirstUseEver);
   if(!ImGui::Begin("Training",&open,ImGuiWindowFlags_NoCollapse)) {ImGui::End();return;}
-  if(state.recipes.empty()) {ImGui::TextWrapped("%s",state.error.c_str());ImGui::End();return;}
+  if(state.recipes.empty()) {
+    ImGui::TextWrapped("%s",state.error.c_str());
+    if(ImGui::Button("Close")) open=false;
+    Trace("hide");ImGui::End();return;
+  }
   const auto & recipe=state.recipes[static_cast<std::size_t>(state.selected)];
   const float reserve=(state.run.empty() ? 90.f : 250.f)*scale;
   ImGui::BeginChild("TrainingSetup",{0,std::max(120*scale,ImGui::GetContentRegionAvail().y-reserve)});
@@ -184,8 +188,8 @@ void TrainingWorkspace::Draw(bool & open,const fs::path & active_dataset,float s
   } else {
     if(ImGui::Button(state.job.Stopping() ? "Stopping..." : "Stop training",{150*scale,0})) {state.job.Cancel();state.cancelled=true;}
     Trace("stop");ImGui::SameLine();ImGui::TextUnformatted(state.checking ? "Checking environment and labels..." : "Training is running");
-    ImGui::SameLine();if(ImGui::Button("Hide")) open=false;Trace("hide");
   }
+  ImGui::SameLine();if(ImGui::Button(state.job.Running() ? "Hide" : "Close")) open=false;Trace("hide");
   if(!state.run.empty()) if(const auto code=state.job.ExitCode()) ImGui::TextColored(*code==0 ? ImVec4(.4f,.85f,.65f,1) : ImVec4(1,.65f,.4f,1),"%s",state.cancelled ? "Stopped" : *code==0 ? (state.checking ? "Setup is ready" : "Training completed") : "Job failed - see the log below");
   if(!state.error.empty()) ImGui::TextWrapped("%s",state.error.c_str());
   if(!state.run.empty()) {

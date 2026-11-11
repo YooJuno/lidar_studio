@@ -6,6 +6,7 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <numeric>
 #include <stdexcept>
 
 namespace lidar_viewer::algorithms
@@ -34,6 +35,8 @@ GroundRemovalResult RunGroundRemovalFugSeg(const std::vector<KittiPoint> & input
     std::array<float,6> key{};
     fugseg::Cloud cloud;
     fugseg::Cluster3D ground,others;
+    std::vector<std::size_t> original;
+    std::vector<unsigned char> mask;
   };
   static thread_local Cache cache;
   if (!cache.model || cache.key!=key) {
@@ -44,22 +47,28 @@ GroundRemovalResult RunGroundRemovalFugSeg(const std::vector<KittiPoint> & input
   cache.model->ConfigureSensor(height,std::clamp(params.fugseg_horizontal_noise_deg,.001f,1.f),
     std::clamp(params.fugseg_vertical_noise_deg,.001f,1.f),std::clamp(params.fugseg_range_noise_m,.001f,.5f),input.size());
   cache.cloud.Reset(input.size());
-  std::vector<std::size_t> original;original.reserve(input.size());
+  auto & original=cache.original;auto & ground=cache.mask;
+  if(original.capacity()/4>std::max<std::size_t>(input.size(),65536)) std::vector<std::size_t>().swap(original);
+  if(ground.capacity()/4>std::max<std::size_t>(input.size(),65536)) std::vector<unsigned char>().swap(ground);
+  original.clear();ground.assign(input.size(),0);
+  std::size_t valid=0;bool mapped=false;
   for (std::size_t i=0;i<input.size();++i) {
     const auto & point=input[i];
-    if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) continue;
-    cache.cloud.points().row(static_cast<Eigen::Index>(original.size()))<<
+    if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) {
+      if(!mapped) {original.resize(valid);std::iota(original.begin(),original.end(),std::size_t{0});mapped=true;}
+      continue;
+    }
+    cache.cloud.points().row(static_cast<Eigen::Index>(valid++))<<
       point.x,point.y,point.z-params.gseg3d_ground_height_m-height,0.f;
-    original.push_back(i);
+    if(mapped) original.push_back(i);
   }
-  cache.cloud.points().conservativeResize(static_cast<Eigen::Index>(original.size()),Eigen::NoChange);
-  std::vector<unsigned char> ground(input.size(),0);
-  if (!original.empty()) {
+  cache.cloud.points().conservativeResize(static_cast<Eigen::Index>(valid),Eigen::NoChange);
+  if (valid) {
     if (!cache.model->ExtractGround(cache.cloud,cache.ground,cache.others))
       throw std::runtime_error("Original FugSeg extraction failed");
     for (const auto index:cache.ground) {
-      if (index>=original.size()) throw std::runtime_error("FugSeg returned an invalid point index");
-      ground[original[index]]=1;
+      if (index>=valid) throw std::runtime_error("FugSeg returned an invalid point index");
+      ground[mapped ? original[index] : index]=1;
     }
   }
   return PartitionGround(input,ground);

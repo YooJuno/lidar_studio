@@ -62,7 +62,7 @@ def main():
         if not profile.exists():profile=private/'config/profiles/dataset.cfg'
         values=dict(line.split('=',1)for line in profile.read_text().splitlines()if '='in line)
         check('dataset_view_does_not_apply_sensor_height_or_imu',float(values['calibration_z_m'])==0 and values['imu_level_enabled']=='0'and values['ground_removal_enabled']=='0')
-        controls.click('dataset_train');controls.rect('training_epochs');controls.click('training_validate');wait(lambda:len(jobs())==1)
+        controls.click('open_training');controls.rect('training_epochs');controls.click('training_validate');wait(lambda:len(jobs())==1)
         check('training_setup_validates_annotated_dataset',json.loads(jobs()[0].read_text())['status']=='validated')
         controls.click('training_start');wait(lambda:len(jobs())==2)
         check('training_uses_selected_epochs_and_writes_run_status',json.loads(jobs()[1].read_text())['status']=='complete'and json.loads((jobs()[1].parent/'model/contract.json').read_text())['epochs']==2)

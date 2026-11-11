@@ -52,6 +52,7 @@ while True:
     before=settings_inventory(repo);result={'status':'started','checks':{},'output':str(out)}
     process=x11=window=None;log_path=out/'viewer.log'
     def rows():return [tuple(map(int,m)) for m in re.findall(r'Detector frame (\d+) revision (\d+) boxes (\d+) full (\d+)',log_path.read_text(errors='replace'))]
+    def averages():return [tuple(map(float,m)) for m in re.findall(r'Stage averages: ground (\d+) ([-.\d]+) object (\d+) ([-.\d]+)',log_path.read_text(errors='replace'))]
     def wait(condition,timeout=20):
         deadline=time.monotonic()+timeout
         while not condition():
@@ -75,11 +76,18 @@ while True:
             capture(x11,window,out/'01_playing_objects.png')
             x11.click(window,410,837);time.sleep(.5);paused=rows();time.sleep(.5)
             check('explicit_pause_holds_frame_and_reuses_result',rows()==paused)
+            time.sleep(1.1);sample=averages()[-1]
+            check('separate_stage_averages_exclude_disabled_ground',sample[0]==0 and sample[1]==-1 and sample[2]>0)
+            check('object_average_counts_ipc_and_excludes_model_startup',65<=sample[3]<300)
+            time.sleep(1.1)
+            check('paused_redraw_does_not_bias_processing_average',averages()[-1]==sample)
+            ticks=[float(t)for t in re.findall(r'Status sample ([-.\d]+)',log_path.read_text())]
+            check('runtime_labels_refresh_at_most_once_per_second',all(b-a>=.99 for a,b in zip(ticks,ticks[1:])))
             before_score=capture(x11,window,out/'score_before.png')
             controls=Controls(x11,window,log_path)
             controls.enter('object_score',.95);controls.chord('s')
             profile=out/'settings/lidar_viewer/profiles/rosbag.cfg'
-            def score():return float(re.search(r'^detection_min_score=(.*)$',profile.read_text(),re.M)[1])
+            def score():return float(re.search(r'^detection_min_score=(.*)$',(profile if profile.exists() else private/'config/profiles/rosbag.cfg').read_text(),re.M)[1])
             check('score_accepts_direct_hundredth_input',abs(score()-.95)<1e-5)
             left,top,right,bottom=controls.rect('object_score')
             x11.click(window,int(right-15),int((top+bottom)*.5));controls.chord('s')
