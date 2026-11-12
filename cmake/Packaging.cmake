@@ -76,6 +76,8 @@ install(TARGETS lidar_viewer_native
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/tools/setup_detector.py"
   "${CMAKE_CURRENT_SOURCE_DIR}/tools/setup_centerpoint_training.py" DESTINATION "${resource_destination}/tools")
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/README.md" DESTINATION "${resource_destination}")
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/docs/" DESTINATION "${resource_destination}/docs"
+  COMPONENT documentation FILES_MATCHING PATTERN "*.md" PATTERN "*.png")
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/third_party/licenses/" DESTINATION "${resource_destination}/third-party-licenses")
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/fugseg/LICENSE"
   DESTINATION "${resource_destination}/third-party-licenses" RENAME FugSeg-MIT.txt)
