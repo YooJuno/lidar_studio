@@ -1,8 +1,20 @@
-# Run the KITTI driving example
+# Driving examples
+
+## One-click public sample — no account required
+
+In the app, select **Open… → Try driving example**. LiDAR Studio downloads six [public Patchwork++ example scans](https://github.com/url-kaist/patchwork-plusplus/tree/3e6903a1d5537a4cc2ace897b0bbb98a92d6014c/data), verifies them and starts playback with FugSeg ground segmentation. No browser login, Python environment, ROS installation or GPU is needed.
+
+Downloads have progress, **Cancel / Esc** and **Retry** controls. Completed scans survive cancellation; invalid or incomplete files are never opened. Subsequent clicks reuse verified cached files, including when offline. Existing recordings and their profiles are preserved.
+
+The default cache is `~/.local/share/lidar_viewer/examples/driving-v1` on Linux, `%LOCALAPPDATA%\LiDARViewer\examples\driving-v1` on Windows, or `~/Library/Application Support/LiDARViewer/examples/driving-v1` on macOS. An absolute `XDG_DATA_HOME` overrides the data location. The **example** profile can be saved independently.
+
+These are a small demonstration set, distinct from the full KITTI Raw sequence below. [Demo recording and source credits](media/SOURCE.md).
+
+## Full KITTI Raw sequence
 
 The examples use **KITTI Raw**, sequence **2011_09_26_drive_0005_sync**. Its Velodyne scans are outdoor driving point clouds stored as binary XYZI arrays, so LiDAR Studio can open them directly without converting them to ROS bags.
 
-## 1. Download the sequence
+### 1. Download the sequence
 
 1. Open the [official KITTI Raw page](https://www.cvlibs.net/datasets/kitti/raw_data.php) and sign in or register. KITTI currently requires a login for dataset downloads.
 2. Find **2011_09_26_drive_0005** and download **synced+rectified data**. The archive is named `2011_09_26_drive_0005_sync.zip`.
@@ -10,7 +22,7 @@ The examples use **KITTI Raw**, sequence **2011_09_26_drive_0005_sync**. Its Vel
 
 KITTI is provided by Andreas Geiger, Philip Lenz, Christoph Stiller and Raquel Urtasun. The dataset is licensed under [CC BY-NC-SA 3.0](https://creativecommons.org/licenses/by-nc-sa/3.0/); see the [official copyright and citation](https://www.cvlibs.net/datasets/kitti/).
 
-### Linux / macOS
+#### Linux / macOS
 
 From the repository root, with the ZIP in your Downloads folder:
 
@@ -25,7 +37,7 @@ unzip "$HOME/Downloads/2011_09_26_drive_0005_sync.zip" \
 
 On Ubuntu, install `unzip` if needed. With an installed Ubuntu package, replace `./build/lidar_studio` with `lidar_studio`. For a macOS app bundle, use `./lidar_studio.app/Contents/MacOS/lidar_studio` from the folder containing the app.
 
-### Windows PowerShell
+#### Windows PowerShell
 
 From the folder containing the extracted `lidar_studio.exe`:
 
@@ -38,27 +50,29 @@ Expand-Archive -LiteralPath "$HOME\Downloads\2011_09_26_drive_0005_sync.zip" -De
 
 You can also launch the app and use **Open… → Open file…** to select a single `.bin` scan. Opening the `data` folder on the command line loads the scan sequence for playback. **Point clouds** is the workspace for browsing exported samples and labels.
 
-## 2. Explore the recording
+### 2. Explore the recording
 
 - Use **Space** to pause/resume and **←/→** to move between scans. KITTI Raw records at **10 Hz**; set the playback rate to `10.0 fps` for that scan rate.
 - Switch between **3D** and **2D**. Rotate or zoom the view to inspect parked vehicles, roadside structures and the road surface.
 - Open **Ground**, enable **Classify ground** and select **FugSeg**, **GSeg3D** or **Patchwork++**. Compare **Ground only** and **Obstacles only** on the same paused frame.
 - Open **Objects** and select **Euclidean 3D (clusters)** to inspect geometric obstacle groups. These groups do not assign vehicle/person classes.
 
-## 3. Reproduce the screenshots
+### 3. Reproduce the screenshots
 
-The README screenshots use the zero-based scan index **41**, file `0000000041.bin` from this sequence:
+The KITTI screenshots use the zero-based scan index **41**, file `0000000041.bin` from this sequence:
 
 ```bash
 ./build/lidar_studio \
   dataset/2011_09_26/2011_09_26_drive_0005_sync/velodyne_points/data/0000000041.bin
 ```
 
+![FugSeg ground classification on KITTI Raw scan 41](images/kitti-ground.png)
+
 For the ground view, enable **FugSeg**, select **All points** and choose **Uniform** coloring in **View**. Classified ground is red. Camera position and grid settings can be adjusted independently.
 
 For the ROI view, choose **ROI → Display ROI**, draw a region around a vehicle in 2D and name it. Use **Export points…** to choose the coordinate system, class-name hint and output folder; use **Ctrl+E** for subsequent single-frame exports. Open the output folder in **Point clouds** to inspect the cropped samples.
 
-## 4. Try learned detection
+### 4. Try learned detection
 
 From a source checkout, install the optional models, then open the same scan with detection enabled:
 

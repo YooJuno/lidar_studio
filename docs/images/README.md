@@ -10,3 +10,5 @@
 The scans were rendered in LiDAR Studio with FugSeg ground classification, a manually positioned vehicle ROI and CenterPoint tiny predictions, respectively. The images are application examples, not ground-truth labels or benchmark results. Only rendered screenshots are included here; download the dataset and install optional model weights separately.
 
 [Reproduce the example](../examples.md).
+
+The separately recorded **one-click public sample demo** uses the Patchwork++ sample distribution rather than this KITTI Raw sequence. See [demo source and recording credits](../media/SOURCE.md).

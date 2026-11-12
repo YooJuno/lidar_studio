@@ -1,0 +1,23 @@
+# Use Apple's system curl so app bundles use the OS certificate store and do
+# not depend on a Homebrew CA bundle being present on the destination Mac.
+if(APPLE)
+  execute_process(COMMAND xcrun --show-sdk-path OUTPUT_VARIABLE example_macos_sdk
+    OUTPUT_STRIP_TRAILING_WHITESPACE RESULT_VARIABLE example_sdk_result)
+  if(NOT example_sdk_result EQUAL 0)
+    message(FATAL_ERROR "The macOS SDK is required for HTTPS example downloads")
+  endif()
+  find_library(example_system_curl NAMES curl PATHS "${example_macos_sdk}/usr/lib" /usr/lib NO_DEFAULT_PATH)
+  if(NOT example_system_curl)
+    message(FATAL_ERROR "Could not find the macOS system libcurl")
+  endif()
+  set(example_curl_library "${example_system_curl}")
+else()
+  find_package(CURL REQUIRED)
+  set(example_curl_library CURL::libcurl)
+endif()
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+add_library(lidar_viewer_example STATIC src/example_dataset.cpp)
+target_include_directories(lidar_viewer_example PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_link_libraries(lidar_viewer_example PRIVATE ${example_curl_library} OpenSSL::Crypto Threads::Threads)
+lidar_warnings(lidar_viewer_example)
+target_link_libraries(lidar_studio PRIVATE lidar_viewer_example)

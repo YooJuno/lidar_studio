@@ -6,9 +6,9 @@ A desktop workspace for LiDAR playback, ground segmentation, clustering, object 
 
 [Download](https://github.com/YooJuno/lidar_studio/releases) · [Latest builds](https://github.com/YooJuno/lidar_studio/actions/workflows/build-release.yml) · [Detailed guide (Korean)](docs/guide.md)
 
-![FugSeg ground segmentation on an outdoor KITTI driving scan](docs/images/kitti-ground.png)
+[![LiDAR Studio demo: download an example, inspect ground and edit ROI regions](docs/media/demo.gif)](docs/media/demo.mp4)
 
-*KITTI Raw, drive 0005, scan 41. Classified ground is red. [Run this example](docs/examples.md).*
+*Preview at 1.5× speed: one-click example, 3D navigation, ground views and ROI export. [Watch the full MP4](docs/media/demo.mp4) · [Example guide](docs/examples.md).*
 
 ## Highlights
 
@@ -36,7 +36,7 @@ Ubuntu installation: `sudo apt install ./lidar_studio-*.deb` (**ROS 2 Jazzy** re
 <summary>Build from source on Ubuntu</summary>
 
 ```bash
-sudo apt install cmake g++ libglfw3-dev libglew-dev libpcl-dev libnanoflann-dev zenity
+sudo apt install cmake g++ libglfw3-dev libglew-dev libpcl-dev libnanoflann-dev libcurl4-openssl-dev libssl-dev zenity
 git clone --recursive https://github.com/YooJuno/lidar_studio.git
 cd lidar_studio
 # For ROS 2 bag/live support, source Jazzy before configuring:
@@ -50,16 +50,13 @@ The core viewer and ground algorithms work without Python or a GPU. Detection an
 
 </details>
 
-## Try the KITTI driving example
+## Try it in one click
 
-Download **2011_09_26_drive_0005 → synced+rectified data** from the [official KITTI Raw page](https://www.cvlibs.net/datasets/kitti/raw_data.php) (account required). Extract the ZIP to `dataset/`, then run from the repository root:
+Launch the app and choose **Open… → Try driving example**. Six public outdoor LiDAR scans (~12 MB) download in the background and open automatically with ground segmentation and playback ready.
 
-```bash
-./build/lidar_studio \
-  dataset/2011_09_26/2011_09_26_drive_0005_sync/velodyne_points/data --play
-```
+**No login, Python, ROS or GPU is needed.** Progress, cancellation and retry are built in. Verified scans are cached for offline reuse, and the example has its own profile.
 
-Use **Space** to pause and **←/→** to inspect each scan. This works without ROS. [Download, extraction, Windows/macOS commands and detection example →](docs/examples.md)
+The samples come from the [Patchwork++ demonstration data](https://github.com/url-kaist/patchwork-plusplus/tree/3e6903a1d5537a4cc2ace897b0bbb98a92d6014c/data). For a longer recording, follow the [official KITTI Raw download and cross-platform launch guide](docs/examples.md).
 
 ## Find your workflow
 
@@ -102,6 +99,6 @@ Class and score changes filter cached predictions without repeating inference. D
 
 ## Development
 
-C++17 · OpenGL · GLFW · Dear ImGui · PCL. Ground methods integrate pinned [FugSeg](https://github.com/Leo-YuLi/FugSeg), [GSeg3D](https://github.com/dfki-ric/ground_segmentation) and [Patchwork++](https://github.com/url-kaist/patchwork-plusplus) implementations.
+C++17 · OpenGL · GLFW · Dear ImGui · PCL · libcurl · OpenSSL. Ground methods integrate pinned [FugSeg](https://github.com/Leo-YuLi/FugSeg), [GSeg3D](https://github.com/dfki-ric/ground_segmentation) and [Patchwork++](https://github.com/url-kaist/patchwork-plusplus) implementations.
 
 Run checks with `ctest --test-dir build --output-on-failure`. GitHub Actions builds Ubuntu, Windows and macOS packages. Passing builds for `v*` tags publish release assets. The [guide](docs/guide.md) contains advanced settings and validation details. [KITTI credit and screenshot license](docs/images/README.md).

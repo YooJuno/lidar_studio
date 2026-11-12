@@ -34,7 +34,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get -o Acquire::Retries=3 update
-          sudo apt-get -o Acquire::Retries=3 install -y ninja-build libglfw3-dev libglew-dev libpcl-dev libnanoflann-dev \
+          sudo apt-get -o Acquire::Retries=3 install -y ninja-build libglfw3-dev libglew-dev libpcl-dev libnanoflann-dev libcurl4-openssl-dev libssl-dev \
             ros-jazzy-rosbag2-cpp ros-jazzy-sensor-msgs ros-jazzy-tf2-msgs ros-jazzy-rclcpp \
             ros-jazzy-rclpy ros-jazzy-rosbag2-py ros-jazzy-rmw-fastrtps-cpp ros-jazzy-rosbag2-storage-mcap ros-jazzy-rosbag2-storage-sqlite3 \
             zenity xvfb xauth x11-utils x11-xserver-utils libxtst6 ffmpeg \
@@ -130,6 +130,14 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_point_review_smoke.py \
             --viewer build/lidar_studio --output build/test_artifacts/point-review
+      - name: Public example download and cached reopen GUI test
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_example_smoke.py \
+            --viewer build/lidar_studio --output build/test_artifacts/example
       - name: Ground-only and obstacles-only display GUI test
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
@@ -248,7 +256,7 @@ jobs:
         run: ./.vcpkg/bootstrap-vcpkg.bat -disableMetrics
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
-        run: brew install pcl glfw glew nanoflann ninja
+        run: brew install pcl glfw glew nanoflann ninja openssl@3
       - name: Configure Windows
         if: runner.os == 'Windows'
         shell: pwsh
@@ -267,7 +275,7 @@ jobs:
           args=()
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then args+=(-DCPACK_PACKAGE_VERSION="${GITHUB_REF_NAME#v}"); fi
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="$(brew --prefix)" -DLIDAR_VIEWER_ENABLE_CUDA=OFF \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix)" -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" -DLIDAR_VIEWER_ENABLE_CUDA=OFF \
             -DLIDAR_VIEWER_ENABLE_ROSBAG=OFF -DLIDAR_VIEWER_USER_SETTINGS=ON "${args[@]}"
       - name: Build
         run: cmake --build build --config Release --parallel 2

@@ -242,6 +242,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   endif()
 endif()
 
+include(cmake/ExampleData.cmake)
+
 include(CTest)
 if(BUILD_TESTING)
   add_executable(background_worker_smoke_test tests/background_worker_smoke.cpp)
