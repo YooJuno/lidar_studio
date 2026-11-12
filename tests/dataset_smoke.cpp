@@ -119,8 +119,14 @@ int main()
     auto coord_deleted=lidar_viewer::TrashDatasetSample(lidar_viewer::ResolveDatasetFrames(curated_coord)[0]);
     Check(lidar_viewer::ResolveDatasetFrames(curated_coord).empty() && !fs::exists(curated_coord/"segment.npy") && Read(curated_coord/"keep.txt")=="unrelated","Organized deletion did not skip trash or preserve unrelated files");
     lidar_viewer::RestoreDatasetSample(coord_deleted);Check(LoadFrame(lidar_viewer::ResolveDatasetFrames(curated_coord)[0]).annotations->point_labels==std::vector<std::int32_t>({0,1}),"Organized recovery lost labels");
-    const auto relative_curate=fs::relative(curate,fs::current_path());
-    auto relative_deleted=lidar_viewer::TrashDatasetSample(lidar_viewer::ResolveDatasetFrames(relative_curate)[0]);lidar_viewer::RestoreDatasetSample(relative_deleted);
+    // Windows runners may use C: for temporary data and D: for the checkout.
+    // Cross-drive paths cannot be relative; exercise a real relative path instead.
+    {
+      struct RestoreWorkingDirectory {fs::path path{fs::current_path()};~RestoreWorkingDirectory() {std::error_code error;fs::current_path(path,error);}} restore;
+      fs::current_path(root);
+      auto relative_deleted=lidar_viewer::TrashDatasetSample(lidar_viewer::ResolveDatasetFrames("curation")[0]);
+      lidar_viewer::RestoreDatasetSample(relative_deleted);
+    }
     const auto flat=root/"curated_flat";fs::create_directory(flat);Npy(flat/"first.npy","<f4",2,4,bytes);Npy(flat/"second.npy","<f4",2,4,bytes);
     Npy(flat/"segment.npy","<i4",2,1,{reinterpret_cast<char *>(file_labels),sizeof(file_labels)});
     auto flat_deleted=lidar_viewer::TrashDatasetSample(lidar_viewer::ResolveDatasetFrames(flat)[0]);

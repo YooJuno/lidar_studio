@@ -8,7 +8,7 @@ A desktop workspace for LiDAR playback, ground segmentation, clustering, object 
 
 [![LiDAR Studio demo: download an example, inspect ground and edit ROI regions](docs/media/demo.gif)](docs/media/demo.mp4)
 
-*Preview at 1.5× speed: one-click example, 3D navigation, ground views and ROI export. [Watch the full MP4](docs/media/demo.mp4) · [Example guide](docs/examples.md).*
+*Quick-preview recording at 1.5× speed: example download, 3D navigation, ground views and ROI export. [Watch the full MP4](docs/media/demo.mp4) · [Example guide](docs/examples.md).*
 
 ## Highlights
 
@@ -50,13 +50,21 @@ The core viewer and ground algorithms work without Python or a GPU. Detection an
 
 </details>
 
-## Try it in one click
+## Try a driving recording
 
-Launch the app and choose **Open… → Try driving example**. Six public outdoor LiDAR scans (~12 MB) download in the background and open automatically with ground segmentation and playback ready.
+Choose **Open… → Driving examples…**, select a recording length, then **Download and open**:
 
-**No login, Python, ROS or GPU is needed.** Progress, cancellation and retry are built in. Verified scans are cached for offline reuse, and the example has its own profile.
+| Sensor | Channels / view | 30 s · 300 frames | 1 min · 600 frames |
+| --- | --- | --- | --- |
+| **Velodyne HDL-32E** | 32 · 360° | 434 MB | 860 MB |
+| **Hesai XT32** | 32 · 360° | 922 MB | 1.84 GB |
+| **Hesai AT128P** | 128 · forward 120° | 2.30 GB | 4.61 GB |
 
-The samples come from the [Patchwork++ demonstration data](https://github.com/url-kaist/patchwork-plusplus/tree/3e6903a1d5537a4cc2ace897b0bbb98a92d6014c/data). For a longer recording, follow the [official KITTI Raw download and cross-platform launch guide](docs/examples.md).
+A six-scan **Quick preview** (12 MB) is also available. The default is the smaller Velodyne 30-second recording.
+
+**No login, Python, ROS or GPU is needed.** Real consecutive scans open with ground segmentation and 10 Hz playback. Downloads show progress and ETA, support cancellation/retry and reuse verified scans across lengths. Each sensor has a separate profile and initial mount correction. Manage saved recordings and **Delete download** in the same chooser.
+
+[UrbanV2X](https://huggingface.co/datasets/polyutaslab/UrbanV2X) is published by TAS Lab, Hong Kong Polytechnic University, under **CC BY-NC-SA 4.0**. The quick preview comes from [Patchwork++](https://github.com/url-kaist/patchwork-plusplus/tree/3e6903a1d5537a4cc2ace897b0bbb98a92d6014c/data). [Example details, full recordings and KITTI instructions](docs/examples.md).
 
 ## Find your workflow
 

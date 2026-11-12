@@ -2,6 +2,8 @@
 
 `demo.mp4` and `demo.gif` are screen recordings of LiDAR Studio, captured in a private Xvfb session. They show the real public example download, playback and orbiting, ground/obstacle views, direct ROI editing and export settings. All views and edits use the downloaded point clouds. The MP4 runs at the recorded speed; the GIF preview is reduced in size and played at 1.5× speed.
 
+The recording uses the six-frame quick preview. The current **Driving examples…** chooser also offers 300- and 600-frame UrbanV2X recordings; see [the example guide](../examples.md).
+
 ## Example data source
 
 - **Distribution:** [Patchwork++ example scans](https://github.com/url-kaist/patchwork-plusplus/tree/3e6903a1d5537a4cc2ace897b0bbb98a92d6014c/data), Urban Robotics Lab, KAIST.

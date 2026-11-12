@@ -27,7 +27,7 @@ def main():
   wait(lambda:x.viewer_window()is not None);window=x.viewer_window();x.focus(window);x.resize(window,1600,960);c=Controls(x,window,log_path)
   c.rect('open_input');time.sleep(.2);cache=out/'data/lidar_viewer/examples/driving-v1'
   check('no_network_or_download_at_startup',not cache.exists()and'Example ready'not in text())
-  c.click('open_input');c.click('open_example');wait(lambda:'Example ready |'in text())
+  c.click('open_input');c.click('open_example');c.click('example_sensor');c.click('example_quick');c.click('example_start');wait(lambda:'Example ready |'in text())
   wait(lambda:'Opened point cloud:'in text()and' | 6 frames'in text())
   check('one_click_downloads_and_opens_six_scans',len(list(cache.glob('*.bin')))==6)
   check('first_open_fetches_public_files','Example ready | cached 0 / 6'in text())
@@ -36,7 +36,7 @@ def main():
   c.click('tab_Ground');x.move(window,1590,780);time.sleep(.4);a=capture(x,window,out/'01_downloaded.png');time.sleep(.23);b=capture(x,window,out/'02_playing.png')
   check('example_autoplays_without_blocking_controls',changed_pixels(a,b,(380,180,1540,750))>100)
   stamps={p.name:(p.stat().st_mtime_ns,hashlib.sha256(p.read_bytes()).hexdigest())for p in cache.glob('*.bin')}
-  c.click('open_input');c.click('open_example');wait(lambda:'Example ready | cached 6 / 6'in text())
+  c.click('open_input');c.click('open_example');c.click('example_sensor');c.click('example_quick');c.click('example_start');wait(lambda:'Example ready | cached 6 / 6'in text())
   check('cached_open_does_not_download_or_rewrite',stamps=={p.name:(p.stat().st_mtime_ns,hashlib.sha256(p.read_bytes()).hexdigest())for p in cache.glob('*.bin')})
   c.chord('s');saved=out/'settings/lidar_viewer/profiles/example.cfg'
   if not saved.exists():saved=private/'config/profiles/example.cfg'

@@ -525,6 +525,13 @@ struct ViewerState
   lidar_viewer::UiLayout ui_layout;
   std::unique_ptr<lidar_viewer::ExampleDataset> example_dataset;
   bool example_pending{false},example_panel{false};
+  lidar_viewer::ExampleKind example_kind{lidar_viewer::ExampleKind::Velodyne30};
+  struct ExampleCacheResult {lidar_viewer::ExampleKind kind;lidar_viewer::ExampleCacheInfo info;};
+  std::unique_ptr<lidar_viewer::BackgroundWorker> example_cache_worker;
+  std::future<ExampleCacheResult> example_cache_future;
+  std::optional<lidar_viewer::ExampleKind> example_cache_kind;
+  lidar_viewer::ExampleCacheInfo example_cache_info;
+  bool example_removing{false};
   std::string ui_error;
   bool ground_removal_enabled{false};
   GroundView ground_view{GroundView::All};
@@ -1798,7 +1805,7 @@ std::string DetectDatasetProfile(const fs::path & input_path);
 
 void OpenBagSource(ViewerState & state, std::size_t index)
 {
-  if(state.example_dataset && state.example_dataset->Progress().Active()) return;
+  if(state.example_removing || (state.example_dataset && state.example_dataset->Progress().Active())) return;
   if (state.dataset_edit_future.valid() || state.live.Active() || state.loading_bag_source || index >= state.bag_sources.size() ||
       (state.current_bag_source && *state.current_bag_source == index)) return;
   state.input_load_previous_playing=state.is_playing;
@@ -1934,8 +1941,8 @@ void OpenInputPath(ViewerState & state, const fs::path & input)
   if(state.dataset_edit_future.valid()) throw std::runtime_error("Wait for the sample edit to finish");
   if (state.live.Active() || state.loading_bag_source || state.folder_scan_future.valid())
     throw std::runtime_error("Disconnect live input or wait for loading before opening a file");
-  if(state.example_dataset && state.example_dataset->Progress().Active())
-    throw std::runtime_error("Wait for the example download or cancel it first");
+  if(state.example_removing || (state.example_dataset && state.example_dataset->Progress().Active()))
+    throw std::runtime_error("Wait for the example operation to finish or cancel its download");
   auto path=input.filename()=="metadata.json" ? input.parent_path() : input;
   if((path.filename()=="points" || path.filename()=="pointcloud") && fs::is_regular_file(path.parent_path()/"metadata.json")) path=path.parent_path();
   const bool dataset=state.review_window || lidar_viewer::IsDatasetFile(path) || (fs::is_directory(path) && !IsRos2BagInput(path));
@@ -2009,10 +2016,61 @@ void CompleteDatasetPicker(ViewerState & state,GLFWwindow * window)
   } catch(const std::exception & error) {state.ui_error=error.what();}
 }
 
+void InspectDrivingExample(ViewerState & state)
+{
+  if(state.example_removing || state.example_pending || (state.example_dataset && state.example_dataset->Progress().Active()) || state.example_cache_kind==state.example_kind) return;
+  if(!state.example_cache_worker) state.example_cache_worker=std::make_unique<lidar_viewer::BackgroundWorker>();
+  const auto kind=state.example_kind;state.example_cache_kind=kind;state.example_cache_info={};
+  state.example_cache_future=state.example_cache_worker->Submit([kind] {return ViewerState::ExampleCacheResult{kind,lidar_viewer::InspectExampleCache(kind)};});
+}
+
+void ClearDeletedExampleInput(ViewerState & state,const fs::path & directory)
+{
+  if(!state.frames.empty() && state.frames.front().path.parent_path()==directory) {
+    if(state.frame_reader) state.frame_reader->CancelPending();
+    state.prefetch_future={};CancelGeometry(state);state.prefetched_index.reset();state.requested_frame.reset();
+    state.frame_cache.clear();state.frame_cache_order.clear();state.frames.clear();state.file_groups.clear();
+    state.base_frame={};state.frame={};state.processed_frame={};state.processed_obstacles=0;state.frame_dirty=true;
+    state.is_playing=false;state.timeline_dragging=false;state.current_index=0;state.current_file_group=0;state.seek_draft=0;
+    state.ground_removed_count=0;state.exclusion_removed_count=0;state.ground_stage_ms.reset();state.clustering_stage_ms.reset();
+    state.ground_average.Reset();state.object_average.Reset();state.clustering_average.Reset();
+    state.clusters.clear();state.detections.clear();state.full_detections.clear();state.detector_input.reset();++state.detector_revision;
+    ResetTracking(state);RebuildClusterBoxes(state);state.roi_renderer.vertices.clear();state.roi_renderer.dirty=true;
+    state.status_source.clear();state.status_points=0;state.status_ground=0;
+    state.status_ground_average_ms=-1;state.status_object_average_ms=-1;state.status_processing_ms=0;state.status_roi_ms=0;
+    state.processing_ms=0;state.roi_ms=0;state.input_fps_estimate.reset();state.current_bag_source.reset();
+    std::cout<<"Example unloaded | "<<directory.filename().u8string()<<std::endl;
+  }
+  for(std::size_t i=state.bag_sources.size();i-->0;) if(state.bag_sources[i].path==directory) {
+    state.bag_sources.erase(state.bag_sources.begin()+static_cast<std::ptrdiff_t>(i));
+    if(state.current_bag_source) {
+      if(*state.current_bag_source==i) state.current_bag_source.reset();
+      else if(*state.current_bag_source>i) --*state.current_bag_source;
+    }
+  }
+  state.bag_durations.erase(directory);state.unavailable_sources.erase(directory);
+  if(state.point_review) ClearDeletedExampleInput(*state.point_review,directory);
+}
+
+void DeleteDrivingExample(ViewerState & state)
+{
+  if(state.example_removing || state.loading_bag_source || state.export_future.valid() ||
+      (state.example_dataset && state.example_dataset->Progress().Active())) return;
+  const auto kind=state.example_kind;ClearDeletedExampleInput(state,lidar_viewer::DrivingExampleDirectory(kind));
+  if(!state.example_cache_worker) state.example_cache_worker=std::make_unique<lidar_viewer::BackgroundWorker>();
+  state.example_pending=false;state.example_dataset.reset();state.example_removing=true;
+  state.example_cache_future=state.example_cache_worker->Submit([kind] {
+    lidar_viewer::DeleteExampleCache(kind);return ViewerState::ExampleCacheResult{kind,{}};
+  });
+}
+
 void StartDrivingExample(ViewerState & state)
 {
-  if(state.live.Active() || state.loading_bag_source || state.folder_scan_future.valid() || state.bag_picker.Active()) return;
-  if(!state.example_dataset) state.example_dataset=std::make_unique<lidar_viewer::ExampleDataset>();
+  if(state.example_removing || state.live.Active() || state.loading_bag_source || state.folder_scan_future.valid() || state.bag_picker.Active()) return;
+  state.example_cache_kind.reset();
+  if(state.example_dataset && state.example_dataset->Progress().Active()) return;
+  if(!state.example_dataset || state.example_dataset->Definition().kind!=state.example_kind)
+    state.example_dataset=std::make_unique<lidar_viewer::ExampleDataset>(state.example_kind);
   state.example_panel=true;
   try {if(state.example_dataset->Start()) {state.example_pending=true;state.ui_error.clear();}}
   catch(const std::exception & error) {state.ui_error=error.what();}
@@ -2020,6 +2078,17 @@ void StartDrivingExample(ViewerState & state)
 
 void UpdateDrivingExample(ViewerState & state)
 {
+  if(state.example_cache_future.valid() && state.example_cache_future.wait_for(std::chrono::seconds(0))==std::future_status::ready) {
+    try {
+      const auto result=state.example_cache_future.get();
+      if(state.example_cache_kind==result.kind) state.example_cache_info=result.info;
+      if(state.example_removing) {
+        state.example_cache_kind=result.kind;state.example_cache_info=result.info;
+        SetTransientStatus(state,"Downloaded example deleted");std::cout<<"Example deleted | "<<lidar_viewer::DrivingExample(result.kind).id<<std::endl;
+      }
+    } catch(const std::exception & error) {state.example_cache_kind.reset();state.ui_error=error.what();}
+    state.example_removing=false;
+  }
   if(!state.example_dataset || !state.example_pending) return;
   const auto progress=state.example_dataset->Progress();
   if(progress.Active()) return;
@@ -2030,12 +2099,12 @@ void UpdateDrivingExample(ViewerState & state)
     const auto path=state.example_dataset->Directory();
     auto source=std::find_if(state.bag_sources.begin(),state.bag_sources.end(),[&](const auto & item){return item.path==path;});
     std::size_t index=static_cast<std::size_t>(source-state.bag_sources.begin());
-    if(source==state.bag_sources.end()) state.bag_sources.push_back({path,"Outdoor driving demo",{}, {}});
+    if(source==state.bag_sources.end()) state.bag_sources.push_back({path,state.example_dataset->Definition().title,{}, {}});
     OpenBagSource(state,index);
     if(state.loading_bag_source) state.input_load_autoplay=true;
     else if(!state.frames.empty() && lidar_viewer::IsDrivingExample(state.frames.front().path)) state.is_playing=true;
     state.example_panel=false;
-    std::cout<<"Example ready | cached "<<progress.cached<<" / "<<lidar_viewer::DrivingExampleFiles().size()<<std::endl;
+    std::cout<<"Example ready | cached "<<progress.cached<<" / "<<progress.total_files<<std::endl;
   } catch(const std::exception & error) {state.example_panel=false;state.ui_error=std::string("Example could not be opened: ")+error.what();}
 }
 
@@ -2303,7 +2372,10 @@ fs::path SettingsPath()
 
 std::string DetectDatasetProfile(const fs::path & input_path)
 {
-  if(lidar_viewer::IsDrivingExample(input_path)) return "example";
+  if(lidar_viewer::IsDrivingExample(input_path)) {
+    const auto folder=fs::is_directory(input_path) ? input_path : input_path.parent_path();
+    for(const auto & example:lidar_viewer::DrivingExamples()) if(folder.filename()==example.id) return example.profile;
+  }
   if(lidar_viewer::IsDatasetFile(input_path) || input_path.filename()=="metadata.json") return "dataset";
   if (IsRos2BagInput(input_path)) {
     return "rosbag";
@@ -3072,9 +3144,9 @@ void KeyCallback(GLFWwindow * window, int key, int, int action, int mods)
   auto * state = static_cast<ViewerState *>(glfwGetWindowUserPointer(window));
   if(state && action==GLFW_PRESS && key==GLFW_KEY_ESCAPE) {
     auto & owner=state->studio_parent ? *state->studio_parent : *state;
-    if(owner.example_panel && owner.example_dataset &&
+    if(owner.example_panel &&
         (!ImGui::GetCurrentContext() || (!ImGui::GetIO().WantTextInput && !ImGui::IsPopupOpen(nullptr,ImGuiPopupFlags_AnyPopupId)))) {
-      if(owner.example_dataset->Progress().Active()) owner.example_dataset->Cancel();else owner.example_panel=false;
+      if(owner.example_dataset && owner.example_dataset->Progress().Active()) owner.example_dataset->Cancel();else owner.example_panel=false;
       owner.example_pending=false;
       return;
     }
@@ -3240,7 +3312,8 @@ void Tip(const char * value)
 
 std::string BagLabel(const ViewerState & state,const BagSource & source)
 {
-  if(source.display_name=="Outdoor driving demo" && source.path.filename()=="driving-v1") return "Outdoor driving demo | 6 scans";
+  for(const auto & example:lidar_viewer::DrivingExamples())
+    if(source.path.filename()==example.id) return example.title;
   return (source.recording_date.empty() ? "Unknown date" :
     source.recording_date + "  " + source.recording_time) + "  |  " + SourceDuration(state,source) + "  |  " + source.display_name;
 }
@@ -4248,28 +4321,92 @@ void BuildDatasetPanel(ViewerState & state)
 
 void BuildExampleDownload(ViewerState & state,float scale)
 {
-  if(!state.example_panel || !state.example_dataset) return;
-  const auto progress=state.example_dataset->Progress();const auto display=ImGui::GetIO().DisplaySize;
+  if(!state.example_panel) return;
+  InspectDrivingExample(state);
+  const auto progress=state.example_dataset ? state.example_dataset->Progress() : lidar_viewer::ExampleProgress{};
+  const auto & example=lidar_viewer::DrivingExample(state.example_kind);
+  const auto display=ImGui::GetIO().DisplaySize;
   ImGui::SetNextWindowPos({display.x*.5f,display.y*.5f},ImGuiCond_Appearing,{.5f,.5f});
-  ImGui::SetNextWindowSize({std::min(460.f*scale,display.x-32*scale),0},ImGuiCond_Always);
-  ImGui::Begin("Outdoor driving example",nullptr,ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_AlwaysAutoResize);
-  ImGui::TextUnformatted("6 LiDAR scans | 12 MB | No login needed");
-  ImGui::TextDisabled("Public sample scans from Patchwork++");ImGui::Spacing();
-  if(progress.stage==lidar_viewer::ExampleStage::Ready && state.example_pending) ImGui::TextUnformatted("Opening example...");
-  else if(progress.Active()) {
-    ImGui::TextUnformatted(progress.stage==lidar_viewer::ExampleStage::Checking ? "Checking saved scans..." : "Downloading example...");
-    ImGui::ProgressBar(progress.total_bytes ? static_cast<float>(progress.bytes)/progress.total_bytes : 0,{-1,0});
-    ImGui::TextDisabled("%.1f / %.1f MB  |  %zu / 6 scans",progress.bytes/1000000.,progress.total_bytes/1000000.,progress.files);
-    if(ImGui::Button("Cancel")) {state.example_dataset->Cancel();state.example_pending=false;}
-    TraceUi("example_cancel");ImGui::SameLine();ImGui::TextDisabled("Esc");
+  ImGui::SetNextWindowSize({std::min(500.f*scale,display.x-32*scale),0},ImGuiCond_Always);
+  ImGui::Begin("Driving examples",nullptr,ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_AlwaysAutoResize);
+  const bool opening=progress.stage==lidar_viewer::ExampleStage::Ready && state.example_pending;
+  if(state.example_removing) ImGui::TextUnformatted("Deleting downloaded files...");
+  else if(progress.Active() || opening) {
+    ImGui::TextUnformatted(example.title);ImGui::Spacing();
+    if(opening) ImGui::TextUnformatted("Opening example...");
+    else {
+      ImGui::TextUnformatted(progress.stage==lidar_viewer::ExampleStage::Checking ? "Checking saved scans..." : "Downloading example...");
+      ImGui::ProgressBar(progress.total_bytes ? static_cast<float>(progress.bytes)/progress.total_bytes : 0,{-1,0});
+      ImGui::TextDisabled("%.1f / %.1f MB  |  %zu / %zu frames",progress.bytes/1000000.,progress.total_bytes/1000000.,progress.files,progress.total_files);
+      if(progress.eta_seconds>=0) {
+        const auto seconds=static_cast<unsigned>(std::ceil(progress.eta_seconds));
+        ImGui::TextDisabled("ETA ~%u:%02u",seconds/60,seconds%60);
+      } else ImGui::TextDisabled("ETA calculating...");
+      if(ImGui::Button("Cancel")) {state.example_dataset->Cancel();state.example_pending=false;}
+      TraceUi("example_cancel");ImGui::SameLine();ImGui::TextDisabled("Esc");
+    }
   } else {
+    ImGui::TextUnformatted("Outdoor driving | No login needed");ImGui::Spacing();
+    const auto choose=[&](lidar_viewer::ExampleKind kind) {
+      if(state.example_kind!=kind) {state.example_kind=kind;state.example_dataset.reset();state.example_pending=false;state.example_cache_kind.reset();state.example_cache_info={};}
+    };
+    const auto & selected=lidar_viewer::DrivingExample(state.example_kind);
+    ImGui::SetNextItemWidth(-1);
+    if(ImGui::BeginCombo("##ExampleSensor",selected.sensor)) {
+      for(const auto & option:lidar_viewer::DrivingExamples()) {
+        if(option.kind!=lidar_viewer::ExampleKind::Quick && option.count!=300) continue;
+        const auto label=std::string(option.sensor)+(option.channels ? " | "+std::to_string(option.channels)+" channels" : " | 6 scans");
+        if(ImGui::Selectable(label.c_str(),std::string(selected.sensor)==option.sensor)) {
+          auto kind=option.kind;
+          if(selected.count==600 && option.channels) for(const auto & longer:lidar_viewer::DrivingExamples())
+            if(longer.files==option.files && longer.count==600) kind=longer.kind;
+          choose(kind);
+        }
+        TraceUi(option.kind==lidar_viewer::ExampleKind::Quick ? "example_quick" :
+          option.kind==lidar_viewer::ExampleKind::Urban30 ? "example_xt32" :
+          option.kind==lidar_viewer::ExampleKind::Velodyne30 ? "example_hdl32" : "example_at128");
+      }
+      ImGui::EndCombo();
+    }
+    TraceUi("example_sensor");
+    const auto & sensor=lidar_viewer::DrivingExample(state.example_kind);
+    if(sensor.channels) {
+      ImGui::TextDisabled("%u channels | 10 Hz | %s",sensor.channels,sensor.channels==128 ? "120 deg forward view" : "360 deg view");
+      ImGui::Spacing();
+      for(const auto & length:lidar_viewer::DrivingExamples()) {
+        if(length.files!=sensor.files) continue;
+        const double mb=length.TotalBytes()/1000000.;
+        std::ostringstream label;label<<(length.count==300 ? "30 seconds - 300 frames" : "1 minute - 600 frames")<<" (";
+        if(mb>=1000) label<<std::fixed<<std::setprecision(2)<<mb/1000<<" GB)";
+        else label<<std::fixed<<std::setprecision(0)<<mb<<" MB)";
+        if(ImGui::RadioButton(label.str().c_str(),state.example_kind==length.kind)) choose(length.kind);
+        TraceUi(length.count==300 ? "example_30s" : "example_60s");
+      }
+      ImGui::Spacing();
+      ImGui::TextDisabled("UrbanV2X | Hong Kong Science Park");
+      ImGui::TextWrapped("Data: TAS Lab, Hong Kong Polytechnic University. CC BY-NC-SA 4.0 (non-commercial).");
+      ImGui::TextDisabled("Saved scans are reused. No labels or IMU included.");
+    } else ImGui::TextDisabled("6 public sample scans | 12 MB | Patchwork++");
+    ImGui::Spacing();
     if(progress.stage==lidar_viewer::ExampleStage::Failed) {
       ImGui::TextColored({1,.6f,.5f,1},"Download could not finish");ImGui::TextWrapped("%s",progress.error.c_str());
-    } else ImGui::TextUnformatted("Download canceled. Saved scans are kept.");
-    if(ImGui::Button("Retry")) StartDrivingExample(state);
-    TraceUi("example_retry");ImGui::SameLine();
+    } else if(progress.stage==lidar_viewer::ExampleStage::Canceled) ImGui::TextDisabled("Download canceled. Completed scans are kept.");
+    const auto & info=state.example_cache_info;
+    if(state.example_cache_future.valid()) ImGui::TextDisabled("Checking saved files...");
+    else if(info.files) ImGui::TextDisabled("Saved: %zu / %zu frames | %.1f MB",info.files,sensor.count,info.bytes/1000000.);
+    else ImGui::TextDisabled("Not downloaded");
+    ImGui::Spacing();
+    const bool saved=info.files==sensor.count;
+    if(ImGui::Button(progress.stage==lidar_viewer::ExampleStage::Failed ? "Retry" : saved ? "Open saved recording" : "Download and open",{200*scale,0})) StartDrivingExample(state);
+    TraceUi("example_start");ImGui::SameLine();
     if(ImGui::Button("Close")) state.example_panel=false;
     TraceUi("example_close");
+    if(info.files) {
+      ImGui::SameLine();ImGui::BeginDisabled(state.export_future.valid() || state.loading_bag_source.has_value());
+      if(lidar_viewer::ActionButton("##DeleteExample",lidar_viewer::UiIcon::Trash,"Delete download",{0,0},scale)) DeleteDrivingExample(state);
+      TraceUi("example_delete");ImGui::EndDisabled();
+      Tip("Delete this cached recording. If it is open, playback closes first. Other lengths, sensors, exports and original recordings are kept. Shared frames remain on disk while another cached length uses them.");
+    }
   }
   ImGui::End();
 }
@@ -4280,7 +4417,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   const float s = layout.scale;
   bool reprocess = false, alignment_changed=false, refresh_objects=false, refresh_detector=false;
   const bool has_input = state.live_mode ? state.live_has_frame : !state.frames.empty();
-  const bool example_busy=state.example_dataset && state.example_dataset->Progress().Active();
+  const bool example_busy=state.example_removing || (state.example_dataset && state.example_dataset->Progress().Active());
   const bool dataset_input=state.review_window || state.dataset_profile=="dataset" || (!state.live_mode && !state.frames.empty() && state.frames.front().dataset_sample!=nullptr);
   BeginPanel("Header", layout.header, false);
   ImGui::SetCursorPosY(15.f * s);
@@ -4301,8 +4438,8 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     TraceUi("open_input_folder");
     Tip("Choose a folder once to list all its recordings in the playback source selector.");
     ImGui::Separator();
-    if(ImGui::MenuItem("Try driving example",nullptr,false,!example_busy && !state.live.Active())) StartDrivingExample(state);
-    TraceUi("open_example");Tip("Download six public outdoor LiDAR scans (12 MB). No account, Python or ROS needed. Cached scans are reused.");
+    if(ImGui::MenuItem("Driving examples...",nullptr,false,!example_busy && !state.live.Active())) state.example_panel=true;
+    TraceUi("open_example");Tip("Compare 32- and 128-channel driving scans: choose a sensor and 30 seconds or 1 minute. No account needed. Download size is shown before starting.");
     ImGui::EndPopup();
   }
   ImGui::SameLine();
@@ -4992,7 +5129,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   else if (state.live_mode) ImGui::TextDisabled("%zu points | display %llu / received %llu | %s", state.status_points,
     static_cast<unsigned long long>(state.status_live_display), static_cast<unsigned long long>(state.status_live_received),
     !state.live_stats.connected ? "disconnected" : (state.live_paused ? "frozen" : (state.live_stats.cloud_age_ms > 1000 ? "stream stale" : "live")));
-  else if (!has_input) ImGui::TextDisabled("Open a file or try Open... > Try driving example.");
+  else if (!has_input) ImGui::TextDisabled("Open a file or choose Open... > Driving examples.");
   else ImGui::TextDisabled("%zu points   |   %s",state.status_points,state.status_source.c_str());
   ImGui::PopClipRect();
   ImGui::SameLine(layout.status.w-metrics_width);
