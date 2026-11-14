@@ -9,7 +9,13 @@ set(CPACK_PACKAGE_FILE_NAME "lidar_studio-${CPACK_PACKAGE_VERSION}-${CMAKE_SYSTE
 set(CPACK_PACKAGE_DIRECTORY "${CMAKE_BINARY_DIR}/packages")
 
 if(APPLE)
+  if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+    execute_process(COMMAND sw_vers -productVersion OUTPUT_VARIABLE lidar_macos_version
+      OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
+    string(REGEX MATCH "^[0-9]+\\.[0-9]+" CMAKE_OSX_DEPLOYMENT_TARGET "${lidar_macos_version}")
+  endif()
   set_target_properties(lidar_studio PROPERTIES MACOSX_BUNDLE TRUE
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/cmake/macos/Info.plist.in"
     MACOSX_BUNDLE_BUNDLE_NAME "LiDAR Studio"
     MACOSX_BUNDLE_ICON_FILE "lidar-studio.icns"
     MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.yoojuno.lidar"
@@ -94,6 +100,8 @@ if(APPLE)
     set(BU_CHMOD_BUNDLE_ITEMS ON)
     fixup_bundle("${CMAKE_INSTALL_PREFIX}/lidar_studio.app" "" "${lidar_fixup_dirs}")
     execute_process(COMMAND codesign --force --deep --sign - "${CMAKE_INSTALL_PREFIX}/lidar_studio.app"
+      COMMAND_ERROR_IS_FATAL ANY)
+    execute_process(COMMAND codesign --verify --deep --strict --verbose=2 "${CMAKE_INSTALL_PREFIX}/lidar_studio.app"
       COMMAND_ERROR_IS_FATAL ANY)
   ]])
 endif()

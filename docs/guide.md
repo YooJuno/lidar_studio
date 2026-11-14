@@ -82,7 +82,7 @@ source /opt/ros/jazzy/setup.bash
 | --- | --- | --- |
 | Ubuntu 24.04 x86_64 `.deb`, `.tar.gz` | BIN·ROS bag·실시간 LiDAR/IMU·MCAP 녹화·ROI·지면분리 | ROS 2 Jazzy APT 저장소 및 런타임 |
 | Windows x64 `.zip` | BIN·ROI·지면분리·네이티브 파일 선택 | 포함된 DLL과 `lidar_studio.exe`를 같은 폴더에 유지 |
-| macOS `.zip`, `.dmg` | BIN·ROI·지면분리·네이티브 파일 선택 | 패키지의 CPU 아키텍처에 맞는 macOS, OpenGL 4.1 |
+| macOS ARM64 `.zip`, `.dmg` | BIN·ROI·지면분리·네이티브 파일 선택 | Apple Silicon, macOS 15 이상 (Intel Mac 미지원) |
 
 배포 파일은 CPU 빌드입니다. CUDA는 소스에서 선택적으로 켭니다. Windows/macOS 배포에는 ROS 2가 포함되지 않아 ROS bag·실시간 ROS 연결은 비활성화됩니다. macOS 번들은 ad-hoc 서명이며 Apple Developer ID 서명·공증은 포함하지 않습니다.
 
@@ -94,6 +94,25 @@ source /opt/ros/jazzy/setup.bash
 - 소스 빌드는 기존처럼 프로젝트 `config/profiles`에 저장합니다. 사용자 경로를 쓰려면 위 CMake 옵션을 켭니다.
 
 Windows 소스 빌드는 저장소의 `vcpkg.json`과 `cmake/triplets/x64-windows-release.cmake`를 사용합니다. macOS 의존성은 `brew install pcl glfw glew nanoflann ninja`로 설치합니다. 두 플랫폼 모두 기본 CI 설정은 `-DLIDAR_VIEWER_ENABLE_CUDA=OFF -DLIDAR_VIEWER_ENABLE_ROSBAG=OFF`입니다.
+
+<a id="macos-first-launch"></a>
+### macOS 첫 실행
+
+현재 macOS 배포는 **Apple Silicon / macOS 15 이상**을 지원합니다. 앱뿐 아니라 포함한 라이브러리에도 같은 최소 OS 조건이 적용됩니다. Intel 또는 이전 macOS에서는 ARM64 배포본을 사용할 수 없습니다.
+
+앱은 임시(ad-hoc) 서명이며 Apple 공증이 없습니다. 빌드·실행 검사를 통과해도 다운로드한 앱의 Gatekeeper 허용을 의미하지 않습니다. [Apple의 공증 안내](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)를 참고하세요.
+
+GitHub 공식 릴리스에서 받은 앱을 Applications에 복사합니다. ‘개발자를 확인할 수 없음’이면 **시스템 설정 → 개인정보 보호 및 보안 → 확인 없이 열기**를 사용할 수 있습니다. ‘손상되었기 때문에 열 수 없음’이면 먼저 릴리스의 `SHA256SUMS`로 다운로드를 확인하고 다음을 실행합니다. 서명 검사가 실패하면 뒤의 명령은 실행되지 않습니다. 검사 실패 메시지를 확인하고 다시 다운로드하세요.
+
+```bash
+codesign --verify --deep --strict "/Applications/lidar_studio.app" &&
+xattr -dr com.apple.quarantine "/Applications/lidar_studio.app" &&
+open "/Applications/lidar_studio.app"
+```
+
+이 명령은 해당 앱에만 예외를 적용합니다. 시스템 전체의 Gatekeeper 설정은 변경하지 않습니다. 이후에도 종료되면 터미널에서 `/Applications/lidar_studio.app/Contents/MacOS/lidar_studio`를 실행해 오류를 확인합니다.
+
+CI에서는 ZIP·DMG를 각각 추출해 서명 무결성, 라이브러리 포함, CLI 실행, 점군 파일 읽기, GUI 렌더링을 검사합니다. Apple 공증 여부는 별도로 표시합니다. 일반 다운로드에서 경고 없는 실행을 제공하려면 Developer ID 인증서로 서명하고 Apple 공증을 완료해야 합니다.
 
 GitHub Actions의 **Build and release**는 PR·main push·수동 실행에서 세 플랫폼을 빌드하고 CTest와 Ubuntu 실시간 GUI 검사와 ROI 생성·편집·복구 검사를 실행한 뒤 패키지를 아티팩트로 올립니다. **main 빌드가 세 플랫폼에서 모두 통과하면 버전을 자동 생성하고 GitHub Release에 패키지와 SHA256SUMS를 게시합니다.** CMake의 major/minor와 워크플로 실행 번호로 버전을 만들며, `vMAJOR.MINOR.PATCH` 태그 빌드는 지정한 버전을 유지합니다. 모든 파일의 업로드·검증이 끝나기 전에는 초안 상태를 유지하고, 완료한 릴리스를 Latest로 표시합니다. 이미 게시된 같은 버전은 재실행해도 덮어쓰지 않습니다. 릴리스용 비밀 토큰은 추가로 필요하지 않고, 해당 작업의 `GITHUB_TOKEN`에만 `contents: write` 권한을 부여합니다.
 

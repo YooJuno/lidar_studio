@@ -84,7 +84,9 @@ def publish(directory, repo, sha, version, tag, run_url, gh=None):
         '- **Ubuntu 24.04:** ROS 2 Jazzy bag/live LiDAR and IMU support, MCAP recording, ground segmentation and ROI tools.\n'
         '- **Windows / macOS:** standalone CPU point-cloud inspection, ground segmentation, detection adapters and ROI/dataset tools; ROS 2 is not bundled.\n'
         '- Learned detection and training require the optional model/runtime setup described in the included README.\n'
-        '- macOS bundles use ad-hoc signing and are not notarized.\n\n'
+        '- **macOS requires Apple Silicon and macOS 15 or later.** Intel Macs are not supported by the ARM64 package.\n'
+        '- macOS bundles are ad-hoc signed and **not Apple-notarized**; Gatekeeper can block downloaded apps. '
+        f'[First-launch instructions](https://github.com/{repo}/blob/{sha}/docs/guide.md#macos-first-launch).\n\n'
         'Download the package for your platform and verify it with `SHA256SUMS`.\n'
     )
     if release is None:
