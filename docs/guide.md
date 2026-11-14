@@ -95,7 +95,7 @@ source /opt/ros/jazzy/setup.bash
 
 Windows 소스 빌드는 저장소의 `vcpkg.json`과 `cmake/triplets/x64-windows-release.cmake`를 사용합니다. macOS 의존성은 `brew install pcl glfw glew nanoflann ninja`로 설치합니다. 두 플랫폼 모두 기본 CI 설정은 `-DLIDAR_VIEWER_ENABLE_CUDA=OFF -DLIDAR_VIEWER_ENABLE_ROSBAG=OFF`입니다.
 
-GitHub Actions의 **Build and release**는 PR·main push·수동 실행에서 세 플랫폼을 빌드하고 CTest와 Ubuntu 실시간 GUI 검사와 ROI 생성·편집·복구 검사를 실행한 뒤 패키지를 아티팩트로 올립니다. **`v*` 태그를 push하면 모든 플랫폼이 통과한 후에만 GitHub Release에 패키지와 SHA256SUMS를 게시합니다.** 릴리스용 비밀 토큰은 추가로 필요하지 않고, 해당 작업의 `GITHUB_TOKEN`에만 `contents: write` 권한을 부여합니다.
+GitHub Actions의 **Build and release**는 PR·main push·수동 실행에서 세 플랫폼을 빌드하고 CTest와 Ubuntu 실시간 GUI 검사와 ROI 생성·편집·복구 검사를 실행한 뒤 패키지를 아티팩트로 올립니다. **main 빌드가 세 플랫폼에서 모두 통과하면 버전을 자동 생성하고 GitHub Release에 패키지와 SHA256SUMS를 게시합니다.** CMake의 major/minor와 워크플로 실행 번호로 버전을 만들며, `vMAJOR.MINOR.PATCH` 태그 빌드는 지정한 버전을 유지합니다. 모든 파일의 업로드·검증이 끝나기 전에는 초안 상태를 유지하고, 완료한 릴리스를 Latest로 표시합니다. 이미 게시된 같은 버전은 재실행해도 덮어쓰지 않습니다. 릴리스용 비밀 토큰은 추가로 필요하지 않고, 해당 작업의 `GITHUB_TOKEN`에만 `contents: write` 권한을 부여합니다.
 
 ## 수집한 ROS 2 bag 열기
 

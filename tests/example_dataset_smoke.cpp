@@ -113,20 +113,20 @@ int main(int argc,char ** argv) {
 #else
       setenv("XDG_DATA_HOME",data.u8string().c_str(),1);
 #endif
-      const auto small=DrivingExampleDirectory(ExampleKind::Urban30),large=DrivingExampleDirectory(ExampleKind::Urban60);
-      fs::create_directories(small);fs::create_directories(large);
-      const auto name=long_drive.files[0].name;{std::ofstream output(small/name);output<<"shared scan";}
-      fs::create_hard_link(small/name,large/name);
+      const auto short_cache=DrivingExampleDirectory(ExampleKind::Urban30),long_cache=DrivingExampleDirectory(ExampleKind::Urban60);
+      fs::create_directories(short_cache);fs::create_directories(long_cache);
+      const auto name=long_drive.files[0].name;{std::ofstream output(short_cache/name);output<<"shared scan";}
+      fs::create_hard_link(short_cache/name,long_cache/name);
       const auto info=InspectExampleCache(ExampleKind::Urban30);Check(info.files==1 && info.bytes==11,"Saved cache info is incorrect");
-      DeleteExampleCache(ExampleKind::Urban30);Check(!fs::exists(small) && fs::file_size(large/name)==11,"Deleting one length removed shared data in another");
+      DeleteExampleCache(ExampleKind::Urban30);Check(!fs::exists(short_cache) && fs::file_size(long_cache/name)==11,"Deleting one length removed shared data in another");
       Check(InspectExampleCache(ExampleKind::Urban30).files==0,"Deleted example is still listed as saved");
-      DeleteExampleCache(ExampleKind::Urban30);DeleteExampleCache(ExampleKind::Urban60);Check(!fs::exists(large),"Cache deletion did not remove its directory");
-      fs::create_directories(small/"exports");
-      {std::ofstream output(small/name);output<<"downloaded";}
-      {std::ofstream output(small/"exports/points.npy");output<<"user export";}
-      {std::ofstream output(small/(std::string(name)+".123-456.part"));output<<"partial";}
+      DeleteExampleCache(ExampleKind::Urban30);DeleteExampleCache(ExampleKind::Urban60);Check(!fs::exists(long_cache),"Cache deletion did not remove its directory");
+      fs::create_directories(short_cache/"exports");
+      {std::ofstream output(short_cache/name);output<<"downloaded";}
+      {std::ofstream output(short_cache/"exports/points.npy");output<<"user export";}
+      {std::ofstream output(short_cache/(std::string(name)+".123-456.part"));output<<"partial";}
       DeleteExampleCache(ExampleKind::Urban30);
-      Check(fs::exists(small/"exports/points.npy") && !fs::exists(small/name) && !fs::exists(small/(std::string(name)+".123-456.part")),"Deleting downloads removed an export or left a download fragment");
+      Check(fs::exists(short_cache/"exports/points.npy") && !fs::exists(short_cache/name) && !fs::exists(short_cache/(std::string(name)+".123-456.part")),"Deleting downloads removed an export or left a download fragment");
     }
     fs::remove_all(temporary);std::cout<<"Example cache, repair, cancel, retry and integrity checks passed\n";
   } catch(const std::exception & error) {std::cerr<<error.what()<<'\n';fs::remove_all(temporary);return 1;}

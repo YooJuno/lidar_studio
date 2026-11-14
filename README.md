@@ -4,7 +4,7 @@
 
 A desktop workspace for LiDAR playback, ground segmentation, clustering, object detection and interactive ROI editing—from a raw scan to a dataset ready for annotation.
 
-[Download](https://github.com/YooJuno/lidar_studio/releases) · [Latest builds](https://github.com/YooJuno/lidar_studio/actions/workflows/build-release.yml) · [Detailed guide (Korean)](docs/guide.md)
+[Download latest](https://github.com/YooJuno/lidar_studio/releases/latest) · [Latest builds](https://github.com/YooJuno/lidar_studio/actions/workflows/build-release.yml) · [Detailed guide (Korean)](docs/guide.md)
 
 ## Highlights
 
@@ -34,7 +34,7 @@ Both previews use the same **90 consecutive KITTI Raw scans**, shown at the sour
 
 ## Get started
 
-Get a package from [Releases](https://github.com/YooJuno/lidar_studio/releases) or an artifact from [Actions](https://github.com/YooJuno/lidar_studio/actions/workflows/build-release.yml).
+Get the newest verified package from [Latest release](https://github.com/YooJuno/lidar_studio/releases/latest) or an artifact from [Actions](https://github.com/YooJuno/lidar_studio/actions/workflows/build-release.yml).
 
 | Platform | Launch | Inputs |
 | --- | --- | --- |
@@ -121,4 +121,4 @@ Class and score changes filter cached predictions without repeating inference. D
 
 C++17 · OpenGL · GLFW · Dear ImGui · PCL · libcurl · OpenSSL. Ground methods integrate pinned [FugSeg](https://github.com/Leo-YuLi/FugSeg), [GSeg3D](https://github.com/dfki-ric/ground_segmentation) and [Patchwork++](https://github.com/url-kaist/patchwork-plusplus) implementations.
 
-Run checks with `ctest --test-dir build --output-on-failure`. GitHub Actions builds Ubuntu, Windows and macOS packages. Passing builds for `v*` tags publish release assets. The [guide](docs/guide.md) contains advanced settings and validation details. [KITTI credit and screenshot license](docs/images/README.md).
+Run checks with `ctest --test-dir build --output-on-failure`. GitHub Actions builds Ubuntu, Windows and macOS packages. Every successful **main** build automatically publishes a versioned Release after **all three platforms** pass. Versions use the CMake major/minor series and the workflow run number; explicit `vMAJOR.MINOR.PATCH` tags retain their version. Packages and checksums are uploaded before the release becomes public. The [guide](docs/guide.md) contains advanced settings and validation details. [KITTI credit and screenshot license](docs/images/README.md).

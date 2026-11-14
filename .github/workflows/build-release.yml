@@ -15,8 +15,27 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
+  metadata:
+    name: Resolve release version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Verify release version rules
+        run: |
+          python3 tests/release_metadata_smoke.py
+          python3 tests/release_publish_smoke.py
+      - name: Resolve shared package version
+        id: version
+        run: python3 tools/release_metadata.py >> "$GITHUB_OUTPUT"
+
   ubuntu:
     name: Ubuntu 24.04 / ROS 2 Jazzy
+    needs: metadata
+    env:
+      RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -42,11 +61,9 @@ jobs:
       - name: Configure
         run: |
           source /opt/ros/jazzy/setup.bash
-          args=()
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then args+=(-DCPACK_PACKAGE_VERSION="${GITHUB_REF_NAME#v}"); fi
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
             -DLIDAR_VIEWER_ENABLE_CUDA=OFF -DLIDAR_VIEWER_ENABLE_ROSBAG=ON \
-            -DLIDAR_VIEWER_USER_SETTINGS=ON "${args[@]}"
+            -DLIDAR_VIEWER_USER_SETTINGS=ON -DCPACK_PACKAGE_VERSION="$RELEASE_VERSION"
       - name: Build and test
         run: |
           source /opt/ros/jazzy/setup.bash
@@ -210,6 +227,7 @@ jobs:
 
   portable:
     name: ${{ matrix.name }} / CPU
+    needs: metadata
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     strategy:
@@ -221,6 +239,7 @@ jobs:
           - os: macos-14
             name: macOS
     env:
+      RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-binary-cache
       VCPKG_MAX_CONCURRENCY: '2'
     steps:
@@ -261,22 +280,18 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $versionArgs = @()
-          if ($env:GITHUB_REF.StartsWith('refs/tags/v')) { $versionArgs += "-DCPACK_PACKAGE_VERSION=$($env:GITHUB_REF_NAME.Substring(1))" }
           cmake -S . -B build -G 'Visual Studio 17 2022' -A x64 `
             -DCMAKE_TOOLCHAIN_FILE="$env:GITHUB_WORKSPACE/.vcpkg/scripts/buildsystems/vcpkg.cmake" `
             -DVCPKG_OVERLAY_TRIPLETS="$env:GITHUB_WORKSPACE/cmake/triplets" `
             -DVCPKG_TARGET_TRIPLET=x64-windows-release `
             -DLIDAR_VIEWER_ENABLE_CUDA=OFF -DLIDAR_VIEWER_ENABLE_ROSBAG=OFF `
-            -DLIDAR_VIEWER_USER_SETTINGS=ON @versionArgs
+            -DLIDAR_VIEWER_USER_SETTINGS=ON -DCPACK_PACKAGE_VERSION="$env:RELEASE_VERSION"
       - name: Configure macOS
         if: runner.os == 'macOS'
         run: |
-          args=()
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then args+=(-DCPACK_PACKAGE_VERSION="${GITHUB_REF_NAME#v}"); fi
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH="$(brew --prefix)" -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" -DLIDAR_VIEWER_ENABLE_CUDA=OFF \
-            -DLIDAR_VIEWER_ENABLE_ROSBAG=OFF -DLIDAR_VIEWER_USER_SETTINGS=ON "${args[@]}"
+            -DLIDAR_VIEWER_ENABLE_ROSBAG=OFF -DLIDAR_VIEWER_USER_SETTINGS=ON -DCPACK_PACKAGE_VERSION="$RELEASE_VERSION"
       - name: Build
         run: cmake --build build --config Release --parallel 2
       - name: Test
@@ -323,8 +338,8 @@ jobs:
 
   release:
     name: Publish GitHub release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [ubuntu, portable]
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    needs: [metadata, ubuntu, portable]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -335,16 +350,9 @@ jobs:
           pattern: packages-*
           merge-multiple: true
           path: release-assets
-      - name: Checksums and release
+      - name: Verify packages and publish release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          cd release-assets
-          sha256sum ./*.deb ./*.tar.gz ./*.zip ./*.dmg > SHA256SUMS
-          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
-              --title "LiDAR Viewer $RELEASE_TAG" --generate-notes \
-              --notes 'Ubuntu 24.04: ROS 2 Jazzy live LiDAR/IMU, display pause/resume and raw MCAP recording. Windows/macOS: native CPU viewer for BIN point clouds, yaw ROI and ground segmentation; these packages do not bundle ROS 2. macOS bundles use ad-hoc signing and are not notarized. See README for runtime dependencies and installation.'
-          fi
-          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" ./* --clobber
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+        run: python3 tools/publish_release.py --assets release-assets
