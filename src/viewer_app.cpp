@@ -22,6 +22,7 @@
 #include "lidar_viewer/roi_export.hpp"
 #include "lidar_viewer/display_alignment.hpp"
 #include "lidar_viewer/ui_icons.hpp"
+#include "lidar_viewer/ui_theme.hpp"
 #include "lidar_viewer/app_icon.hpp"
 #include "lidar_viewer/file_dialog.hpp"
 #include "lidar_viewer/live_io.hpp"
@@ -65,6 +66,7 @@
 
 namespace
 {
+namespace ui=lidar_viewer::ui;
 constexpr int kWindowWidth = 1600;
 constexpr int kWindowHeight = 960;
 constexpr float kOrbitSensitivity = 0.0045f;
@@ -252,6 +254,10 @@ GLuint CreateProgram()
     uniform float u_min_height;
     uniform float u_max_height;
     uniform float u_range_max;
+    uniform vec4 u_label_colors[8];
+    uniform vec4 u_unlabeled_color;
+    uniform vec4 u_background_color;
+    uniform vec4 u_plain_color;
 
     vec3 turbo(float x) {
       x = clamp(x, 0.0, 1.0);
@@ -268,9 +274,7 @@ GLuint CreateProgram()
         frag_color=vec4(clamp(turbo(v_range/max(u_range_max,0.1)),0.0,1.0),1.0);return;
       }
       if (u_color_mode == 3) {
-        vec3 colors[8]=vec3[8](vec3(1,.59,.31),vec3(.40,.61,1),vec3(.39,.84,.55),vec3(.70,.54,1),
-          vec3(.97,.49,.73),vec3(.96,.82,.35),vec3(.33,.80,.87),vec3(.98,.44,.44));
-        frag_color=vec4(v_label<0 ? vec3(.28,.32,.38) : v_label==0 ? vec3(.68,.72,.78) : colors[(v_label-1)%8],1);
+        frag_color=v_label<0 ? u_unlabeled_color : v_label==0 ? u_background_color : u_label_colors[(v_label-1)%8];
         return;
       }
       if (v_intensity < -0.5) {
@@ -278,7 +282,7 @@ GLuint CreateProgram()
         return;
       }
       if (u_color_mode == 2) {
-        frag_color = vec4(0.82, 0.88, 0.94, 1.0);
+        frag_color = u_plain_color;
         return;
       }
       float value = v_intensity;
@@ -2875,6 +2879,8 @@ void LoadAppSettings(ViewerState & state)
         state.ui_scale=std::clamp(lidar_viewer::settings::ParseFiniteFloat(line.substr(9)),.75f,1.5f);
       else if (line.rfind("inspector_width=",0)==0)
         state.inspector_width=std::clamp(lidar_viewer::settings::ParseFiniteFloat(line.substr(16)),280.f,520.f);
+      else if (line=="theme=light" || line=="theme=dark")
+        ui::ApplicationTheme()=line=="theme=light" ? ui::Theme::Light : ui::Theme::Dark;
     }
   } catch (const std::exception & error) {state.app_settings_error=error.what();}
   state.app_settings_loaded=true;
@@ -2885,7 +2891,7 @@ void SaveAppSettings(ViewerState & state)
   try {
     const auto folder=lidar_viewer::UserConfigurationDirectory();fs::create_directories(folder);
     lidar_viewer::settings::AtomicWriteText(folder/"app_settings.cfg","ui_scale="+std::to_string(state.ui_scale)+
-      "\ninspector_width="+std::to_string(state.inspector_width)+"\n");
+      "\ninspector_width="+std::to_string(state.inspector_width)+"\ntheme="+ui::ThemeName()+"\n");
     state.app_settings_dirty=false;state.app_settings_error.clear();
   } catch (const std::exception & error) {state.app_settings_error=error.what();}
 }
@@ -3310,7 +3316,7 @@ void ConfigureInterface(GLFWwindow * window, ViewerState & state)
     io.Fonts->AddFontFromFileTTF(cjk, 17.f * state.font_raster_scale, &merged, io.Fonts->GetGlyphRangesKorean());
   }
   auto & style = ImGui::GetStyle();
-  ImGui::StyleColorsDark(&style);
+  ui::ApplyThemeColors(style);
   style.WindowPadding = {16, 16};
   style.FramePadding = {10, 7};
   style.ItemSpacing = {10, 10};
@@ -3323,26 +3329,6 @@ void ConfigureInterface(GLFWwindow * window, ViewerState & state)
   style.WindowBorderSize = 1;
   style.FrameBorderSize = 0;
   style.ScrollbarSize = 10;
-  style.Colors[ImGuiCol_Text] = {0.90f, 0.93f, 0.97f, 1};
-  style.Colors[ImGuiCol_TextDisabled] = {0.58f, 0.65f, 0.74f, 1};
-  style.Colors[ImGuiCol_WindowBg] = {0.075f, 0.092f, 0.12f, 1};
-  style.Colors[ImGuiCol_PopupBg] = {0.09f, 0.11f, 0.145f, 1};
-  style.Colors[ImGuiCol_Border] = {0.16f, 0.20f, 0.26f, 1};
-  style.Colors[ImGuiCol_FrameBg] = {0.12f, 0.15f, 0.195f, 1};
-  style.Colors[ImGuiCol_FrameBgHovered] = {0.17f, 0.22f, 0.285f, 1};
-  style.Colors[ImGuiCol_FrameBgActive] = {0.19f, 0.27f, 0.35f, 1};
-  style.Colors[ImGuiCol_Button] = {0.13f, 0.18f, 0.24f, 1};
-  style.Colors[ImGuiCol_ButtonHovered] = {0.19f, 0.29f, 0.39f, 1};
-  style.Colors[ImGuiCol_ButtonActive] = {0.23f, 0.37f, 0.49f, 1};
-  style.Colors[ImGuiCol_CheckMark] = {0.31f, 0.77f, 0.91f, 1};
-  style.Colors[ImGuiCol_SliderGrab] = {0.31f, 0.77f, 0.91f, 1};
-  style.Colors[ImGuiCol_SliderGrabActive] = {0.49f, 0.88f, 1.f, 1};
-  style.Colors[ImGuiCol_Header] = {0.12f, 0.16f, 0.21f, 1};
-  style.Colors[ImGuiCol_HeaderHovered] = {0.18f, 0.35f, 0.46f, 1};
-  style.Colors[ImGuiCol_Tab] = {0.10f, 0.135f, 0.18f, 1};
-  style.Colors[ImGuiCol_TabHovered] = {0.19f, 0.31f, 0.41f, 1};
-  style.Colors[ImGuiCol_TabSelected] = {0.13f, 0.32f, 0.40f, 1};
-  style.Colors[ImGuiCol_TabSelectedOverline] = {.31f,.77f,.91f,1};
   if (!ImGui_ImplGlfw_InitForOpenGL(window, true) || !ImGui_ImplOpenGL3_Init("#version 330")) {
     throw std::runtime_error("Failed to initialize the interface");
   }
@@ -3360,7 +3346,7 @@ void BeginPanel(const char * name, const lidar_viewer::UiRect & rect, bool scrol
 void SectionTitle(const char * title)
 {
   ImGui::Spacing();
-  ImGui::TextColored({0.62f, 0.73f, 0.85f, 1.f}, "%s", title);
+  ImGui::TextColored(ui::InfoColor(), "%s", title);
   ImGui::Separator();
 }
 
@@ -3593,7 +3579,7 @@ void BuildFolderPicker(ViewerState & state)
   if (!navigate.empty()) BrowseFolder(state, navigate);
   ImGui::TextDisabled("Double-click a folder to open it.");
   ImGui::EndDisabled();
-  if (!state.folder_error.empty()) ImGui::TextColored({1.f, .56f, .48f, 1}, "%s", state.folder_error.c_str());
+  if (!state.folder_error.empty()) ImGui::TextColored(ui::ErrorColor(), "%s", state.folder_error.c_str());
   if (scanning) ImGui::TextUnformatted("Searching for recordings...");
   ImGui::BeginDisabled(scanning);
   if (ImGui::Button("Add this folder")) {
@@ -3642,7 +3628,7 @@ void BuildLiveDialog(ViewerState & state)
     ImGui::Text("Recorded: %llu messages / %.1f MiB / %llu dropped",
       static_cast<unsigned long long>(state.live_stats.recorded_messages), state.live_stats.recorded_bytes / 1048576.,
       static_cast<unsigned long long>(state.live_stats.record_dropped));
-    if (!state.live_stats.record_error.empty()) ImGui::TextColored({1,.56f,.48f,1}, "%s", state.live_stats.record_error.c_str());
+    if (!state.live_stats.record_error.empty()) ImGui::TextColored(ui::ErrorColor(), "%s", state.live_stats.record_error.c_str());
   }
   ImGui::Separator();
   ImGui::BeginDisabled(!available);
@@ -3706,7 +3692,7 @@ void BuildInputLoading(ViewerState & state)
   const float width=std::min(520*s,view.w-24*s), height=std::min(264*s,view.h-20*s);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,{20*s,16*s});
   BeginPanel("Input loading",{view.x+(view.w-width)*.5f,view.y+(view.h-height)*.5f,width,height});
-  ImGui::TextColored({.48f,.82f,.94f,1},"%s",canceled ? "Canceling..." : lidar_viewer::InputLoadStageName(progress.stage));
+  ImGui::TextColored(ui::InfoColor(),"%s",canceled ? "Canceling..." : lidar_viewer::InputLoadStageName(progress.stage));
   ImGui::Spacing();
   const auto & source=state.bag_sources[*state.loading_bag_source];
   // Long paths stay available on hover without expanding the loading card.
@@ -3904,7 +3890,7 @@ void BuildRoiExportDialog(ViewerState & state)
     TraceUi("export_cancel");ImGui::EndDisabled();ImGui::SameLine();
   } else {
     if (!state.export_message.empty()) {
-      ImGui::TextColored({.42f,.85f,.65f,1},"%s",state.export_message.c_str());
+      ImGui::TextColored(ui::SuccessColor(),"%s",state.export_message.c_str());
       if (state.export_message!="Export canceled") {
         ImGui::TextWrapped("%s",state.export_destination.u8string().c_str());
         if (ImGui::SmallButton("Copy output path")) ImGui::SetClipboardText(state.export_destination.u8string().c_str());
@@ -3934,7 +3920,7 @@ void BuildRoiEditor(ViewerState & state)
   for (const auto purpose:{ViewerState::RoiPurpose::Display,ViewerState::RoiPurpose::Ground}) {
     const bool display=purpose==ViewerState::RoiPurpose::Display,active=purpose==state.roi_purpose;
     if (!display) ImGui::SameLine();
-    if (active) ImGui::PushStyleColor(ImGuiCol_Button,{.15f,.37f,.46f,1});
+    if (active) ImGui::PushStyleColor(ImGuiCol_Button,ui::SelectionColor());
     if (ImGui::Button(display ? "Display ROI" : "Ground exclusion",{(width-8*s)*.5f,32*s}) && !active) {
       state.roi_purpose=purpose;state.roi_tool=ViewerState::RoiTool::Navigate;
       state.roi_numeric_edit=false;state.roi_reveal_selection=true;state.roi_details_requested=false;
@@ -3964,11 +3950,11 @@ void BuildRoiEditor(ViewerState & state)
     ImGui::TextDisabled("%s / %s points shown",CountText(state.frame.points.size()).c_str(),CountText(state.processed_frame.points.size()).c_str());
   } else {
     ImGui::SameLine();ImGui::BeginDisabled(!pending || state.roi_gesture.active || state.applying_exclusions);
-    ImGui::PushStyleColor(ImGuiCol_Button,{.15f,.37f,.46f,1});
+    ImGui::PushStyleColor(ImGuiCol_Button,ui::SelectionColor());
     if (ImGui::Button("Apply",{78*s,32*s})) state.apply_exclusions_requested=true;
     TraceUi("roi_apply");ImGui::PopStyleColor();ImGui::EndDisabled();
-    if (state.applying_exclusions) ImGui::TextColored({.48f,.82f,.94f,1},"Applying regions...");
-    else if (pending) ImGui::TextColored({1,.74f,.4f,1},"Changes ready to apply");
+    if (state.applying_exclusions) ImGui::TextColored(ui::InfoColor(),"Applying regions...");
+    else if (pending) ImGui::TextColored(ui::WarningColor(),"Changes ready to apply");
     else ImGui::TextDisabled("%s points skip ground detection",CountText(state.exclusion_removed_count).c_str());
   }
   ImGui::Spacing();ImGui::AlignTextToFramePadding();ImGui::Text("Regions (%zu)",EditedRoi(state).boxes.size());
@@ -3978,7 +3964,7 @@ void BuildRoiEditor(ViewerState & state)
   if (std::abs(list_height-state.roi_list_height)>1) {state.roi_reveal_selection=true;state.roi_list_height=list_height;}
   if (ImGui::BeginListBox("##RoiList",{-1,list_height})) {
     ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign,{0,.5f});
-    ImGui::PushStyleColor(ImGuiCol_Header,{.12f,.30f,.39f,1});
+    ImGui::PushStyleColor(ImGuiCol_Header,ui::SelectionColor());
     for (std::size_t i=0;i<EditedRoi(state).boxes.size();++i) {
       ImGui::PushID(static_cast<int>(i));auto & box=EditedRoi(state).boxes[i];
       ImGui::BeginDisabled(state.roi_gesture.active);
@@ -4086,7 +4072,7 @@ void BuildRoiEditor(ViewerState & state)
         TraceUi(("roi_color_"+std::to_string(i)).c_str());
         if(static_cast<int>(i)==lidar_viewer::RoiColorIndex(box)) {
           const auto a=ImGui::GetItemRectMin(),b=ImGui::GetItemRectMax();
-          ImGui::GetWindowDrawList()->AddRect({a.x-2*s,a.y-2*s},{b.x+2*s,b.y+2*s},IM_COL32(245,248,255,255),4*s,0,2*s);
+          ImGui::GetWindowDrawList()->AddRect({a.x-2*s,a.y-2*s},{b.x+2*s,b.y+2*s},ImGui::GetColorU32(ImGuiCol_CheckMark),4*s,0,2*s);
         }
         Tip(color.name);ImGui::PopID();
       }
@@ -4175,6 +4161,16 @@ void BuildAppSettings(ViewerState & state)
   ImGui::Begin("Application settings",&state.open_app_settings,
     ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_AlwaysAutoResize);
   ImGui::TextDisabled("Shared by every recording");ImGui::Spacing();
+  ImGui::TextUnformatted("Appearance");ImGui::SetNextItemWidth(-1);
+  int theme=ui::IsLight() ? 1 : 0;
+  if(ImGui::Combo("##AppTheme",&theme,"Dark\0Light\0")) {
+    ui::ApplicationTheme()=theme==1 ? ui::Theme::Light : ui::Theme::Dark;
+    state.app_settings_dirty=true;
+  }
+  TraceUi("app_theme");
+  TraceUi(ui::IsLight() ? "theme_light" : "theme_dark");
+  Tip("Change the interface and point-cloud background. Saved automatically for every workspace.");
+  ImGui::Spacing();
   ImGui::TextUnformatted("Interface scale");ImGui::SetNextItemWidth(-1);
   if (ImGui::SliderFloat("##AppUiScale",&state.ui_scale,.75f,1.5f,"%.2fx",ImGuiSliderFlags_AlwaysClamp)) state.app_settings_dirty=true;
   const bool editing=ImGui::IsItemActive();
@@ -4201,11 +4197,10 @@ fs::path CurrentDatasetRoot(const ViewerState & state)
 
 ImVec4 DatasetLabelColor(int id)
 {
-  if(id<0) return {.28f,.32f,.38f,1};
-  if(id==0) return {.68f,.72f,.78f,1};
-  constexpr int indices[]{1,3,2,4,5,6,0,7};const auto & c=lidar_viewer::kRoiColors[indices[(id-1)%8]];
-  return {c.r,c.g,c.b,1};
+  if(id<=0) return ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
+  return ui::LabelColors()[static_cast<std::size_t>((id-1)%8)];
 }
+
 void BuildDatasetReviewDialog(ViewerState & state)
 {
   if(state.open_dataset_review) {ImGui::OpenPopup("Open point clouds");state.open_dataset_review=false;state.close_dataset_review=false;}
@@ -4373,12 +4368,12 @@ void BuildDatasetPanel(ViewerState & state)
     ImGui::Text("Class hints: %s",names.c_str());Tip(names.c_str());
   }
   if(!labels) return;
-  if(!labels->error.empty()) {ImGui::TextColored({1,.6f,.4f,1},"Could not read labels");Tip(labels->error.c_str());}
+  if(!labels->error.empty()) {ImGui::TextColored(ui::ErrorColor(),"Could not read labels");Tip(labels->error.c_str());}
   if(labels->point_labels.empty()) ImGui::TextDisabled("No point labels");
   else {
     ImGui::Checkbox("Label colors",&state.dataset_show_labels);TraceUi("dataset_label_colors");
     Tip(("Point labels: "+labels->source).c_str());
-    if(labels->draft) {ImGui::SameLine();ImGui::TextColored({1,.7f,.35f,1},"Draft");Tip("Unverified labels; review before training.");}
+    if(labels->draft) {ImGui::SameLine();ImGui::TextColored(ui::WarningColor(),"Draft");Tip("Unverified labels; review before training.");}
     const auto row=[&](const std::pair<int,std::size_t> & entry) {
       std::string name=entry.first<0 ? "Unlabeled" : "Class "+std::to_string(entry.first);
       for(const auto & item:labels->class_names) if(item.first==entry.first) name=item.second;
@@ -4466,7 +4461,7 @@ void BuildExampleDownload(ViewerState & state,float scale)
     } else ImGui::TextDisabled("6 public sample scans | 12 MB | Patchwork++");
     ImGui::Spacing();
     if(progress.stage==lidar_viewer::ExampleStage::Failed) {
-      ImGui::TextColored({1,.6f,.5f,1},"Download could not finish");ImGui::TextWrapped("%s",progress.error.c_str());
+      ImGui::TextColored(ui::ErrorColor(),"Download could not finish");ImGui::TextWrapped("%s",progress.error.c_str());
     } else if(progress.stage==lidar_viewer::ExampleStage::Canceled) ImGui::TextDisabled("Download canceled. Completed scans are kept.");
     const auto & info=state.example_cache_info;
     if(state.example_cache_future.valid()) ImGui::TextDisabled("Checking saved files...");
@@ -4498,7 +4493,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   const bool dataset_input=state.review_window || state.dataset_profile=="dataset" || (!state.live_mode && !state.frames.empty() && state.frames.front().dataset_sample!=nullptr);
   BeginPanel("Header", layout.header, false);
   ImGui::SetCursorPosY(15.f * s);
-  ImGui::TextColored({.35f, .82f, .96f, 1.f}, "LiDAR");
+  ImGui::TextColored(ui::InfoColor(), "LiDAR");
   ImGui::SameLine();
   ImGui::TextUnformatted("Studio");
   ImGui::SameLine(190.f*s);
@@ -4526,12 +4521,12 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   ImGui::EndDisabled();ImGui::SameLine(425*s);
   const bool wide_header=layout.header.w>=1050*s;
   const auto workspace_button=[&](const char * id,lidar_viewer::UiIcon icon,const char * label,float width,bool selected) {
-    ImGui::PushStyleColor(ImGuiCol_Button,selected ? ImVec4(.13f,.32f,.40f,1) : ImVec4(0,0,0,0));
+    ImGui::PushStyleColor(ImGuiCol_Button,selected ? ui::SelectionColor() : ImVec4(0,0,0,0));
     const bool clicked=lidar_viewer::ActionButton(id,icon,label,{width*s,0},s);
     ImGui::PopStyleColor();
     if(selected) {
       const auto a=ImGui::GetItemRectMin(),b=ImGui::GetItemRectMax();
-      ImGui::GetWindowDrawList()->AddLine({a.x+8*s,b.y},{b.x-8*s,b.y},IM_COL32(79,196,232,255),2*s);
+      ImGui::GetWindowDrawList()->AddLine({a.x+8*s,b.y},{b.x-8*s,b.y},ImGui::GetColorU32(ImGuiCol_CheckMark),2*s);
     }
     return clicked;
   };
@@ -4549,9 +4544,9 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   TraceUi("open_training");Tip("Configure, validate and run model training with the current dataset.");
   const float header_right = std::max(ImGui::GetItemRectMax().x+16*s, layout.header.w - 360.f * s);
   ImGui::SameLine(header_right);
-  ImGui::TextColored(!state.ui_error.empty() ? ImVec4(1.f, .56f, .48f, 1) :
-    (state.loading_bag_source ? ImVec4(.44f, .76f, 1, 1) :
-      (state.is_playing ? ImVec4(.42f, .85f, .65f, 1) : ImVec4(.76f, .81f, .88f, 1))),
+  ImGui::TextColored(!state.ui_error.empty() ? ui::ErrorColor() :
+    (state.loading_bag_source ? ui::InfoColor() :
+      (state.is_playing ? ui::SuccessColor() : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled))),
     "%s", !state.ui_error.empty() ? "ERROR" :
       (state.live_mode ? (state.live_stats.connected ? (state.live_paused ? "FROZEN" :
         (state.live_stats.clouds==0 ? "WAITING" : (state.live_stats.cloud_age_ms>1000 ? "STALE" : "LIVE"))) : "DISCONNECTED") :
@@ -4569,6 +4564,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   ImGui::SameLine(layout.header.w-48*s);
   if (lidar_viewer::IconButton("##ApplicationSettings",lidar_viewer::UiIcon::Settings,"Application settings",s,state.open_app_settings))
     state.open_app_settings=!state.open_app_settings;
+  TraceUi("app_settings");
   ImGui::End();
 
   BeginPanel("Inspector", layout.sidebar, false);
@@ -4673,8 +4669,8 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       const auto available=lidar_viewer::ComputeImuLeveling(state.base_frame.imu,state.imu_mount);
       const auto resolved=lidar_viewer::ResolveDisplayAlignment(state.calibration,state.imu_level_enabled,available);
       const bool automatic=resolved.imu_active;
-      ImGui::TextColored(automatic ? ImVec4(.42f,.85f,.65f,1) :
-        (state.imu_level_enabled ? ImVec4(1,.75f,.42f,1) : ImVec4(.7f,.8f,.9f,1)),"%s",
+      ImGui::TextColored(automatic ? ui::SuccessColor() :
+        (state.imu_level_enabled ? ui::WarningColor() : ui::InfoColor()),"%s",
         automatic ? "AUTO / IMU ACTIVE" : (state.imu_level_enabled ? "MANUAL FALLBACK" : "MANUAL"));
       ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,{8*s,5*s});
       ImGui::BeginChild("AlignmentStatus",{0,80*s},ImGuiChildFlags_None,
@@ -4942,19 +4938,19 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         if(enabled) {
           const auto status=state.detector ? state.detector->Status() : lidar_viewer::DetectorStatus{};
           if(!state.detector_input || state.detector_input->empty()) {
-            ImGui::TextColored({1,.74f,.4f,1},"Open a point cloud to start detection");
+            ImGui::TextColored(ui::WarningColor(),"Open a point cloud to start detection");
           } else if(status.failed || !state.detector_error.empty()) {
-            ImGui::TextColored({1,.52f,.42f,1},"Object detection unavailable");
+            ImGui::TextColored(ui::ErrorColor(),"Object detection unavailable");
             const auto & error=state.detector_error.empty() ? status.message : state.detector_error;
             ImGui::TextWrapped("%s",error.c_str());
           } else if(!status.configured && state.detector) {
-            ImGui::TextColored({1,.74f,.4f,1},"Detection model is not installed");
+            ImGui::TextColored(ui::WarningColor(),"Detection model is not installed");
             TraceUi("object_status_missing");
             ImGui::TextWrapped("Install the model runtime before enabling learned detection.");
           } else if(!status.ready) {
-            ImGui::TextColored({.37f,.8f,.9f,1},"Loading detection model...");
+            ImGui::TextColored(ui::InfoColor(),"Loading detection model...");
           } else {
-            ImGui::TextColored({.4f,.85f,.65f,1},"Detection ready | %s",status.provider=="CUDAExecutionProvider" ? "CUDA GPU" : "CPU");
+            ImGui::TextColored(ui::SuccessColor(),"Detection ready | %s",status.provider=="CUDAExecutionProvider" ? "CUDA GPU" : "CPU");
             TraceUi("object_status_ready");
           }
           TraceUi("object_status");
@@ -4980,7 +4976,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
           }
           ImGui::EndTable();
         }
-        if (!detection.classes) ImGui::TextColored({1,.74f,.4f,1},"No targets selected");
+        if (!detection.classes) ImGui::TextColored(ui::WarningColor(),"No targets selected");
         ImGui::AlignTextToFramePadding();ImGui::TextUnformatted("Min score");ImGui::SameLine();
         ImGui::SetNextItemWidth(-1);float score=detection.min_confidence;
         if(ImGui::InputFloat("##DetectionScore",&score,.01f,.1f,"%.2f") && std::isfinite(score)) {
@@ -4990,7 +4986,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         Tip("Type a score from 0.10 to 1.00, or use -/+ for 0.01 steps (Ctrl: 0.10). Filters cached results without rerunning inference. Scores are not calibrated probabilities.");
         if (filter_changed) FilterDetections(state);
         if (detection.min_confidence<(detection.model=="short_range" ? .5f : .35f)) {
-          ImGui::TextColored({1,.74f,.4f,1},"Low-confidence candidates visible");
+          ImGui::TextColored(ui::WarningColor(),"Low-confidence candidates visible");
           Tip("Lower scores increase false positives. The quality preset starts at 0.50; this is an application default, not a calibrated probability.");
         }
         if (enabled) {
@@ -5076,7 +5072,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   ImGui::EndDisabled();
   if (!state.roi_tab_active && !state.roi_tab_requested && !state.roi_gesture.active) state.roi_tool=ViewerState::RoiTool::Navigate;
   if (!state.ui_error.empty()) {
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, .56f, .48f, 1));
+    ImGui::PushStyleColor(ImGuiCol_Text, ui::ErrorColor());
     ImGui::TextWrapped("%s", state.ui_error.c_str());
     ImGui::PopStyleColor();
     if (ImGui::SmallButton("Dismiss error")) state.ui_error.clear();
@@ -5104,7 +5100,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   Tip(pending_exclusions ? "Apply the edited ROI before saving this profile." : "Save the current settings for the next session. Ctrl+S.");
   const bool unsaved=!lidar_viewer::SameRoi(state.roi,state.saved_roi) ||
     !lidar_viewer::SameRoi(state.display_roi,state.saved_display_roi);
-  ImGui::TextColored(unsaved ? ImVec4(1,.74f,.4f,1) : ImVec4(.48f,.65f,.65f,1),
+  ImGui::TextColored(unsaved ? ui::WarningColor() : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled),
     "%s",pending_exclusions ? "Apply ROI before saving" : unsaved ? "ROI changes not saved  /  Ctrl+S" : "Ctrl+S saves this profile");
   }
   ImGui::End();
@@ -5136,7 +5132,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   const std::size_t frame_count = group ? group->last_index - group->first_index + 1 : 0;
   const bool multiple = frame_count > 1;
   ImGui::BeginDisabled(state.dataset_edit_future.valid() || !has_input || state.loading_bag_source.has_value() || (state.live_mode && !state.live_stats.connected));
-  ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(.15f, .37f, .46f, 1));
+  ImGui::PushStyleColor(ImGuiCol_Button, ui::SelectionColor());
   const bool showing_motion = state.live_mode ? !state.live_paused : state.is_playing;
   if (lidar_viewer::ActionButton("##PlayPause",showing_motion ? lidar_viewer::UiIcon::Pause : lidar_viewer::UiIcon::Play,
       showing_motion ? "Pause" : "Play",{88*s,0},s)) {
@@ -5250,14 +5246,14 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   ImGui::PushClipRect(
     {layout.status.x, layout.status.y},
     {layout.status.w - metrics_width - 12*s, layout.status.y + layout.status.h}, true);
-  if (!state.ui_error.empty()) ImGui::TextColored({1.f, .56f, .48f, 1}, "%s", state.ui_error.c_str());
+  if (!state.ui_error.empty()) ImGui::TextColored(ui::ErrorColor(), "%s", state.ui_error.c_str());
   else if (state.loading_bag_source && state.input_load) {
     const auto progress=state.input_load->Snapshot();
-    ImGui::TextColored({.44f,.76f,1,1},"%s | %s frames | %s",
+    ImGui::TextColored(ui::InfoColor(),"%s | %s frames | %s",
       state.input_load->Cancelled() ? "Canceling..." : lidar_viewer::InputLoadStageName(progress.stage),
       CountText(progress.frames).c_str(),LoadEta(progress,state.input_load->Cancelled()).c_str());
   }
-  else if (!state.transient_status.empty()) ImGui::TextColored({.44f, .86f, .68f, 1}, "%s", state.transient_status.c_str());
+  else if (!state.transient_status.empty()) ImGui::TextColored(ui::SuccessColor(), "%s", state.transient_status.c_str());
   else if (long_wait) ImGui::TextDisabled("%s",state.requested_frame ? "Reading selected frame..." : "Processing selected frame...");
   else if (state.live_mode) ImGui::TextDisabled("%zu points | display %llu / received %llu | %s", state.status_points,
     static_cast<unsigned long long>(state.status_live_display), static_cast<unsigned long long>(state.status_live_received),
@@ -5311,7 +5307,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     const bool top=state.camera.projection_mode==CameraState::ProjectionMode::View2D;
     const bool panorama=state.camera.projection_mode==CameraState::ProjectionMode::Panorama;
     const auto mode_button=[&](const char * label,bool selected) {
-      if (selected) ImGui::PushStyleColor(ImGuiCol_Button,{.13f,.34f,.42f,1});
+      if (selected) ImGui::PushStyleColor(ImGuiCol_Button,ui::SelectionColor());
       const bool clicked=ImGui::Button(label,{std::string(label)=="Panorama" ? 86*s : 32*s,30*s});
       TraceUi((std::string("camera_")+label).c_str());
       if (selected) ImGui::PopStyleColor();
@@ -5325,18 +5321,18 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     ImGui::End();ImGui::PopStyleVar(3);
   }
   auto * draw=ImGui::GetBackgroundDrawList();
-  const ImU32 muted = IM_COL32(131, 151, 174, 255);
+  const ImU32 muted = ImGui::GetColorU32(ImGuiCol_TextDisabled);
   if(state.camera.projection_mode==CameraState::ProjectionMode::Panorama && view.w>300*s && view.h>150*s) {
     const auto & p=state.camera.panorama;
     draw->PushClipRect({view.x,view.y},{view.x+view.w,view.y+view.h},true);
     char text[96];std::snprintf(text,sizeof(text),"SENSOR PANORAMA  |  %.0f x %.1f deg",p.horizontal_fov,p.vertical_fov);
-    draw->AddRectFilled({view.x+9*s,view.y+54*s},{view.x+23*s+ImGui::CalcTextSize(text).x,view.y+80*s},IM_COL32(12,17,23,220),4*s);
+    draw->AddRectFilled({view.x+9*s,view.y+54*s},{view.x+23*s+ImGui::CalcTextSize(text).x,view.y+80*s},ImGui::ColorConvertFloat4ToU32(ui::OverlayBackground()),4*s);
     draw->AddText({view.x+14*s,view.y+58*s},muted,text);
     const float hstep=p.horizontal_fov>180 ? 60 : p.horizontal_fov>60 ? 30 : p.horizontal_fov>20 ? 10 : 2;
     if(state.grid_settings.enabled) {
       for(float a=std::ceil((p.center_deg-p.horizontal_fov*.5f)/hstep)*hstep;a<p.center_deg+p.horizontal_fov*.5f;a+=hstep) {
         const float x=view.x+view.w*(.5f+(a-p.center_deg)/p.horizontal_fov);
-        draw->AddLine({x,view.y+88*s},{x,view.y+view.h-30*s},IM_COL32(110,140,166,40));
+        draw->AddLine({x,view.y+88*s},{x,view.y+view.h-30*s},ImGui::ColorConvertFloat4ToU32(ui::GridColor()));
         const float bearing=-lidar_viewer::WrapDegrees(a);
         if(std::abs(bearing)<.01f) std::snprintf(text,sizeof(text),"Front 0");
         else if(std::abs(std::abs(bearing)-90)<.01f) std::snprintf(text,sizeof(text),"%s 90",bearing>0 ? "Left" : "Right");
@@ -5349,14 +5345,14 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       for(float a=std::ceil((p.elevation_deg-p.vertical_fov*.5f)/vstep)*vstep;a<p.elevation_deg+p.vertical_fov*.5f;a+=vstep) {
         const float y=view.y+view.h*(.5f-(a-p.elevation_deg)/p.vertical_fov);
         if(y<view.y+90*s || y>view.y+view.h-40*s) continue;
-        draw->AddLine({view.x+50*s,y},{view.x+view.w,y},IM_COL32(110,140,166,40));
+        draw->AddLine({view.x+50*s,y},{view.x+view.w,y},ImGui::ColorConvertFloat4ToU32(ui::GridColor()));
         std::snprintf(text,sizeof(text),"%+.0f",a);draw->AddText({view.x+8*s,y-7*s},muted,text);
       }
     }
     if(p.color_mode==0) {
       std::snprintf(text,sizeof(text),"Distance: 0 - %.0f m",p.range_max);
       const float width=ImGui::CalcTextSize(text).x;
-      draw->AddRectFilled({view.x+view.w-width-21*s,view.y+12*s},{view.x+view.w-10*s,view.y+38*s},IM_COL32(12,17,23,220),4*s);
+      draw->AddRectFilled({view.x+view.w-width-21*s,view.y+12*s},{view.x+view.w-10*s,view.y+38*s},ImGui::ColorConvertFloat4ToU32(ui::OverlayBackground()),4*s);
       draw->AddText({view.x+view.w-width-16*s,view.y+16*s},muted,text);
     }
     draw->PopClipRect();
@@ -5409,27 +5405,27 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     const bool estimated = state.base_frame.imu &&
       state.base_frame.imu->source == lidar_viewer::ImuGravitySource::AccelGyro;
     draw->AddText({view.x + 14.f * s, view.y + 86.f * s},
-      applied ? IM_COL32(105, 215, 167, 255) : IM_COL32(242, 179, 96, 255),
+      applied ? ImGui::ColorConvertFloat4ToU32(ui::SuccessColor()) : ImGui::ColorConvertFloat4ToU32(ui::WarningColor()),
       applied ? (estimated ? "IMU level: estimated" : "IMU level: active") : "IMU level: unavailable");
   }
   if (state.live_mode && state.live_stats.record_busy) {
-    draw->AddText({view.x + view.w - 160.f*s, view.y + 12.f*s}, IM_COL32(255,100,100,255),
+    draw->AddText({view.x + view.w - 160.f*s, view.y + 12.f*s}, ImGui::ColorConvertFloat4ToU32(ui::ErrorColor()),
       state.live_stats.record_stopping ? "Saving bag..." : "REC  raw sensors");
   }
   if (state.live_mode && (!state.live_stats.record_error.empty() || state.live_stats.record_dropped))
-    draw->AddText({view.x + 14.f*s, view.y + view.h - 48.f*s}, IM_COL32(255,120,100,255), "Recording error - open Live for details");
+    draw->AddText({view.x + 14.f*s, view.y + view.h - 48.f*s}, ImGui::ColorConvertFloat4ToU32(ui::ErrorColor()), "Recording error - open Live for details");
   if (has_input && state.ground_removal_enabled && state.ground_view!=ViewerState::GroundView::Obstacles) {
     draw->AddCircleFilled({view.x + 18.f * s, view.y + view.h - 18.f * s}, 4.f * s, IM_COL32(255, 75, 65, 255));
     draw->AddText({view.x + 30.f * s, view.y + view.h - 26.f * s}, muted, "Ground");
   }
   if (state.roi_tool==ViewerState::RoiTool::Draw) {
-    draw->AddText({view.x+14*s,view.y+view.h-28*s},IM_COL32(125,225,230,255),"Drag a new box  |  Esc cancels");
+    draw->AddText({view.x+14*s,view.y+view.h-28*s},ImGui::ColorConvertFloat4ToU32(ui::InfoColor()),"Drag a new box  |  Esc cancels");
   }
   if (state.roi_gesture.active && !EditedRoi(state).boxes.empty()) {
     const auto & box=EditedRoi(state).boxes[SelectedRoi(state)];
     char label[160];std::snprintf(label,sizeof(label),"%.2f x %.2f x %.2f m  |  %s",box.size.x,box.size.y,box.size.z,
       box.mode==lidar_viewer::RoiBoxMode::Exclude ? "release to finish, then Apply" : "release to apply");
-    draw->AddText({view.x+14*s,view.y+view.h-52*s},IM_COL32(255,220,115,255),label);
+    draw->AddText({view.x+14*s,view.y+view.h-52*s},ImGui::ColorConvertFloat4ToU32(ui::WarningColor()),label);
   }
   {
     auto bounded = [&](float & value, float low, float high, float fallback) {
@@ -5550,7 +5546,8 @@ void RenderGrid(const ViewerState & state, const Mat4 & mvp)
 
   glUseProgram(state.grid.program);
   glUniformMatrix4fv(state.grid.mvp_loc, 1, GL_FALSE, mvp.m.data());
-  glUniform4f(state.grid.color_loc, 0.42f, 0.48f, 0.56f, 0.38f);
+  const auto color=ui::GridColor();
+  glUniform4fv(state.grid.color_loc,1,&color.x);
   glBindVertexArray(state.grid.vao);
   glEnable(GL_DEPTH_TEST);
   glDepthMask(GL_FALSE);
@@ -5619,7 +5616,7 @@ void RenderDatasetBoxes(const ViewerState & state,const Mat4 & mvp)
         v.y+(1-(m[1]*p.x+m[5]*p.y+m[9]*p.z+m[13])/w)*v.h*.5f};
       top=std::min(top,screen[i]->y);left=std::min(left,screen[i]->x);right=std::max(right,screen[i]->x);
     }
-    constexpr ImU32 color=IM_COL32(130,220,255,255);
+    const ImU32 color=ImGui::ColorConvertFloat4ToU32(ui::InfoColor());
     for(unsigned i=0;i<8;++i) for(unsigned bit:{1u,2u,4u}) if(!(i&bit) && screen[i] && screen[i|bit]) draw->AddLine(*screen[i],*screen[i|bit],color,1.5f);
     if(left<=right) draw->AddText({std::max(v.x+4,(left+right-ImGui::CalcTextSize(box.name.c_str()).x)*.5f),std::max(v.y+4,top-20)},color,box.name.c_str());
   }
@@ -5687,7 +5684,7 @@ void RenderDetectionLabels(const ViewerState & state,const Mat4 & mvp)
       })) continue;
     labels.push_back(rectangle);
     const auto color=DetectionClassColors(detection.class_id).second;
-    draw->AddRectFilled({a.x-4,a.y-2},{a.x+size.x+4,a.y+size.y+2},IM_COL32(12,17,24,210),3);
+    draw->AddRectFilled({a.x-4,a.y-2},{a.x+size.x+4,a.y+size.y+2},ImGui::ColorConvertFloat4ToU32(ui::OverlayBackground()),3);
     draw->AddText(a,ImGui::ColorConvertFloat4ToU32({color.r,color.g,color.b,1}),text);
   }
   draw->PopClipRect();
@@ -6100,10 +6097,15 @@ int RunViewer(int argc, char ** argv)
     const GLint sensor_rotation_loc=glGetUniformLocation(program,"u_sensor_rotation");
     const GLint sensor_translation_loc=glGetUniformLocation(program,"u_sensor_translation");
     const GLint range_max_loc=glGetUniformLocation(program,"u_range_max");
+    const GLint label_colors_loc=glGetUniformLocation(program,"u_label_colors[0]");
+    const GLint unlabeled_color_loc=glGetUniformLocation(program,"u_unlabeled_color");
+    const GLint background_color_loc=glGetUniformLocation(program,"u_background_color");
+    const GLint plain_color_loc=glGetUniformLocation(program,"u_plain_color");
 
     glEnable(GL_PROGRAM_POINT_SIZE);
     glEnable(GL_DEPTH_TEST);
-    glClearColor(0.04f, 0.05f, 0.07f, 1.0f);
+    const auto initial_background=ui::CanvasBackground();
+    glClearColor(initial_background.x,initial_background.y,initial_background.z,initial_background.w);
 
     state.fps_measurement_started_at = glfwGetTime();
     state.playback_measurement_started_at = state.fps_measurement_started_at;
@@ -6153,6 +6155,7 @@ int RunViewer(int argc, char ** argv)
         state.ui_scale * state.font_raster_scale / std::max(
           static_cast<float>(fb_width) / window_width, static_cast<float>(fb_height) / window_height),state.inspector_width);
       ImGui::GetStyle() = base_ui_style;
+      ui::ApplyThemeColors(ImGui::GetStyle());
       ImGui::GetStyle().ScaleAllSizes(state.ui_layout.scale);
       ImGui::GetIO().FontGlobalScale = state.ui_layout.scale / state.font_raster_scale;
       ImGui_ImplOpenGL3_NewFrame();
@@ -6196,7 +6199,8 @@ int RunViewer(int argc, char ** argv)
 
       glViewport(0, 0, fb_width, fb_height);
       glDisable(GL_SCISSOR_TEST);
-      glClearColor(.045f, .058f, .079f, 1.f);
+      const auto app_background=ui::AppBackground();
+      glClearColor(app_background.x,app_background.y,app_background.z,app_background.w);
       glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
       const auto & canvas = state.ui_layout.viewport;
       const float sx = static_cast<float>(fb_width) / static_cast<float>(window_width);
@@ -6208,7 +6212,8 @@ int RunViewer(int argc, char ** argv)
       glViewport(canvas_x, canvas_y, canvas_w, canvas_h);
       glEnable(GL_SCISSOR_TEST);
       glScissor(canvas_x, canvas_y, canvas_w, canvas_h);
-      glClearColor(.035f, .045f, .063f, 1.f);
+      const auto canvas_background=ui::CanvasBackground();
+      glClearColor(canvas_background.x,canvas_background.y,canvas_background.z,canvas_background.w);
       glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
       const float aspect = static_cast<float>(canvas_w) / static_cast<float>(canvas_h);
       const Vec3 eye =
@@ -6241,6 +6246,11 @@ int RunViewer(int argc, char ** argv)
       glUniformMatrix3fv(sensor_rotation_loc,1,GL_TRUE,state.roi_frame.rotation.data());
       glUniform3f(sensor_translation_loc,state.roi_frame.translation.x,state.roi_frame.translation.y,state.roi_frame.translation.z);
       glUniform1f(range_max_loc,p.range_max);
+      glUniform4fv(label_colors_loc,8,&ui::LabelColors()[0].x);
+      const auto unlabeled_color=ui::UnlabeledPointColor(),background_color=ui::BackgroundPointColor(),plain_color=ui::PlainPointColor();
+      glUniform4fv(unlabeled_color_loc,1,&unlabeled_color.x);
+      glUniform4fv(background_color_loc,1,&background_color.x);
+      glUniform4fv(plain_color_loc,1,&plain_color.x);
       glUniform1i(color_mode_loc,panorama && p.color_mode==0 ? 4 :
         state.dataset_show_labels && state.frame.annotations && !state.frame.annotations->point_labels.empty() ? 3 : state.color_mode);
       glUniform1f(min_height_loc, state.height_color_min);

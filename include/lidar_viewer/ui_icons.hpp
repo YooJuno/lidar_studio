@@ -1,5 +1,6 @@
 #pragma once
 #include <imgui.h>
+#include "lidar_viewer/ui_theme.hpp"
 #include <algorithm>
 #include <cmath>
 
@@ -95,7 +96,7 @@ inline bool IconButton(const char * id, UiIcon icon, const char * tip, float sca
 {
   const float icon_size=18*scale, height=30*scale;
   const float label_width=label ? ImGui::CalcTextSize(label).x+8*scale : 0;
-  if (selected) ImGui::PushStyleColor(ImGuiCol_Button,{.13f,.34f,.42f,1});
+  if (selected) ImGui::PushStyleColor(ImGuiCol_Button,ui::SelectionColor());
   const bool clicked=ImGui::Button(id,{height+label_width,height});
   if (selected) ImGui::PopStyleColor();
   const auto origin=ImGui::GetItemRectMin();

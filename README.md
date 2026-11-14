@@ -16,6 +16,11 @@ A desktop workspace for LiDAR playback, ground segmentation, clustering, object 
 
 Background loading and analysis keep the interface usable. Separate **Ground avg / Objects avg** indicators show recent processing times without rapidly changing labels.
 
+Choose **Settings (gear) → Appearance → Light / Dark** to switch the entire
+interface and point-cloud canvas. Light mode uses a white canvas and contrasting
+point-label colors for inspection and figures. The choice is saved automatically
+and shared by Viewer, Point clouds and Train.
+
 ## Demos
 
 **Ground segmentation — FugSeg**

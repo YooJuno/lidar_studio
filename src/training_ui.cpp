@@ -4,6 +4,7 @@
 #include "lidar_viewer/config.hpp"
 #include "lidar_viewer/platform.hpp"
 #include "lidar_viewer/settings_io.hpp"
+#include "lidar_viewer/ui_theme.hpp"
 #include <boost/property_tree/json_parser.hpp>
 #include <imgui.h>
 #include <algorithm>
@@ -190,7 +191,7 @@ void TrainingWorkspace::Draw(bool & open,const fs::path & active_dataset,float s
     Trace("stop");ImGui::SameLine();ImGui::TextUnformatted(state.checking ? "Checking environment and labels..." : "Training is running");
   }
   ImGui::SameLine();if(ImGui::Button(state.job.Running() ? "Hide" : "Close")) open=false;Trace("hide");
-  if(!state.run.empty()) if(const auto code=state.job.ExitCode()) ImGui::TextColored(*code==0 ? ImVec4(.4f,.85f,.65f,1) : ImVec4(1,.65f,.4f,1),"%s",state.cancelled ? "Stopped" : *code==0 ? (state.checking ? "Setup is ready" : "Training completed") : "Job failed - see the log below");
+  if(!state.run.empty()) if(const auto code=state.job.ExitCode()) ImGui::TextColored(*code==0 ? ui::SuccessColor() : ui::WarningColor(),"%s",state.cancelled ? "Stopped" : *code==0 ? (state.checking ? "Setup is ready" : "Training completed") : "Job failed - see the log below");
   if(!state.error.empty()) ImGui::TextWrapped("%s",state.error.c_str());
   if(!state.run.empty()) {
     ImGui::TextWrapped("Run: %s",state.run.u8string().c_str());
