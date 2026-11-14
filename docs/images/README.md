@@ -11,4 +11,4 @@ The scans were rendered in LiDAR Studio with FugSeg ground classification, a man
 
 [Reproduce the example](../examples.md).
 
-The separately recorded **one-click public sample demo** uses the Patchwork++ sample distribution rather than this KITTI Raw sequence. See [demo source and recording credits](../media/SOURCE.md).
+The animated **ground segmentation** and **object detection** previews use consecutive frames 20–109 from this same KITTI Raw sequence. See [animation source and recording details](../media/SOURCE.md).

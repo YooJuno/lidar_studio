@@ -6,10 +6,6 @@ A desktop workspace for LiDAR playback, ground segmentation, clustering, object 
 
 [Download](https://github.com/YooJuno/lidar_studio/releases) · [Latest builds](https://github.com/YooJuno/lidar_studio/actions/workflows/build-release.yml) · [Detailed guide (Korean)](docs/guide.md)
 
-[![LiDAR Studio demo: download an example, inspect ground and edit ROI regions](docs/media/demo.gif)](docs/media/demo.mp4)
-
-*Quick-preview recording at 1.5× speed: example download, 3D navigation, ground views and ROI export. [Watch the full MP4](docs/media/demo.mp4) · [Example guide](docs/examples.md).*
-
 ## Highlights
 
 - **Point clouds, easy to explore.** Switch between 3D and rotatable 2D views, scrub recordings and step through frames. Browse BIN, NPY and PCD folders, review labels and keep the same camera position and zoom between samples.
@@ -19,6 +15,22 @@ A desktop workspace for LiDAR playback, ground segmentation, clustering, object 
 - **ROI labeling and dataset export.** Draw, move, resize and rotate 3D boxes. Name and color regions, attach class-name hints and export cropped points with frame, ROI and coordinate metadata.
 
 Background loading and analysis keep the interface usable. Separate **Ground avg / Objects avg** indicators show recent processing times without rapidly changing labels.
+
+## Demos
+
+**Ground segmentation — FugSeg**
+
+[![FugSeg ground removal toggled off and on across consecutive KITTI scans](docs/media/ground-segmentation.gif)](docs/media/ground-segmentation.mp4)
+
+**Ground OFF → ON → OFF → ON**, with the camera fixed. OFF shows the complete cloud; ON removes the classified road points and keeps obstacles. [MP4](docs/media/ground-segmentation.mp4).
+
+**Object detection — CenterPoint tiny**
+
+[![CenterPoint tiny vehicle detections and persistent IDs on consecutive KITTI scans](docs/media/object-detection.gif)](docs/media/object-detection.mp4)
+
+Cyan boxes show **vehicle predictions and track IDs** at a minimum score of **0.60**. Ground coloring and cluster overlays are off. [MP4](docs/media/object-detection.mp4).
+
+Both previews use the same **90 consecutive KITTI Raw scans**, shown at the source rate of **10 Hz**. They are frame-by-frame application captures, not runtime benchmarks. [Source and recording details](docs/media/SOURCE.md).
 
 ## Get started
 

@@ -36,7 +36,7 @@ The default cache root is `~/.local/share/lidar_viewer/examples` on Linux, `%LOC
 
 UrbanV2X data and these XYZI conversions retain the source **[CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/)** license: attribution, non-commercial use and share-alike. Cite **Qijun Qin et al., “UrbanV2X: A Multisensory Vehicle-Infrastructure Dataset for Cooperative Navigation in Urban Areas,” ITSC 2025**, DOI [10.1109/ITSC60802.2025.11423762](https://doi.org/10.1109/ITSC60802.2025.11423762), when using the data in research. Dataset files are downloaded into the user cache, separately from the app's software license.
 
-The six-frame [Patchwork++ quick preview](https://github.com/url-kaist/patchwork-plusplus/tree/3e6903a1d5537a4cc2ace897b0bbb98a92d6014c/data) remains available for a small download. It is distinct from the UrbanV2X recording and full KITTI Raw sequence below. [Quick-preview demo recording and source credits](media/SOURCE.md).
+The six-frame [Patchwork++ quick preview](https://github.com/url-kaist/patchwork-plusplus/tree/3e6903a1d5537a4cc2ace897b0bbb98a92d6014c/data) remains available for a small download. It is distinct from the UrbanV2X recording and full KITTI Raw sequence below. The README animations use KITTI Raw instead; see [animation source and recording details](media/SOURCE.md).
 
 ## Full KITTI Raw sequence
 
