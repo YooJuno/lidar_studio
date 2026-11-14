@@ -27,6 +27,7 @@ jobs:
         run: |
           python3 tests/release_metadata_smoke.py
           python3 tests/release_publish_smoke.py
+          python3 tests/macos_metadata_smoke.py
       - name: Resolve shared package version
         id: version
         run: python3 tools/release_metadata.py >> "$GITHUB_OUTPUT"
