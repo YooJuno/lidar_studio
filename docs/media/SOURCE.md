@@ -5,7 +5,7 @@ The README has two focused previews, each captured from the **published LiDAR St
 | Files | Actual application settings | What to look for |
 | --- | --- | --- |
 | `ground-segmentation.gif` / `.mp4` | FugSeg; actual classifier toggled OFF / ON; objects and clustering off | OFF shows the complete cloud. ON selects Obstacles only, removing the classified road while retaining obstacles. The camera remains fixed. |
-| `object-detection.gif` / `.mp4` | Original Autoware CenterPoint tiny v4.1 weights; Car target; minimum score 0.60; tracking IDs on; ground classification and clustering off | Cyan vehicle boxes and persistent IDs. A `predicted` label indicates a tracker prediction during a missed measurement. |
+| `object-detection.gif` / `.mp4` | Original Autoware CenterPoint tiny v4.1 weights; Car target; minimum score 0.60; tracking IDs on; FugSeg ground removal with Obstacles only; clustering off | Cyan vehicle boxes and persistent IDs over the non-ground points. A `predicted` label indicates a tracker prediction during a missed measurement. |
 
 ## Dataset and license
 
@@ -38,4 +38,4 @@ camera_pitch_rad=1.15
 camera_distance=65
 ```
 
-For ground, start with **Classify ground** off. Turn it on at captured frame 20 and choose **Obstacles only**. Turn it off at frame 45 (the app restores **All points**), then turn it on and select **Obstacles only** again at frame 65. This produces OFF for 2 s, ON for 2.5 s, OFF for 2 s and ON for 2.5 s. For objects, install the optional models, choose **CenterPoint tiny**, set **Min score = 0.60**, select **Car**, enable **IDs** and hide motion trails and speed labels. Sensor-height alignment is the app's usual first-frame estimate; manual angles and translation are zero and IMU leveling is off.
+For ground, start with **Classify ground** off. Turn it on at captured frame 20 and choose **Obstacles only**. Turn it off at frame 45 (the app restores **All points**), then turn it on and select **Obstacles only** again at frame 65. This produces OFF for 2 s, ON for 2.5 s, OFF for 2 s and ON for 2.5 s. For objects, leave **FugSeg** enabled and select **Obstacles only** in Ground. Install the optional models, choose **CenterPoint tiny**, set **Min score = 0.60**, select **Car**, enable **IDs** and hide motion trails and speed labels. Ground filtering changes the displayed points; the learned model still receives its normal full, aligned scan before ground filtering. Sensor-height alignment is the app's usual first-frame estimate; manual angles and translation are zero and IMU leveling is off.

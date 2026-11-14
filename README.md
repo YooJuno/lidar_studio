@@ -26,9 +26,9 @@ Background loading and analysis keep the interface usable. Separate **Ground avg
 
 **Object detection — CenterPoint tiny**
 
-[![CenterPoint tiny vehicle detections and persistent IDs on consecutive KITTI scans](docs/media/object-detection.gif)](docs/media/object-detection.mp4)
+[![CenterPoint tiny vehicle detections and persistent IDs with ground removed on consecutive KITTI scans](docs/media/object-detection.gif)](docs/media/object-detection.mp4)
 
-Cyan boxes show **vehicle predictions and track IDs** at a minimum score of **0.60**. Ground coloring and cluster overlays are off. [MP4](docs/media/object-detection.mp4).
+Cyan boxes show **vehicle predictions and track IDs** at a minimum score of **0.60**. **FugSeg removes ground from the view**, keeping the vehicles and boxes easy to see. Cluster overlays are off. [MP4](docs/media/object-detection.mp4).
 
 Both previews use the same **90 consecutive KITTI Raw scans**, shown at the source rate of **10 Hz**. They are frame-by-frame application captures, not runtime benchmarks. [Source and recording details](docs/media/SOURCE.md).
 
