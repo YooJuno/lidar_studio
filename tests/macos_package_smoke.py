@@ -23,7 +23,11 @@ def run(*args, **kwargs):
 
 
 def check_app(app, workspace, require_gui=False):
+    if app.name != 'LiDAR Studio.app':
+        raise RuntimeError('Installed app must be named LiDAR Studio.app')
     info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+    if info.get('CFBundleDisplayName') != 'LiDAR Studio':
+        raise RuntimeError('macOS display name must be LiDAR Studio')
     executable = app / 'Contents/MacOS' / info['CFBundleExecutable']
     if not os.access(executable, os.X_OK):
         raise RuntimeError('Packaged app executable is missing or not executable')

@@ -15,7 +15,7 @@ def main():
     template = Path(__file__).resolve().parents[1] / 'cmake/macos/Info.plist.in'
     with tempfile.TemporaryDirectory(prefix='lidar-macos-metadata-') as temporary:
         root = Path(temporary)
-        app = root / 'lidar_studio.app'
+        app = root / 'LiDAR Studio.app'
         executable = app / 'Contents/MacOS/lidar_studio'
         executable.parent.mkdir(parents=True)
         executable.touch()
@@ -38,6 +38,7 @@ endif()
         info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
         assert info['LSMinimumSystemVersion'] == '15.0'
         assert info['CFBundleExecutable'] == 'lidar_studio'
+        assert info['CFBundleDisplayName'] == 'LiDAR Studio'
         assert info['CFBundleShortVersionString'] == '1.2.3'
         print('macOS metadata: valid plist and CMake bundle parser passed')
 

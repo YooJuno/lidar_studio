@@ -89,7 +89,7 @@ source /opt/ros/jazzy/setup.bash
 - Ubuntu: ROS 2 Jazzy 저장소를 설정한 뒤 `sudo apt install ./lidar_studio-*.deb`, 실행은 앱 메뉴의 **LiDAR Studio** 또는 `lidar_studio`입니다. 실행 스크립트가 Jazzy 환경을 읽습니다.
 - 저장소·실행 파일·배포 파일 이름은 `lidar_studio`입니다. Ubuntu 패키지 ID는 Debian 명명 규칙에 맞춘 `lidar-studio`이며, 이전 `lidar-viewer` 실행 명령도 지원합니다. 설정·모델 저장 위치와 desktop ID는 기존 값을 유지해 ROI와 설치한 모델, 독 아이콘 연결을 이어 씁니다.
 - Windows: ZIP을 풀고 `lidar_studio.exe`를 실행합니다. **Open... → Open file...**에서 `.bin`도 선택할 수 있습니다.
-- macOS: DMG의 `lidar_studio.app`을 Applications에 복사하거나 ZIP의 앱을 실행합니다.
+- macOS: DMG의 `LiDAR Studio.app`을 Applications에 복사하거나 ZIP의 앱을 실행합니다.
 - 패키지 빌드는 `-DLIDAR_VIEWER_USER_SETTINGS=ON`을 사용해 사용자 설정을 Windows `%APPDATA%/LiDARViewer`, macOS `~/Library/Application Support/LiDARViewer`, Ubuntu `~/.config/lidar_viewer`에 저장합니다. 기본 설정은 배포 리소스에서 읽고 사용자 설정으로 덮어씁니다. 업데이트해도 사용자 ROI를 패키지 설정으로 덮어쓰지 않습니다. `XDG_CONFIG_HOME`도 지원합니다.
 - 소스 빌드는 기존처럼 프로젝트 `config/profiles`에 저장합니다. 사용자 경로를 쓰려면 위 CMake 옵션을 켭니다.
 
@@ -107,12 +107,12 @@ GitHub 공식 릴리스에서 받은 앱을 Applications에 복사합니다. ‘
 **v0.2.55 DMG 주의:** 해당 버전은 문서 파일이 앱 서명 후 추가되는 패키징 오류가 있었습니다. 최신 릴리스로 다시 받으세요. 서명 검증이 실패한 앱에는 차단 예외를 적용하지 마세요. 이후 빌드는 모든 리소스를 설치한 후 서명하고, DMG에서 복사한 앱과 ZIP에서 추출한 앱의 서명을 각각 검증합니다.
 
 ```bash
-codesign --verify --deep --strict "/Applications/lidar_studio.app" &&
-xattr -dr com.apple.quarantine "/Applications/lidar_studio.app" &&
-open "/Applications/lidar_studio.app"
+codesign --verify --deep --strict "/Applications/LiDAR Studio.app" &&
+xattr -dr com.apple.quarantine "/Applications/LiDAR Studio.app" &&
+open "/Applications/LiDAR Studio.app"
 ```
 
-이 명령은 해당 앱에만 예외를 적용합니다. 시스템 전체의 Gatekeeper 설정은 변경하지 않습니다. 이후에도 종료되면 터미널에서 `/Applications/lidar_studio.app/Contents/MacOS/lidar_studio`를 실행해 오류를 확인합니다.
+이 명령은 해당 앱에만 예외를 적용합니다. 시스템 전체의 Gatekeeper 설정은 변경하지 않습니다. 이후에도 종료되면 터미널에서 `"/Applications/LiDAR Studio.app/Contents/MacOS/lidar_studio"`를 실행해 오류를 확인합니다.
 
 CI에서는 ZIP·DMG를 각각 추출해 서명 무결성, 라이브러리 포함, CLI 실행, 점군 파일 읽기를 필수 검사합니다. 별도의 GLFW 3.3·4.1 검사까지 모두 동일한 NSGL pixel-format 오류를 내는 호스트에서는 GUI를 **미검증**으로 표시합니다. 그래픽 지원이 있는 Mac에서는 GUI 검사도 통과해야 하며, `python3 tests/macos_package_smoke.py --packages build/packages --require-gui`로 GUI 검증을 강제할 수 있습니다. Apple 공증 여부도 별도로 표시합니다. 일반 다운로드에서 경고 없는 실행을 제공하려면 Developer ID 인증서로 서명하고 Apple 공증을 완료해야 합니다.
 

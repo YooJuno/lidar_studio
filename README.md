@@ -40,7 +40,7 @@ Get the newest verified package from [Latest release](https://github.com/YooJuno
 | --- | --- | --- |
 | Ubuntu 24.04 | Install the `.deb`, then run `lidar_studio` | BIN, NPY, PCD; ROS 2 bags and live topics with Jazzy |
 | Windows | Extract the ZIP; run `lidar_studio.exe` | BIN, NPY, PCD |
-| macOS 15+ (Apple Silicon) | Copy `lidar_studio.app` to Applications | BIN, NPY, PCD |
+| macOS 15+ (Apple Silicon) | Copy `LiDAR Studio.app` to Applications | BIN, NPY, PCD |
 
 Ubuntu installation: `sudo apt install ./lidar_studio-*.deb` (**ROS 2 Jazzy** required). Windows/macOS packages and ROS-disabled source builds work without ROS.
 

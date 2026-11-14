@@ -25,7 +25,12 @@ if(APPLE)
     PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
   target_sources(lidar_studio PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/lidar-studio.icns")
   install(TARGETS lidar_studio BUNDLE DESTINATION .)
-  set(resource_destination "lidar_studio.app/Contents/Resources")
+  # Keep the executable/CLI name stable; Finder uses the installed bundle name.
+  install(CODE [[
+    file(RENAME "${CMAKE_INSTALL_PREFIX}/lidar_studio.app"
+      "${CMAKE_INSTALL_PREFIX}/LiDAR Studio.app")
+  ]])
+  set(resource_destination "LiDAR Studio.app/Contents/Resources")
   set(CPACK_GENERATOR "ZIP;DragNDrop")
   set(CPACK_DMG_VOLUME_NAME "LiDAR Studio")
 elseif(WIN32)
@@ -101,10 +106,10 @@ if(APPLE)
   install(CODE [[
     include(BundleUtilities)
     set(BU_CHMOD_BUNDLE_ITEMS ON)
-    fixup_bundle("${CMAKE_INSTALL_PREFIX}/lidar_studio.app" "" "${lidar_fixup_dirs}")
-    execute_process(COMMAND codesign --force --deep --sign - "${CMAKE_INSTALL_PREFIX}/lidar_studio.app"
+    fixup_bundle("${CMAKE_INSTALL_PREFIX}/LiDAR Studio.app" "" "${lidar_fixup_dirs}")
+    execute_process(COMMAND codesign --force --deep --sign - "${CMAKE_INSTALL_PREFIX}/LiDAR Studio.app"
       COMMAND_ERROR_IS_FATAL ANY)
-    execute_process(COMMAND codesign --verify --deep --strict --verbose=2 "${CMAKE_INSTALL_PREFIX}/lidar_studio.app"
+    execute_process(COMMAND codesign --verify --deep --strict --verbose=2 "${CMAKE_INSTALL_PREFIX}/LiDAR Studio.app"
       COMMAND_ERROR_IS_FATAL ANY)
   ]])
 endif()

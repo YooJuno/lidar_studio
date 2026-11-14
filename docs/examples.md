@@ -63,7 +63,7 @@ unzip "$HOME/Downloads/2011_09_26_drive_0005_sync.zip" \
   dataset/2011_09_26/2011_09_26_drive_0005_sync/velodyne_points/data --play
 ```
 
-On Ubuntu, install `unzip` if needed. With an installed Ubuntu package, replace `./build/lidar_studio` with `lidar_studio`. For a macOS app bundle, use `./lidar_studio.app/Contents/MacOS/lidar_studio` from the folder containing the app.
+On Ubuntu, install `unzip` if needed. With an installed Ubuntu package, replace `./build/lidar_studio` with `lidar_studio`. For a macOS app bundle, use `"./LiDAR Studio.app/Contents/MacOS/lidar_studio"` from the folder containing the app.
 
 #### Windows PowerShell
 
