@@ -12,6 +12,8 @@ import sys
 import tempfile
 import time
 
+from macos_gl_probe import lacks_runner_opengl, probe_library
+
 
 def run(*args, **kwargs):
     result = subprocess.run(args, text=True, capture_output=True, timeout=90, **kwargs)
@@ -20,7 +22,7 @@ def run(*args, **kwargs):
     return result
 
 
-def check_app(app, workspace):
+def check_app(app, workspace, require_gui=False):
     info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
     executable = app / 'Contents/MacOS' / info['CFBundleExecutable']
     if not os.access(executable, os.X_OK):
@@ -62,28 +64,35 @@ def check_app(app, workspace):
     inspect = run(str(executable), str(fixture), '--inspect', cwd=workspace, env=env)
     if '961' not in inspect.stdout + inspect.stderr:
         raise RuntimeError('Packaged app could not load the point-cloud fixture')
-    log_path = workspace / 'gui.log'
-    with log_path.open('w') as log:
-        process = subprocess.Popen([str(executable), str(fixture)], cwd=workspace, env=env,
-                                   stdout=log, stderr=subprocess.STDOUT)
-        try:
-            deadline = time.monotonic() + 25
-            while 'UI open_input' not in log_path.read_text(errors='replace'):
-                if process.poll() is not None or time.monotonic() >= deadline:
-                    raise RuntimeError('Packaged GUI did not render: ' + log_path.read_text(errors='replace')[-6000:])
-                time.sleep(.1)
-        finally:
-            if process.poll() is None:
-                process.terminate()
-                process.wait(timeout=10)
+    graphics = probe_library(next((app / "Contents/Frameworks").glob("libglfw.3.dylib")))
+    if not require_gui and lacks_runner_opengl(graphics):
+        gui_status = "unverified: runner has no native OpenGL pixel format"
+        print("GUI NOT VERIFIED: independent GLFW 3.3/4.1 probes failed on this runner.", flush=True)
+    else:
+        log_path = workspace / 'gui.log'
+        with log_path.open('w') as log:
+            process = subprocess.Popen([str(executable), str(fixture)], cwd=workspace, env=env,
+                                       stdout=log, stderr=subprocess.STDOUT)
+            try:
+                deadline = time.monotonic() + 25
+                while 'UI open_input' not in log_path.read_text(errors='replace'):
+                    if process.poll() is not None or time.monotonic() >= deadline:
+                        raise RuntimeError('Packaged GUI did not render: ' + log_path.read_text(errors='replace')[-6000:])
+                    time.sleep(.1)
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=10)
+        gui_status = "passed"
     return dict(app=app.name, version=info['CFBundleShortVersionString'], minimum_macos=minimum,
                 architecture=platform.machine(), signature='ad-hoc' if 'Signature=adhoc' in signature else 'Developer ID',
-                gatekeeper_accepted=assessment.returncode == 0, runtime='passed', gui='passed')
+                gatekeeper_accepted=assessment.returncode == 0, runtime='passed', gui=gui_status)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--packages', type=Path, required=True)
+    parser.add_argument('--require-gui', action='store_true', help='Fail if the runner cannot render OpenGL')
     args = parser.parse_args()
     if sys.platform != 'darwin':
         parser.error('Run this verification on a macOS runner')
@@ -108,7 +117,7 @@ def main():
             apps = list((workspace / 'extracted').rglob('*.app'))
             if len(apps) != 1:
                 raise RuntimeError('Package must contain exactly one app')
-            print(json.dumps(dict(package=package.name, **check_app(apps[0], workspace))), flush=True)
+            print(json.dumps(dict(package=package.name, **check_app(apps[0], workspace, args.require_gui))), flush=True)
 
 
 if __name__ == '__main__':

@@ -7,14 +7,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--packages', type=Path, required=True)
-args = parser.parse_args()
-with tempfile.TemporaryDirectory(prefix='lidar-gl-probe-') as temporary:
-    root = Path(temporary)
-    archive = next(args.packages.glob('*.zip'))
-    subprocess.run(['ditto', '-x', '-k', str(archive.resolve()), str(root)], check=True)
-    library = next(root.rglob('libglfw.3.dylib'))
+
+def probe_library(library):
     glfw = ctypes.CDLL(str(library))
     callback_type = ctypes.CFUNCTYPE(None, ctypes.c_int, ctypes.c_char_p)
     errors = []
@@ -40,4 +34,24 @@ with tempfile.TemporaryDirectory(prefix='lidar-gl-probe-') as temporary:
         glfw.glfwTerminate()
     else:
         results.append(dict(initialized=False, errors=list(errors)))
-    print(json.dumps(results, indent=2), flush=True)
+    return results
+
+def lacks_runner_opengl(results):
+    return (len(results) == 2 and {r.get("version") for r in results} == {"3.3", "4.1"}
+            and all(r.get("created") is False and r.get("errors")
+                    and all(e.get("code") == 65545 and e.get("message") == "NSGL: Failed to find a suitable pixel format"
+                            for e in r["errors"]) for r in results))
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--packages", type=Path, required=True)
+    args = parser.parse_args()
+    with tempfile.TemporaryDirectory(prefix="lidar-gl-probe-") as temporary:
+        root = Path(temporary)
+        archive = next(args.packages.glob("*.zip"))
+        subprocess.run(["ditto", "-x", "-k", str(archive.resolve()), str(root)], check=True)
+        results = probe_library(next(root.rglob("libglfw.3.dylib")))
+        print(json.dumps(results, indent=2), flush=True)
+
+if __name__ == "__main__":
+    main()
