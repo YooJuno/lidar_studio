@@ -17,10 +17,13 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Download and verify published Mac archives
+      - name: Download published Mac archives
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           gh release download "$RELEASE_TAG" --pattern '*Darwin*' --dir packages
-          python3 tests/macos_package_smoke.py --packages packages
+      - name: Diagnose native OpenGL contexts
+        run: python3 tests/macos_gl_probe.py --packages packages
+      - name: Verify published Mac apps
+        run: python3 tests/macos_package_smoke.py --packages packages
