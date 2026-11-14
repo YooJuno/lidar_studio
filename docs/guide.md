@@ -104,6 +104,8 @@ Windows 소스 빌드는 저장소의 `vcpkg.json`과 `cmake/triplets/x64-window
 
 GitHub 공식 릴리스에서 받은 앱을 Applications에 복사합니다. ‘개발자를 확인할 수 없음’이면 **시스템 설정 → 개인정보 보호 및 보안 → 확인 없이 열기**를 사용할 수 있습니다. ‘손상되었기 때문에 열 수 없음’이면 먼저 릴리스의 `SHA256SUMS`로 다운로드를 확인하고 다음을 실행합니다. 서명 검사가 실패하면 뒤의 명령은 실행되지 않습니다. 검사 실패 메시지를 확인하고 다시 다운로드하세요.
 
+**v0.2.55 DMG 주의:** 해당 버전은 문서 파일이 앱 서명 후 추가되는 패키징 오류가 있었습니다. 최신 릴리스로 다시 받으세요. 서명 검증이 실패한 앱에는 차단 예외를 적용하지 마세요. 이후 빌드는 모든 리소스를 설치한 후 서명하고, DMG에서 복사한 앱과 ZIP에서 추출한 앱의 서명을 각각 검증합니다.
+
 ```bash
 codesign --verify --deep --strict "/Applications/lidar_studio.app" &&
 xattr -dr com.apple.quarantine "/Applications/lidar_studio.app" &&
