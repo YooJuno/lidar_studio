@@ -8,7 +8,7 @@ A desktop workspace for LiDAR playback, ground segmentation, clustering, object 
 
 ## Highlights
 
-- **Point clouds, easy to explore.** Switch between 3D and rotatable 2D views, scrub recordings and step through frames. Browse BIN, NPY and PCD folders, review labels and keep the same camera position and zoom between samples.
+- **Point clouds, easy to explore.** Switch between 3D, rotatable 2D and a **360° sensor panorama** with distance colors. Pan and zoom without losing your view between frames. Browse BIN, NPY and PCD folders, scrub recordings and review labels.
 - **Visual ground segmentation.** Choose **FugSeg, GSeg3D, Patchwork++, Fast grid, Grid or RANSAC**. Tune parameters and show all points, ground only or obstacles only. Align scans manually or use IMU leveling.
 - **Clustering for obstacle analysis.** Group points with **Euclidean 3D** or **Projected XY** clustering, adjust distance and vertical separation, and inspect cluster boxes.
 - **Learned object detection.** Use **AWML ShortRange** or **CenterPoint tiny** for people, bicycles, cars, trucks and buses. Filter classes and confidence, and follow persistent object IDs with Kalman tracking.

@@ -57,6 +57,18 @@ BIN 파일이나 단일 bag 폴더를 뷰어에 드래그해 열 수도 있습�
 ./build/lidar_studio dataset/gangnam/2019_10_04_12_28_25.bin
 ```
 
+## 파노라마 · Range view
+
+캔버스 왼쪽 위 **3D / 2D / Panorama**에서 **Panorama**를 선택합니다. 또는 `lidar_studio INPUT --panorama`로 시작합니다.
+
+- **가로:** 센서 방위각 360도. 정면은 가운데, 왼쪽·오른쪽은 각각 화면의 왼쪽·오른쪽이며 후방에서 이어집니다.
+- **세로:** 포인트의 실제 고도각입니다. 링 번호가 없는 BIN·NPY·PCD도 지원하며, 각도가 불균일한 센서에 가상의 링 번호를 부여하지 않습니다.
+- **드래그 / 휠 / F:** 이동 / 커서 기준 확대 / 현재 스캔 전체 각도 범위로 복귀. 재생·프레임 이동 중에는 시점을 유지하며 3D·2D 카메라는 별도로 보존합니다.
+- **View → Color by:** 기본 **Distance**는 센서 거리 색상입니다. **Point colors**는 기존 강도·높이·라벨·지면 색상을 사용합니다. `C`로 두 모드를 전환합니다. 거리 범위를 바꾸면 색상만 바뀌고 먼 포인트를 자르지 않습니다.
+- **View → Vertical field of view:** 상하 고도각을 조정합니다. Ctrl+클릭하면 직접 입력할 수 있습니다.
+
+정렬·IMU 보정을 역변환한 센서 좌표로 펼칩니다. 표시 ROI와 지면/장애물 표시 설정은 유지합니다. 박스 편집과 3D 검출 박스는 **2D 또는 3D**에서 확인합니다. 같은 화면 픽셀에는 가까운 반사점이 우선하며 별도의 점군 복사·CPU 이미지 정렬 없이 기존 GPU 버퍼를 재사용합니다. 투영 좌표의 기준은 [SemanticKITTI spherical range projection](https://github.com/PRBonn/semantic-kitti-api/blob/master/auxiliary/laserscan.py)과 같습니다.
+
 ## 실시간 LiDAR · IMU
 
 프로그램을 먼저 실행한 뒤 상단 **Live... → Connect**를 누릅니다. 센서 드라이버는 별도로 실행돼 있어야 합니다. 기본 토픽은 XT32 `/b2/points`, IMU `/vn100/imu/data_ned`이며, 연결 창에서 변경할 수 있습니다. 뷰어가 센서 설정을 바꾸거나 로봇 구동 명령을 발행하지는 않습니다.

@@ -14,6 +14,7 @@
 #include "lidar_viewer/ui_layout.hpp"
 #include "lidar_viewer/settings_io.hpp"
 #include "lidar_viewer/camera_2d.hpp"
+#include "lidar_viewer/panorama.hpp"
 #include "lidar_viewer/roi.hpp"
 #include "lidar_viewer/processing_average.hpp"
 #include "lidar_viewer/example_dataset.hpp"
@@ -204,13 +205,34 @@ GLuint CreateProgram()
 
     uniform mat4 u_mvp;
     uniform float u_point_size;
+    uniform bool u_panorama;
+    uniform mat3 u_sensor_rotation;
+    uniform vec3 u_sensor_translation;
+    uniform vec4 u_panorama_view; // bearing/elevation center, horizontal/vertical FOV in degrees
     out float v_intensity;
     out float v_height;
+    out float v_range;
     layout(location = 2) in int a_label;
     flat out int v_label;
 
     void main() {
       gl_Position = u_mvp * vec4(a_position, 1.0);
+      v_range=0.0;
+      if(u_panorama) {
+        vec3 sensor=transpose(u_sensor_rotation)*(a_position-u_sensor_translation);
+        v_range=length(sensor);
+        // Same spherical geometry as SemanticKITTI's range projection. The
+        // depth buffer keeps the nearest return; no sort or CPU image copy.
+        float bearing=-degrees(atan(sensor.y,sensor.x));
+        float delta=mod(bearing-u_panorama_view.x+180.0,360.0)-180.0;
+        float elevation=degrees(atan(sensor.z,length(sensor.xy)));
+        gl_Position=vec4(2.0*delta/u_panorama_view.z,
+          2.0*(elevation-u_panorama_view.y)/u_panorama_view.w,
+          2.0*v_range/(v_range+1.0)-1.0,1.0);
+        if(any(isnan(sensor)) || any(isinf(sensor)) || v_range<=0.05 || isinf(v_range)) {
+          gl_Position=vec4(2,2,2,1);v_range=-1;
+        }
+      }
       gl_PointSize = u_point_size;
       v_intensity = a_intensity;
       v_height = a_position.z;
@@ -222,12 +244,14 @@ GLuint CreateProgram()
     #version 330 core
     in float v_intensity;
     in float v_height;
+    in float v_range;
     flat in int v_label;
     out vec4 frag_color;
 
     uniform int u_color_mode;
     uniform float u_min_height;
     uniform float u_max_height;
+    uniform float u_range_max;
 
     vec3 turbo(float x) {
       x = clamp(x, 0.0, 1.0);
@@ -239,6 +263,10 @@ GLuint CreateProgram()
     }
 
     void main() {
+      if(v_range<0) discard;
+      if(u_color_mode==4) {
+        frag_color=vec4(clamp(turbo(v_range/max(u_range_max,0.1)),0.0,1.0),1.0);return;
+      }
       if (u_color_mode == 3) {
         vec3 colors[8]=vec3[8](vec3(1,.59,.31),vec3(.40,.61,1),vec3(.39,.84,.55),vec3(.70,.54,1),
           vec3(.97,.49,.73),vec3(.96,.82,.35),vec3(.33,.80,.87),vec3(.98,.44,.44));
@@ -386,6 +414,7 @@ struct CameraState
   {
     View3D,
     View2D,
+    Panorama,
   };
 
   struct ViewBookmark
@@ -403,6 +432,7 @@ struct CameraState
   float distance{40.0f};
   float point_size{2.0f};
   ProjectionMode projection_mode{ProjectionMode::View3D};
+  lidar_viewer::PanoramaView panorama;
   bool has_saved_view{false};
   ViewBookmark saved_3d_view{{}, 0.2f, -0.35f, 40.0f, false};
   ViewBookmark saved_2d_view{{}, 0.0f, -1.5707f, 40.0f, false};
@@ -729,6 +759,7 @@ Vec3 CameraPosition(const CameraState & camera)
 
 void StoreCurrentProjectionView(CameraState & camera)
 {
+  if(camera.projection_mode==CameraState::ProjectionMode::Panorama) return;
   auto & bookmark =
     (camera.projection_mode == CameraState::ProjectionMode::View2D)
     ? camera.saved_2d_view
@@ -742,6 +773,9 @@ void StoreCurrentProjectionView(CameraState & camera)
 
 void ResetCameraToFrame(ViewerState & state)
 {
+  if(state.camera.projection_mode==CameraState::ProjectionMode::Panorama) {
+    lidar_viewer::FitPanorama(state.camera.panorama,state.base_frame.points,state.global_ground_offset);return;
+  }
   state.camera.target = state.frame.center;
   if (state.camera.projection_mode == CameraState::ProjectionMode::View2D) {
     state.camera.target.z = 0.0f;
@@ -758,6 +792,7 @@ void ResetCameraToFrame(ViewerState & state)
 
 void FitDatasetSample(ViewerState & state)
 {
+  if(state.camera.projection_mode==CameraState::ProjectionMode::Panorama) {ResetCameraToFrame(state);return;}
   state.camera.target=state.frame.center;
   float radius=state.base_frame.radius;
   if(const auto labels=state.base_frame.annotations) for(const auto & object:labels->boxes) {
@@ -787,6 +822,10 @@ void SetProjectionMode(ViewerState & state, CameraState::ProjectionMode mode)
 
   StoreCurrentProjectionView(state.camera);
   state.camera.projection_mode = mode;
+  if(mode==CameraState::ProjectionMode::Panorama) {
+    if(!state.camera.panorama.initialized) ResetCameraToFrame(state);
+    return;
+  }
   const auto & bookmark =
     (mode == CameraState::ProjectionMode::View2D)
     ? state.camera.saved_2d_view
@@ -2427,6 +2466,8 @@ void SaveSettings(ViewerState & state)
       state.calibration.yaw_deg, state.calibration.pitch_deg, state.calibration.roll_deg,
       state.calibration.z_m, state.grid_settings.spacing, state.grid_settings.thickness,
       state.height_color_min, state.height_color_max, state.ui_scale,
+      state.camera.panorama.center_deg,state.camera.panorama.elevation_deg,state.camera.panorama.horizontal_fov,
+      state.camera.panorama.vertical_fov,state.camera.panorama.range_max,
       state.imu_mount.roll_deg, state.imu_mount.pitch_deg, state.imu_mount.yaw_deg,state.tracking_params.max_missed_s}) {
     if (!std::isfinite(value)) throw std::runtime_error("Cannot save a non-finite setting");
   }
@@ -2479,7 +2520,13 @@ void SaveSettings(ViewerState & state)
   out << "max_ground_angle_deg=" << state.algorithm_config.ground_removal.max_ground_angle_deg << '\n';
   out << "final_distance_threshold_m=" << state.algorithm_config.ground_removal.final_distance_threshold_m << '\n';
   out << "projection_mode=" <<
-    (camera_snapshot.projection_mode == CameraState::ProjectionMode::View2D ? "2d" : "3d") << '\n';
+    (camera_snapshot.projection_mode == CameraState::ProjectionMode::Panorama ? "panorama" :
+      camera_snapshot.projection_mode == CameraState::ProjectionMode::View2D ? "2d" : "3d") << '\n';
+  const auto & panorama=camera_snapshot.panorama;
+  out<<"panorama_center_deg="<<panorama.center_deg<<'\n'<<"panorama_elevation_deg="<<panorama.elevation_deg<<'\n'
+    <<"panorama_horizontal_fov="<<panorama.horizontal_fov<<'\n'<<"panorama_vertical_fov="<<panorama.vertical_fov<<'\n'
+    <<"panorama_range_max="<<panorama.range_max<<'\n'<<"panorama_color_mode="<<panorama.color_mode<<'\n'
+    <<"panorama_valid="<<panorama.initialized<<'\n';
   out << "camera_target_x=" << camera_snapshot.target.x << '\n';
   out << "camera_target_y=" << camera_snapshot.target.y << '\n';
   out << "camera_target_z=" << camera_snapshot.target.z << '\n';
@@ -2633,7 +2680,15 @@ void LoadSettingsFile(ViewerState & state, const fs::path & path)
         state.algorithm_config.ground_removal.final_distance_threshold_m=std::clamp(ParseFiniteFloat(value),.02f,.5f);
       } else if (key == "projection_mode") {
         state.camera.projection_mode =
+          value=="panorama" ? CameraState::ProjectionMode::Panorama :
           (value == "2d") ? CameraState::ProjectionMode::View2D : CameraState::ProjectionMode::View3D;
+      } else if(key=="panorama_center_deg") {state.camera.panorama.center_deg=lidar_viewer::WrapDegrees(ParseFiniteFloat(value));
+      } else if(key=="panorama_elevation_deg") {state.camera.panorama.elevation_deg=std::clamp(ParseFiniteFloat(value),-90.f,90.f);
+      } else if(key=="panorama_horizontal_fov") {state.camera.panorama.horizontal_fov=std::clamp(ParseFiniteFloat(value),2.f,360.f);
+      } else if(key=="panorama_vertical_fov") {state.camera.panorama.vertical_fov=std::clamp(ParseFiniteFloat(value),2.f,180.f);
+      } else if(key=="panorama_range_max") {state.camera.panorama.range_max=std::clamp(ParseFiniteFloat(value),.1f,1000.f);
+      } else if(key=="panorama_color_mode") {state.camera.panorama.color_mode=std::clamp(ParseStrictInt(value),0,1);
+      } else if(key=="panorama_valid") {state.camera.panorama.initialized=ParseStrictInt(value)!=0;
       } else if (key == "camera_target_x") {
         state.camera.target.x = ParseFiniteFloat(value);
         state.camera.has_saved_view = true;
@@ -2790,6 +2845,7 @@ void LoadSettings(ViewerState & state)
   }
   state.camera.distance=std::clamp(state.camera.distance,
     state.camera.projection_mode==CameraState::ProjectionMode::View2D ? lidar_viewer::kMinTopViewHalfHeight : 1.f,5000.f);
+  lidar_viewer::ClampPanorama(state.camera.panorama);
   // Old tiny profiles stored uncalibrated scores without a model identity.
   // Preserve explicitly saved model thresholds; migrate legacy defaults only.
   if (!state.detector_model_loaded && state.algorithm_config.detection.model=="short_range")
@@ -3101,6 +3157,12 @@ void CursorCallback(GLFWwindow * window, double x, double y)
   const float scale = state->camera.projection_mode==CameraState::ProjectionMode::View2D ?
     2*lidar_viewer::TopViewHalfHeight(state->camera.distance)/std::max(state->ui_layout.viewport.h,1.f) :
     std::max(kPanBaseScale * state->camera.distance,0.01f);
+  if(state->camera.projection_mode==CameraState::ProjectionMode::Panorama) {
+    if(state->camera.dragging_left || state->camera.dragging_right)
+      lidar_viewer::PanPanorama(state->camera.panorama,static_cast<float>(dx)/std::max(1.f,state->ui_layout.viewport.w),
+        static_cast<float>(dy)/std::max(1.f,state->ui_layout.viewport.h));
+    return;
+  }
   if (state->camera.dragging_left) {
     if (state->camera.projection_mode == CameraState::ProjectionMode::View2D) {
       state->camera.target = lidar_viewer::PanTopView(
@@ -3129,6 +3191,13 @@ void ScrollCallback(GLFWwindow * window, double, double yoffset)
   if (!state || !PointerInScene(window, *state) ||
       (ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse)) return;
   const auto distance=state->camera.distance*static_cast<float>(std::pow(0.9,yoffset));
+  if(state->camera.projection_mode==CameraState::ProjectionMode::Panorama) {
+    const auto & view=state->ui_layout.viewport;
+    lidar_viewer::ZoomPanorama(state->camera.panorama,static_cast<float>(std::pow(.9,yoffset)),
+      static_cast<float>(2*(state->camera.last_x-view.x)/std::max(view.w,1.f)-1),
+      static_cast<float>(1-2*(state->camera.last_y-view.y)/std::max(view.h,1.f)));
+    return;
+  }
   if (state->camera.projection_mode==CameraState::ProjectionMode::View2D) {
     const auto & view=state->ui_layout.viewport;
     if (view.w<1 || view.h<1 || state->roi_gesture.active) return;
@@ -3201,7 +3270,11 @@ void KeyCallback(GLFWwindow * window, int key, int, int action, int mods)
     case GLFW_KEY_ESCAPE:
       if(state->studio_parent) state->studio_parent->review_active=false;else glfwSetWindowShouldClose(window, GLFW_TRUE);break;
     case GLFW_KEY_F: state->fit_view_requested = true; break;
-    case GLFW_KEY_C: state->color_mode = (state->color_mode + 1) % 3; break;
+    case GLFW_KEY_C:
+      if(state->camera.projection_mode==CameraState::ProjectionMode::Panorama)
+        state->camera.panorama.color_mode=1-state->camera.panorama.color_mode;
+      else state->color_mode = (state->color_mode + 1) % 3;
+      break;
     case GLFW_KEY_Q:
     case GLFW_KEY_E:
       if (state->camera.projection_mode == CameraState::ProjectionMode::View2D)
@@ -4529,27 +4602,56 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   if (tabs_open) {
     if(dataset_input && begin_tab("Data")) {BuildDatasetPanel(state);end_tab();}
     if (begin_tab("View")) {
+      const bool panorama=state.camera.projection_mode==CameraState::ProjectionMode::Panorama;
       SectionTitle("Point appearance");
       ImGui::TextDisabled("Color by");ImGui::SetNextItemWidth(-1);
-      ImGui::Combo("##Color", &state.color_mode, "Intensity\0Height\0Uniform\0");
+      if(panorama) {
+        ImGui::Combo("##PanoramaColor",&state.camera.panorama.color_mode,"Distance\0Point colors\0");TraceUi("panorama_color");
+        if(state.camera.panorama.color_mode==0) {
+          ImGui::TextDisabled("Distance color range (m)");ImGui::SetNextItemWidth(-1);
+          float range=state.camera.panorama.range_max;
+          if(ImGui::InputFloat("##PanoramaRange",&range,1,10,"%.1f") && std::isfinite(range)) state.camera.panorama.range_max=std::clamp(range,.1f,1000.f);
+          TraceUi("panorama_range");
+          Tip("Colors saturate beyond this distance; distant points remain visible.");
+        }
+      }
+      if(!panorama || state.camera.panorama.color_mode==1)
+        ImGui::Combo("##Color", &state.color_mode, "Intensity\0Height\0Uniform\0");
       ImGui::TextDisabled("Point size");ImGui::SetNextItemWidth(-1);
       ImGui::SliderFloat("##PointSize", &state.camera.point_size, 1, 8, "%.1f px", ImGuiSliderFlags_AlwaysClamp);
-      if (state.color_mode==1) {
+      if (state.color_mode==1 && (!panorama || state.camera.panorama.color_mode==1)) {
         ImGui::TextDisabled("Height range (m)");ImGui::SetNextItemWidth(-1);
         ImGui::DragFloatRange2("##HeightRange",&state.height_color_min,&state.height_color_max,.05f,-100,100,"%.2f","%.2f");
         if (!std::isfinite(state.height_color_min)) state.height_color_min=-1;
         if (!std::isfinite(state.height_color_max)) state.height_color_max=4;
         state.height_color_max=std::max(state.height_color_min+.01f,state.height_color_max);
       }
-      ImGui::Spacing();ImGui::Spacing();ImGui::Checkbox("Reference grid",&state.grid_settings.enabled);
-      if (ImGui::CollapsingHeader("Grid settings")) {
+      ImGui::Spacing();ImGui::Spacing();ImGui::Checkbox(panorama ? "Angle grid" : "Reference grid",&state.grid_settings.enabled);
+      if(panorama) {
+        ImGui::Spacing();SectionTitle("Sensor panorama");
+        ImGui::TextWrapped("360-degree azimuth / measured elevation");
+        ImGui::TextDisabled("Drag to pan  |  Wheel to zoom");
+        ImGui::TextWrapped("Uses input sensor coordinates. Works without ring IDs. Edit ROI boxes in 2D.");
+        if(ImGui::Button("Reset panorama [F]",{-1,0})) ResetCameraToFrame(state);
+        TraceUi("panorama_reset");
+        if(ImGui::CollapsingHeader("Vertical field of view")) {
+          auto & p=state.camera.panorama;
+          float low=p.elevation_deg-p.vertical_fov*.5f,high=p.elevation_deg+p.vertical_fov*.5f;
+          ImGui::TextDisabled("Bottom / top (degrees)");ImGui::SetNextItemWidth(-1);
+          if(ImGui::DragFloatRange2("##PanoramaElevation",&low,&high,.1f,-90,90,"%.1f deg","%.1f deg") && std::isfinite(low) && std::isfinite(high)) {
+            p.vertical_fov=std::clamp(high-low,2.f,180.f);p.elevation_deg=(high+low)*.5f;lidar_viewer::ClampPanorama(p);
+          }
+          Tip("Ctrl+click a value to type an exact elevation. Reset fits the current scan once; playback keeps the same view.");
+        }
+      }
+      if (!panorama && ImGui::CollapsingHeader("Grid settings")) {
         bool dirty=false;ImGui::SetNextItemWidth(-1);
         dirty|=ImGui::SliderFloat("##Spacing",&state.grid_settings.spacing,.1f,20,"Spacing: %.1f m",ImGuiSliderFlags_AlwaysClamp);
         ImGui::SetNextItemWidth(-1);dirty|=ImGui::SliderInt("##Extent",&state.grid_settings.count,2,100,"Extent: %d cells",ImGuiSliderFlags_AlwaysClamp);
         ImGui::SetNextItemWidth(-1);dirty|=ImGui::SliderFloat("##GridLines",&state.grid_settings.thickness,1,4,"Line width: %.1f",ImGuiSliderFlags_AlwaysClamp);
         if (dirty) MarkGridDirty(state);
       }
-      if (ImGui::CollapsingHeader("Camera")) {
+      if (!panorama && ImGui::CollapsingHeader("Camera")) {
         if (state.camera.projection_mode==CameraState::ProjectionMode::View2D) {
           float degrees=state.camera.yaw*180.f/kPi;ImGui::TextDisabled("Top view rotation");ImGui::SetNextItemWidth(-1);
           if (ImGui::DragFloat("##TopRotation",&degrees,.5f,-180,180,"%.1f deg")) state.camera.yaw=std::remainder(degrees,360.f)*kPi/180.f;
@@ -5205,22 +5307,60 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,{6*s,6*s});
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,{5*s,0});
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,{6*s,5*s});
-    BeginPanel("Canvas tools",{view.x+12*s,view.y+10*s,std::min(view.w-24*s,87*s),42*s},false);
+    BeginPanel("Canvas tools",{view.x+12*s,view.y+10*s,std::min(view.w-24*s,179*s),42*s},false);
     const bool top=state.camera.projection_mode==CameraState::ProjectionMode::View2D;
+    const bool panorama=state.camera.projection_mode==CameraState::ProjectionMode::Panorama;
     const auto mode_button=[&](const char * label,bool selected) {
       if (selected) ImGui::PushStyleColor(ImGuiCol_Button,{.13f,.34f,.42f,1});
-      const bool clicked=ImGui::Button(label,{32*s,30*s});
+      const bool clicked=ImGui::Button(label,{std::string(label)=="Panorama" ? 86*s : 32*s,30*s});
       TraceUi((std::string("camera_")+label).c_str());
       if (selected) ImGui::PopStyleColor();
       return clicked;
     };
-    if (mode_button("3D",!top)) {SelectRoiTool(state,ViewerState::RoiTool::Navigate);SetProjectionMode(state,CameraState::ProjectionMode::View3D);}
+    if (mode_button("3D",!top && !panorama)) {SelectRoiTool(state,ViewerState::RoiTool::Navigate);SetProjectionMode(state,CameraState::ProjectionMode::View3D);}
     ImGui::SameLine();
     if (mode_button("2D",top)) SetProjectionMode(state,CameraState::ProjectionMode::View2D);
+    ImGui::SameLine();
+    if(mode_button("Panorama",panorama)) {SelectRoiTool(state,ViewerState::RoiTool::Navigate);SetProjectionMode(state,CameraState::ProjectionMode::Panorama);}
     ImGui::End();ImGui::PopStyleVar(3);
   }
   auto * draw=ImGui::GetBackgroundDrawList();
   const ImU32 muted = IM_COL32(131, 151, 174, 255);
+  if(state.camera.projection_mode==CameraState::ProjectionMode::Panorama && view.w>300*s && view.h>150*s) {
+    const auto & p=state.camera.panorama;
+    draw->PushClipRect({view.x,view.y},{view.x+view.w,view.y+view.h},true);
+    char text[96];std::snprintf(text,sizeof(text),"SENSOR PANORAMA  |  %.0f x %.1f deg",p.horizontal_fov,p.vertical_fov);
+    draw->AddRectFilled({view.x+9*s,view.y+54*s},{view.x+23*s+ImGui::CalcTextSize(text).x,view.y+80*s},IM_COL32(12,17,23,220),4*s);
+    draw->AddText({view.x+14*s,view.y+58*s},muted,text);
+    const float hstep=p.horizontal_fov>180 ? 60 : p.horizontal_fov>60 ? 30 : p.horizontal_fov>20 ? 10 : 2;
+    if(state.grid_settings.enabled) {
+      for(float a=std::ceil((p.center_deg-p.horizontal_fov*.5f)/hstep)*hstep;a<p.center_deg+p.horizontal_fov*.5f;a+=hstep) {
+        const float x=view.x+view.w*(.5f+(a-p.center_deg)/p.horizontal_fov);
+        draw->AddLine({x,view.y+88*s},{x,view.y+view.h-30*s},IM_COL32(110,140,166,40));
+        const float bearing=-lidar_viewer::WrapDegrees(a);
+        if(std::abs(bearing)<.01f) std::snprintf(text,sizeof(text),"Front 0");
+        else if(std::abs(std::abs(bearing)-90)<.01f) std::snprintf(text,sizeof(text),"%s 90",bearing>0 ? "Left" : "Right");
+        else if(std::abs(std::abs(bearing)-180)<.01f) std::snprintf(text,sizeof(text),"Back 180");
+        else std::snprintf(text,sizeof(text),"%.0f",bearing);
+        const float w=ImGui::CalcTextSize(text).x;
+        draw->AddText({std::clamp(x-w*.5f,view.x+4*s,view.x+view.w-w-4*s),view.y+view.h-24*s},muted,text);
+      }
+      const float vstep=p.vertical_fov>40 ? 10 : p.vertical_fov>15 ? 5 : 1;
+      for(float a=std::ceil((p.elevation_deg-p.vertical_fov*.5f)/vstep)*vstep;a<p.elevation_deg+p.vertical_fov*.5f;a+=vstep) {
+        const float y=view.y+view.h*(.5f-(a-p.elevation_deg)/p.vertical_fov);
+        if(y<view.y+90*s || y>view.y+view.h-40*s) continue;
+        draw->AddLine({view.x+50*s,y},{view.x+view.w,y},IM_COL32(110,140,166,40));
+        std::snprintf(text,sizeof(text),"%+.0f",a);draw->AddText({view.x+8*s,y-7*s},muted,text);
+      }
+    }
+    if(p.color_mode==0) {
+      std::snprintf(text,sizeof(text),"Distance: 0 - %.0f m",p.range_max);
+      const float width=ImGui::CalcTextSize(text).x;
+      draw->AddRectFilled({view.x+view.w-width-21*s,view.y+12*s},{view.x+view.w-10*s,view.y+38*s},IM_COL32(12,17,23,220),4*s);
+      draw->AddText({view.x+view.w-width-16*s,view.y+16*s},muted,text);
+    }
+    draw->PopClipRect();
+  }
   const auto handles=RoiHandlePoints(state);
   if (!handles.empty() && !state.loading_bag_source) {
     draw->PushClipRect({view.x,view.y},{view.x+view.w,view.y+view.h},true);
@@ -5264,7 +5404,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   BuildDatasetReviewDialog(state);
   if(training_owner.open_training && !training_owner.training_workspace) training_owner.training_workspace=std::make_unique<lidar_viewer::TrainingWorkspace>();
   if(training_owner.training_workspace) training_owner.training_workspace->Draw(training_owner.open_training,CurrentDatasetRoot(state),s);
-  if (has_input && state.imu_level_enabled) {
+  if (has_input && state.imu_level_enabled && state.camera.projection_mode!=CameraState::ProjectionMode::Panorama) {
     const bool applied = state.imu_level_result.applied;
     const bool estimated = state.base_frame.imu &&
       state.base_frame.imu->source == lidar_viewer::ImuGravitySource::AccelGyro;
@@ -5634,6 +5774,7 @@ int RunViewer(int argc, char ** argv)
     bool autoplay = false;
     bool imu_level = false;
     bool start_2d = false;
+    bool start_panorama=false;
     bool start_live = false;
     bool point_review=false;
     fs::path record_folder = lidar_viewer::ProjectResourcePath("recordings");
@@ -5644,7 +5785,7 @@ int RunViewer(int argc, char ** argv)
     for (int i = 1; i < argc; ++i) {
       const std::string arg = argv[i];
       if (arg == "--help" || arg == "-h") {
-        std::cout << "Usage: lidar_studio [INPUT] [--live] [--topic /b2/points] [--sensor-height METRES] [--imu-level] [--imu-topic TOPIC] [--2d] [--play] [--detect] [--inspect] [--record-folder DIR]\n"
+        std::cout << "Usage: lidar_studio [INPUT] [--live] [--topic /b2/points] [--sensor-height METRES] [--imu-level] [--imu-topic TOPIC] [--2d|--panorama] [--play] [--detect] [--inspect] [--record-folder DIR]\n"
                   << "INPUT: .bin/.npy/.pcd file, dataset folder/metadata.json, bag collection, ROS 2 bag, .mcap, .db3 or metadata.yaml.\n"
                   << "Without INPUT, show an empty viewer. Click Open... to select a recording.\n"
                   << "Open... selects a file or remembers a recordings folder. Ctrl+O opens the file chooser.\n"
@@ -5655,6 +5796,7 @@ int RunViewer(int argc, char ** argv)
                   << "--imu-level: gravity-align roll/pitch using recorded IMU and a known mount rotation.\n"
                   << "--imu-topic: select an IMU topic; otherwise choose one from recorded topics.\n"
                   << "--2d: open top view; right-drag or Q/E rotates, left-drag pans.\n"
+                  << "--panorama: open a 360-degree sensor range view; drag to pan, wheel to zoom, F to reset.\n"
                   << "--detect: enable the installed original CenterPoint model.\n"
                   << "--inspect: index and load the first frame without opening a window.\n"
                   << "ROS 2 bag backend: " << (RosbagInputAvailable() ? "enabled" : "not built") << '\n';
@@ -5695,6 +5837,8 @@ int RunViewer(int argc, char ** argv)
         imu_level = true;
       } else if (arg == "--2d") {
         start_2d = true;
+      } else if(arg=="--panorama") {
+        start_panorama=true;
       } else if (arg == "--live") {
         start_live = true;
       } else if (!arg.empty() && arg.front() == '-') {
@@ -5760,6 +5904,7 @@ int RunViewer(int argc, char ** argv)
     if (detect_objects) state.algorithm_config.detection.enabled=true;
     if (imu_level) state.imu_level_enabled = true;
     if (start_2d) SetProjectionMode(state, CameraState::ProjectionMode::View2D);
+    if(start_panorama) SetProjectionMode(state,CameraState::ProjectionMode::Panorama);
     if (sensor_height) {
       state.calibration.z_m = *sensor_height;
     }
@@ -5950,6 +6095,11 @@ int RunViewer(int argc, char ** argv)
     const GLint color_mode_loc = glGetUniformLocation(program, "u_color_mode");
     const GLint min_height_loc = glGetUniformLocation(program, "u_min_height");
     const GLint max_height_loc = glGetUniformLocation(program, "u_max_height");
+    const GLint panorama_loc=glGetUniformLocation(program,"u_panorama");
+    const GLint panorama_view_loc=glGetUniformLocation(program,"u_panorama_view");
+    const GLint sensor_rotation_loc=glGetUniformLocation(program,"u_sensor_rotation");
+    const GLint sensor_translation_loc=glGetUniformLocation(program,"u_sensor_translation");
+    const GLint range_max_loc=glGetUniformLocation(program,"u_range_max");
 
     glEnable(GL_PROGRAM_POINT_SIZE);
     glEnable(GL_DEPTH_TEST);
@@ -6035,6 +6185,8 @@ int RunViewer(int argc, char ** argv)
         UploadFrame(state);
         state.frame_dirty = false;
       }
+      const bool panorama=state.camera.projection_mode==CameraState::ProjectionMode::Panorama;
+      if(panorama && !state.camera.panorama.initialized) ResetCameraToFrame(state);
       const bool dataset_frame=!state.frames.empty() && state.frames.front().dataset_sample;
       if(state.fit_view_requested || (dataset_frame && state.dataset_fit_pending)) {
         if(dataset_frame) FitDatasetSample(state);else ResetCameraToFrame(state);
@@ -6083,7 +6235,14 @@ int RunViewer(int argc, char ** argv)
       glUseProgram(program);
       glUniformMatrix4fv(mvp_loc, 1, GL_FALSE, mvp.m.data());
       glUniform1f(point_size_loc, state.camera.point_size);
-      glUniform1i(color_mode_loc,state.dataset_show_labels && state.frame.annotations && !state.frame.annotations->point_labels.empty() ? 3 : state.color_mode);
+      glUniform1i(panorama_loc,panorama);
+      const auto & p=state.camera.panorama;
+      glUniform4f(panorama_view_loc,p.center_deg,p.elevation_deg,p.horizontal_fov,p.vertical_fov);
+      glUniformMatrix3fv(sensor_rotation_loc,1,GL_TRUE,state.roi_frame.rotation.data());
+      glUniform3f(sensor_translation_loc,state.roi_frame.translation.x,state.roi_frame.translation.y,state.roi_frame.translation.z);
+      glUniform1f(range_max_loc,p.range_max);
+      glUniform1i(color_mode_loc,panorama && p.color_mode==0 ? 4 :
+        state.dataset_show_labels && state.frame.annotations && !state.frame.annotations->point_labels.empty() ? 3 : state.color_mode);
       glUniform1f(min_height_loc, state.height_color_min);
       glUniform1f(max_height_loc, state.height_color_max);
       if (state.grid.dirty) {
@@ -6092,12 +6251,14 @@ int RunViewer(int argc, char ** argv)
       glBindVertexArray(state.vao);
       const auto visible=VisiblePoints(state);
       glDrawArrays(GL_POINTS,static_cast<GLint>(visible.first),static_cast<GLsizei>(visible.count));
+      if(!panorama) {
       RenderGrid(state, mvp);
       if(!state.review_window && !state.frame.annotations) RenderClusterBoxes(state, mvp);
       if(!state.review_window && !state.frame.annotations) RenderDetectionLabels(state,mvp);
       if(!state.review_window && !state.frame.annotations) RenderRoiBoxes(state, mvp);
       RenderDatasetBoxes(state,mvp);
       RenderAxes(state, mvp);
+      }
       glDisable(GL_SCISSOR_TEST);
       ImGui::Render();
       ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
