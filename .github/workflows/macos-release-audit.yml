@@ -1,0 +1,26 @@
+name: Audit published macOS package
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published release tag
+        required: true
+        default: v0.2.55
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Download and verify published Mac archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          gh release download "$RELEASE_TAG" --pattern '*Darwin*' --dir packages
+          python3 tests/macos_package_smoke.py --packages packages

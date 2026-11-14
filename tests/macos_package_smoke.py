@@ -14,7 +14,10 @@ import time
 
 
 def run(*args, **kwargs):
-    return subprocess.run(args, text=True, capture_output=True, check=True, timeout=90, **kwargs)
+    result = subprocess.run(args, text=True, capture_output=True, timeout=90, **kwargs)
+    if result.returncode:
+        raise RuntimeError(f'{args[0]} failed ({result.returncode}):\n{result.stdout}\n{result.stderr}')
+    return result
 
 
 def check_app(app, workspace):
