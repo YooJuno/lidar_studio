@@ -4809,6 +4809,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       ImGui::TextDisabled("Method");ImGui::SetNextItemWidth(-1);
       const bool method_changed=ImGui::Combo("##ObjectMethod",&state.object_method,
         "CenterPoint tiny (fast)\0Euclidean 3D (clusters)\0Projected XY (clusters)\0AWML ShortRange (quality)\0");
+      TraceUi("object_method");
       const bool learned=state.object_method==0 || state.object_method==3;
       if (toggled || method_changed) {
         const bool was_detection=detection.enabled;
@@ -4863,9 +4864,9 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         ImGui::Spacing();SectionTitle("Targets");
         const std::array<int,5> classes={3,4,0,2,1};
         bool filter_changed=false;
-        if (ImGui::SmallButton("All")) {detection.classes=lidar_viewer::algorithms::DetectionParams::AllClasses;filter_changed=true;}
+        if (ImGui::SmallButton("All")) {detection.classes=lidar_viewer::algorithms::DetectionParams::AllClasses;filter_changed=true;}TraceUi("object_targets_all");
         ImGui::SameLine();
-        if (ImGui::SmallButton("Clear")) {detection.classes=0;filter_changed=true;}
+        if (ImGui::SmallButton("Clear")) {detection.classes=0;filter_changed=true;}TraceUi("object_targets_clear");
         if (ImGui::BeginTable("##TargetClasses",2,ImGuiTableFlags_SizingStretchSame)) {
           for (const int id:classes) {
             ImGui::TableNextColumn();bool selected=(detection.classes & (1u<<id))!=0;
@@ -4873,6 +4874,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
               if (selected) detection.classes|=1u<<id;else detection.classes&=~(1u<<id);
               filter_changed=true;
             }
+            TraceUi(("object_target_"+std::to_string(id)).c_str());
           }
           ImGui::EndTable();
         }

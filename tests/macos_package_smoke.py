@@ -29,6 +29,8 @@ def check_detector(app, executable, workspace, env):
     assets=app/'Contents/Resources/detector'
     if not (assets/'runtime/bin/python3').is_file() or not (assets/'manifest.json').is_file():
         raise RuntimeError('Offline Mac detector runtime is missing')
+    if not os.access(assets/'runtime/bin/python3',os.X_OK):
+        raise RuntimeError('Bundled Python lost its executable permissions during packaging')
     # A real outdoor scan used by the public sample, with pinned bytes.
     cloud=workspace/'driving.bin'
     url='https://raw.githubusercontent.com/url-kaist/patchwork-plusplus/3e6903a1d5537a4cc2ace897b0bbb98a92d6014c/data/000000.bin'

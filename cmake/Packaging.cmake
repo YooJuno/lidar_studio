@@ -123,7 +123,7 @@ if(APPLE)
   # Copy them after main-app fixup so BundleUtilities cannot rewrite their
   # Python-relative dependencies into main-executable-relative paths.
   if(LIDAR_STUDIO_BUNDLED_DETECTOR)
-    install(DIRECTORY "${LIDAR_STUDIO_BUNDLED_DETECTOR}/" DESTINATION "${resource_destination}/detector"
+    install(DIRECTORY "${LIDAR_STUDIO_BUNDLED_DETECTOR}/" DESTINATION "${resource_destination}/detector" USE_SOURCE_PERMISSIONS
       PATTERN "__pycache__" EXCLUDE PATTERN "*.pyc" EXCLUDE)
   endif()
   install(CODE [[

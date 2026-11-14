@@ -99,27 +99,27 @@ while True:
             check('higher_score_hides_actual_boxes',changed_pixels(before_score,after_score,(380,180,1540,750))>80)
             controls.enter('object_score',.2)
             all_targets=capture(x11,window,out/'targets_all.png')
-            x11.click(window,108,412);time.sleep(.2)
+            controls.click('object_targets_clear');time.sleep(.2)
             no_targets=capture(x11,window,out/'targets_none.png')
             check('clearing_targets_hides_boxes_without_inference',rows()==paused and changed_pixels(all_targets,no_targets,(380,180,1540,750))>80)
-            x11.click(window,48,449);time.sleep(.2)
+            controls.click('object_target_3');time.sleep(.2)
             person_targets=capture(x11,window,out/'targets_person.png')
             check('person_only_filters_cached_model_classes',rows()==paused and changed_pixels(no_targets,person_targets,(380,180,1540,750))>80)
-            x11.click(window,150,851);time.sleep(.2)
+            controls.chord('s');time.sleep(.2)
             saved=private/'config/profiles/rosbag.cfg'
             user=out/'settings/lidar_viewer/profiles/rosbag.cfg'
             if user.is_file():saved=user
             check('selected_classes_are_saved_in_profile','detection_classes=8\n' in saved.read_text())
             # Geometric methods never present their boxes as person/car labels.
             def method(index):
-                x11.click(window,175,294);x11.key(window,'Home')
+                controls.click('object_method');x11.key(window,'Home')
                 for _ in range(index):x11.key(window,'Down')
                 x11.key(window,'Return');time.sleep(.4)
             method(1);capture(x11,window,out/'clusters_3d.png')
             check('geometric_method_does_not_invoke_neural_worker',rows()==paused)
             method(0);time.sleep(.3)
             check('method_switch_reuses_same_model_process',len((private/'python/starts.txt').read_text().splitlines())==1)
-            x11.click(window,48,227);time.sleep(.2);x11.click(window,48,227);time.sleep(.3)
+            controls.click('object_enable');time.sleep(.2);controls.click('object_enable');time.sleep(.3)
             check('disable_enable_reuses_model_and_current_result',rows()==paused and len((private/'python/starts.txt').read_text().splitlines())==1)
             time.sleep(.2);settled=len(rows());x11.key(window,'r')
             controls=Controls(x11,window,log_path);controls.drag((800,300),(1100,570));controls.click('roi_apply');time.sleep(.4)

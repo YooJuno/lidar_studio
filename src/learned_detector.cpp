@@ -78,7 +78,7 @@ public:
     std::vector<char *> argv;for(auto & arg:args) argv.push_back(arg.data());argv.push_back(nullptr);
     const int rc=posix_spawnp(&pid_,python.c_str(),&actions,nullptr,argv.data(),environ);
     posix_spawn_file_actions_destroy(&actions);close(input[0]);close(output[1]);if (error>=0) close(error);
-    if (rc!=0) {pid_=-1;close(input[1]);close(output[0]);throw std::runtime_error("Cannot start detector Python runtime");}
+    if (rc!=0) {pid_=-1;close(input[1]);close(output[0]);throw std::runtime_error(std::string("Cannot start detector Python runtime: ")+std::strerror(rc));}
     write_=input[1];read_=output[0];
 #endif
   }
