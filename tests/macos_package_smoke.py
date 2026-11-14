@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """Verify extracted ZIP/DMG apps on macOS; report Gatekeeper separately."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
 import platform
 import plistlib
+import re
 import struct
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 
 from macos_gl_probe import lacks_runner_opengl, probe_library
 
@@ -22,7 +25,37 @@ def run(*args, **kwargs):
     return result
 
 
-def check_app(app, workspace, require_gui=False):
+def check_detector(app, executable, workspace, env):
+    assets=app/'Contents/Resources/detector'
+    if not (assets/'runtime/bin/python3').is_file() or not (assets/'manifest.json').is_file():
+        raise RuntimeError('Offline Mac detector runtime is missing')
+    # A real outdoor scan used by the public sample, with pinned bytes.
+    cloud=workspace/'driving.bin'
+    url='https://raw.githubusercontent.com/url-kaist/patchwork-plusplus/3e6903a1d5537a4cc2ace897b0bbb98a92d6014c/data/000000.bin'
+    with urllib.request.urlopen(url,timeout=120) as source:
+        cloud.write_bytes(source.read())
+    if hashlib.sha256(cloud.read_bytes()).hexdigest()!='bf272996d5b6d25cc5589e1089137cb20a98b63bd4823a7fea5631b359f6d68c':
+        raise RuntimeError('Point-cloud fixture checksum mismatch')
+    config=Path(env['XDG_CONFIG_HOME'])/'lidar_viewer'
+    profiles=config/'profiles';profiles.mkdir(parents=True,exist_ok=True)
+    if (config/'detector.cfg').exists():
+        raise RuntimeError('Packaged detector test must start without user model setup')
+    for variant in ['tiny','short_range']:
+        (profiles/'default.cfg').write_text(f'detection_model={variant}\ndetection_min_score=0.25\ndetection_classes=31\n')
+        result=run(str(executable),str(cloud),'--sensor-height','1.73','--inspect','--detect',cwd=workspace,env=env)
+        output=result.stdout+result.stderr
+        match=re.search(r'Detector: '+variant+r' \| CPUExecutionProvider \| .*? \| (\d+) boxes',output)
+        if not match or int(match.group(1))<1:
+            raise RuntimeError('Original bundled model produced no valid boxes on the real sample: '+output)
+        if (config/'detector.cfg').exists():
+            raise RuntimeError('Built-in inference unexpectedly required a model configuration file')
+        print(f'Offline packaged {variant}: CPU inference on 124668 real points, {match.group(1)} detections',flush=True)
+        # Running an import or inference must never add pyc or fused files to
+        # the signed app, including when launched from a read-only DMG.
+        run('codesign','--verify','--deep','--strict',str(app))
+
+
+def check_app(app, workspace, require_gui=False, require_detector=False):
     if app.name != 'LiDAR Studio.app':
         raise RuntimeError('Installed app must be named LiDAR Studio.app')
     info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
@@ -68,6 +101,8 @@ def check_app(app, workspace, require_gui=False):
     inspect = run(str(executable), str(fixture), '--inspect', cwd=workspace, env=env)
     if '961' not in inspect.stdout + inspect.stderr:
         raise RuntimeError('Packaged app could not load the point-cloud fixture')
+    if require_detector:
+        check_detector(app,executable,workspace,env)
     graphics = probe_library(next((app / "Contents/Frameworks").glob("libglfw.3.dylib")))
     if not require_gui and lacks_runner_opengl(graphics):
         gui_status = "unverified: runner has no native OpenGL pixel format"
@@ -90,13 +125,15 @@ def check_app(app, workspace, require_gui=False):
         gui_status = "passed"
     return dict(app=app.name, version=info['CFBundleShortVersionString'], minimum_macos=minimum,
                 architecture=platform.machine(), signature='ad-hoc' if 'Signature=adhoc' in signature else 'Developer ID',
-                gatekeeper_accepted=assessment.returncode == 0, runtime='passed', gui=gui_status)
+                gatekeeper_accepted=assessment.returncode == 0, runtime='passed', gui=gui_status,
+                learned_detection='both original models passed' if require_detector else 'not checked')
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--packages', type=Path, required=True)
     parser.add_argument('--require-gui', action='store_true', help='Fail if the runner cannot render OpenGL')
+    parser.add_argument('--require-detector', action='store_true', help='Require offline inference using both original bundled models')
     args = parser.parse_args()
     args.packages = args.packages.resolve()
     if sys.platform != 'darwin':
@@ -122,7 +159,7 @@ def main():
             apps = list((workspace / 'extracted').rglob('*.app'))
             if len(apps) != 1:
                 raise RuntimeError('Package must contain exactly one app')
-            print(json.dumps(dict(package=package.name, **check_app(apps[0], workspace, args.require_gui))), flush=True)
+            print(json.dumps(dict(package=package.name, **check_app(apps[0], workspace, args.require_gui,args.require_detector))), flush=True)
 
 
 if __name__ == '__main__':

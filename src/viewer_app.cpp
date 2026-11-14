@@ -1038,7 +1038,11 @@ bool DetectorFramePending(const ViewerState & state)
   const auto status=state.detector->Status();
   // Let playback continue during startup or failure. Once ready, keep cloud
   // and boxes on the same revision. A slow backend never blocks UI or recording.
-  return status.ready && !status.failed && DetectorClock()-state.detector_submitted_at<2.;
+  // Quality models on CPU can take longer than two seconds. Expiring every
+  // frame before inference finishes starves offline playback of all boxes.
+  // Keep the matching scan while the GUI remains responsive.
+  const double allowance=status.provider=="CUDAExecutionProvider" || state.live_stats.connected ? 2. : 30.;
+  return status.ready && !status.failed && DetectorClock()-state.detector_submitted_at<allowance;
 }
 
 bool UpdateDetector(ViewerState & state)
@@ -4793,6 +4797,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       bool enabled=detection.enabled || clustering.enabled;
       if (enabled) state.object_method=detection.enabled ? (detection.model=="short_range" ? 3 : 0) : (clustering.mode=="euclidean_3d" ? 1 : 2);
       const bool toggled=ImGui::Checkbox("Enable objects",&enabled);
+      TraceUi("object_enable");
       if (state.object_method==0 || state.object_method==3) {
         ImGui::SameLine(ImGui::GetWindowContentRegionMax().x-65*s);ImGui::BeginDisabled(!enabled);
         if (ImGui::Checkbox("IDs",&state.tracking_params.enabled)) {
@@ -4831,6 +4836,26 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         FilterDetections(state);
       }
       if (learned) {
+        if(enabled) {
+          const auto status=state.detector ? state.detector->Status() : lidar_viewer::DetectorStatus{};
+          if(!state.detector_input || state.detector_input->empty()) {
+            ImGui::TextColored({1,.74f,.4f,1},"Open a point cloud to start detection");
+          } else if(status.failed || !state.detector_error.empty()) {
+            ImGui::TextColored({1,.52f,.42f,1},"Object detection unavailable");
+            const auto & error=state.detector_error.empty() ? status.message : state.detector_error;
+            ImGui::TextWrapped("%s",error.c_str());
+          } else if(!status.configured && state.detector) {
+            ImGui::TextColored({1,.74f,.4f,1},"Detection model is not installed");
+            TraceUi("object_status_missing");
+            ImGui::TextWrapped("Install the model runtime before enabling learned detection.");
+          } else if(!status.ready) {
+            ImGui::TextColored({.37f,.8f,.9f,1},"Loading detection model...");
+          } else {
+            ImGui::TextColored({.4f,.85f,.65f,1},"Detection ready | %s",status.provider=="CUDAExecutionProvider" ? "CUDA GPU" : "CPU");
+            TraceUi("object_status_ready");
+          }
+          TraceUi("object_status");
+        }
         ImGui::TextDisabled("%s",detection.model=="short_range" ? "TIER IV AWML / ConvNeXt 2.0" : "Autoware CenterPoint tiny v4.1");
         Tip(detection.model=="short_range" ?
           "Original AWML model; XY range +/-51.2 m. Uses the full gravity-aligned scan before ground/ROI filtering. Ground height and IMU alignment must be correct." :
@@ -4883,10 +4908,14 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
             if(state.status_object_average_ms>=0) ImGui::TextDisabled("Average %.3f s",state.status_object_average_ms*.001);
             else ImGui::TextDisabled("Average --");
             Tip("Mean of the last 30 completed detections, including packing, IPC and model processing. Model loading and queue wait are excluded.");
-          } else ImGui::TextWrapped("%s",status.message.empty() ? "Waiting for LiDAR data..." : status.message.c_str());
-          if (!state.detector_error.empty()) ImGui::TextWrapped("%s",state.detector_error.c_str());
+          }
           if (!status.configured || status.failed) {
-            ImGui::TextWrapped("Setup: python3 tools/setup_detector.py\nNVIDIA GPU: add --cuda");
+            const auto setup=lidar_viewer::ProjectResourcePath("tools/setup_detector.py");
+            ImGui::TextWrapped("Setup requires Python 3.10-3.13. Mac releases include the CPU model runtime.");
+            if(ImGui::Button("Copy setup command",{-1,0})) {
+              const auto command=std::string("python3 \"")+setup.u8string()+"\"";
+              ImGui::SetClipboardText(command.c_str());
+            }
             if (ImGui::Button("Retry model",{-1,0})) state.detector_retry=true;
           }
         }

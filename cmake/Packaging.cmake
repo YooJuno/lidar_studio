@@ -7,6 +7,7 @@ if(NOT CPACK_PACKAGE_VERSION)
 endif()
 set(CPACK_PACKAGE_FILE_NAME "lidar_studio-${CPACK_PACKAGE_VERSION}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
 set(CPACK_PACKAGE_DIRECTORY "${CMAKE_BINARY_DIR}/packages")
+set(LIDAR_STUDIO_BUNDLED_DETECTOR "" CACHE PATH "Prepared offline detector runtime and models for Mac packages")
 
 if(APPLE)
   if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
@@ -87,6 +88,14 @@ install(TARGETS lidar_viewer_native
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/tools/setup_detector.py"
   "${CMAKE_CURRENT_SOURCE_DIR}/tools/setup_centerpoint_training.py" DESTINATION "${resource_destination}/tools")
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/README.md" DESTINATION "${resource_destination}")
+if(APPLE AND LIDAR_STUDIO_BUNDLED_DETECTOR)
+  foreach(required IN ITEMS runtime/bin/python3 models/centerpoint-tiny-v4.1/centerpoint-tiny-v4.1-portable-v2.onnx
+      models/centerpoint-shortrange-v2.0.0/centerpoint-shortrange-v2.0.0-portable-v2.onnx manifest.json)
+    if(NOT EXISTS "${LIDAR_STUDIO_BUNDLED_DETECTOR}/${required}")
+      message(FATAL_ERROR "Incomplete bundled detector: ${required}")
+    endif()
+  endforeach()
+endif()
 # Keep documentation in the default install component. DragNDrop installs
 # components separately; a later documentation component would modify the
 # already-signed app and make the distributed DMG fail signature verification.
@@ -102,14 +111,23 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/patchwork_plusplus/LICENS
 install(FILES "${dear_imgui_SOURCE_DIR}/LICENSE.txt"
   DESTINATION "${resource_destination}/third-party-licenses" RENAME Dear-ImGui-MIT.txt)
 if(APPLE)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
   install(CODE "set(lidar_fixup_dirs \"${PCL_LIBRARY_DIRS};${CMAKE_PREFIX_PATH}/lib\")")
+  install(CODE "set(lidar_sign_python \"${Python3_EXECUTABLE}\")\nset(lidar_sign_script \"${CMAKE_CURRENT_SOURCE_DIR}/tools/sign_macos_bundle.py\")")
   install(CODE [[
     include(BundleUtilities)
     set(BU_CHMOD_BUNDLE_ITEMS ON)
     fixup_bundle("${CMAKE_INSTALL_PREFIX}/LiDAR Studio.app" "" "${lidar_fixup_dirs}")
-    execute_process(COMMAND codesign --force --deep --sign - "${CMAKE_INSTALL_PREFIX}/LiDAR Studio.app"
-      COMMAND_ERROR_IS_FATAL ANY)
-    execute_process(COMMAND codesign --verify --deep --strict --verbose=2 "${CMAKE_INSTALL_PREFIX}/LiDAR Studio.app"
+  ]])
+  # The standalone interpreter and wheels already use relocatable loader paths.
+  # Copy them after main-app fixup so BundleUtilities cannot rewrite their
+  # Python-relative dependencies into main-executable-relative paths.
+  if(LIDAR_STUDIO_BUNDLED_DETECTOR)
+    install(DIRECTORY "${LIDAR_STUDIO_BUNDLED_DETECTOR}/" DESTINATION "${resource_destination}/detector"
+      PATTERN "__pycache__" EXCLUDE PATTERN "*.pyc" EXCLUDE)
+  endif()
+  install(CODE [[
+    execute_process(COMMAND "${lidar_sign_python}" "${lidar_sign_script}" "${CMAKE_INSTALL_PREFIX}/LiDAR Studio.app"
       COMMAND_ERROR_IS_FATAL ANY)
   ]])
 endif()

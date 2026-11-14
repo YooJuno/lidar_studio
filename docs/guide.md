@@ -424,7 +424,9 @@ source /opt/ros/jazzy/setup.bash
 ./build/lidar_studio --detect
 ```
 
-다른 컴퓨터에서는 Python 3.10–3.13으로 선택 기능을 한 번 설치합니다. 시스템 Python 패키지를 바꾸지 않고 사용자 폴더의 별도 가상환경에 설치합니다. Ubuntu에서 venv가 없다면 `python3-venv` 패키지가 필요합니다.
+공식 **Mac DMG/ZIP에는 tiny·ShortRange 원본 모델과 별도 CPU Python 실행환경이 포함**됩니다. Applications에 복사한 뒤 **Objects → Enable objects**를 켜면 됩니다. Homebrew나 시스템 Python 설치가 필요 없으며, 첫 모델 로딩에는 시간이 걸릴 수 있습니다. 사용자 `detector.cfg`에 지정한 환경은 번들보다 우선합니다. 모델 로딩·미설치·오류 상태는 Method 바로 아래에 표시합니다.
+
+Ubuntu/Windows 배포나 소스 빌드에서는 Python 3.10–3.13으로 선택 기능을 한 번 설치합니다. 시스템 Python 패키지를 바꾸지 않고 사용자 폴더의 별도 가상환경에 설치합니다. Ubuntu에서 venv가 없다면 `python3-venv` 패키지가 필요합니다. 이전 Mac 배포본을 그대로 쓰려면 Homebrew의 `python@3.12`로 `"/Applications/LiDAR Studio.app/Contents/Resources/tools/setup_detector.py"`를 실행하고 **Retry model**을 누릅니다.
 
 ```bash
 # CPU: Ubuntu / Windows / macOS
@@ -436,7 +438,9 @@ python3 tools/setup_detector.py --cuda
 
 배포본에도 `python/`과 `tools/setup_detector.py`가 포함됩니다. Ubuntu 설치본의 setup 경로는 `/usr/share/lidar_studio/tools/setup_detector.py`, macOS는 앱의 `Contents/Resources/tools/setup_detector.py`입니다. 설치 후 실행 중인 앱에서는 **Retry model**을 누르거나 Enable objects를 켭니다. CUDA가 실행되지 않으면 실제 사용 중인 CPU 백엔드를 표시합니다.
 
-설치기는 ShortRange(약 14 MB)와 tiny(약 20 MB)를 함께 설치하고, 모델별 원본 ONNX·모델 카드의 SHA-256을 검증합니다. ShortRange는 AWML 모델 카드 revision `9e44a974aae03a196003950898dc909cd0c680ad`가 지정한 TIER IV model-zoo v2.0.0 파일을 사용합니다. tiny는 revision `494c8171def40bd36cc2feb323e0a5acbfab132b`에 고정합니다. 한 종류만 필요하면 `--model short_range` 또는 `--model tiny`로 설치할 수 있습니다. 기본 Linux 위치는 `~/.local/share/lidar_viewer/detector/`, 연결 설정은 `~/.config/lidar_viewer/detector.cfg`, 오류 로그는 같은 설정 폴더의 `detector.log`입니다. Windows는 LocalAppData/APPDATA, macOS는 Application Support를 사용합니다. 모델·가상환경은 Git과 배포 파일에 넣지 않습니다.
+설치기는 ShortRange(약 14 MB)와 tiny(약 20 MB)를 함께 설치하고, 모델별 원본 ONNX·모델 카드의 SHA-256을 검증합니다. ShortRange는 AWML 모델 카드 revision `9e44a974aae03a196003950898dc909cd0c680ad`가 지정한 TIER IV model-zoo v2.0.0 파일을 사용합니다. tiny는 revision `494c8171def40bd36cc2feb323e0a5acbfab132b`에 고정합니다. 한 종류만 필요하면 `--model short_range` 또는 `--model tiny`로 설치할 수 있습니다. 기본 Linux 위치는 `~/.local/share/lidar_viewer/detector/`, 연결 설정은 `~/.config/lidar_viewer/detector.cfg`, 오류 로그는 같은 설정 폴더의 `detector.log`입니다. Windows는 LocalAppData/APPDATA, macOS는 Application Support를 사용합니다. 사용자 모델·가상환경은 Git에 넣지 않으며, Mac 공식 배포에만 검증한 기본 모델과 CPU 실행환경을 함께 담습니다.
+
+Mac 번들은 [Python Build Standalone](https://github.com/astral-sh/python-build-standalone)의 CPython 3.12.16과 CPU ONNX Runtime 1.23.2를 사용합니다. Python 아카이브와 원본 모델의 SHA-256을 검증하고 버전을 고정합니다. 패키지에서 추출한 앱은 사용자 모델 설정 파일 없이 두 모델로 실제 야외 점군을 추론하고, 추론 후에도 앱 서명이 유지되는지 검사합니다. CPU의 quality 모델이 2초 이상 걸리더라도 파일 재생 중 검출 결과가 계속 버려지지 않도록 처리하며, UI 입력은 별도로 동작합니다. 속도가 우선이면 tiny를 사용합니다.
 
 - **Align**에서 지면의 기울기와 높이를 먼저 맞춥니다. ShortRange 입력은 ±51.2 m XY, Z −3~5 m, tiny는 ±76.8 m XY, Z −4~6 m 범위이며 표시 yaw는 추론에서 되돌린 후 박스에 다시 적용합니다.
 - 이 모델의 네 번째 입력은 intensity가 아닌 **시간 차이**입니다. 현재 스캔 하나의 시간 차이 0을 사용하며, 위치 추정 없이 이전 스캔을 억지로 합치지 않습니다. XT32의 미수신 XYZ=0 반환도 높이를 이동하기 전에 제외합니다.

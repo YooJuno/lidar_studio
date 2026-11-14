@@ -91,6 +91,14 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_detector_smoke.py \
             --viewer build/lidar_studio --output build/test_artifacts/detector
+      - name: Visible model setup status and slow CPU detection GUI test
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_model_setup_smoke.py \
+            --viewer build/lidar_studio --output build/test_artifacts/model-setup
       - name: Kalman tracking, stable IDs and readable status GUI test
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
@@ -277,6 +285,9 @@ jobs:
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
         run: brew install pcl glfw glew nanoflann ninja openssl@3
+      - name: Prepare offline Mac detector and original models
+        if: runner.os == 'macOS'
+        run: python3 tools/bundle_macos_detector.py --output build-detector
       - name: Configure Windows
         if: runner.os == 'Windows'
         shell: pwsh
@@ -292,7 +303,8 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 -DCMAKE_PREFIX_PATH="$(brew --prefix)" -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" -DLIDAR_VIEWER_ENABLE_CUDA=OFF \
-            -DLIDAR_VIEWER_ENABLE_ROSBAG=OFF -DLIDAR_VIEWER_USER_SETTINGS=ON -DCPACK_PACKAGE_VERSION="$RELEASE_VERSION"
+            -DLIDAR_VIEWER_ENABLE_ROSBAG=OFF -DLIDAR_VIEWER_USER_SETTINGS=ON -DCPACK_PACKAGE_VERSION="$RELEASE_VERSION" \
+            -DLIDAR_STUDIO_BUNDLED_DETECTOR="$PWD/build-detector"
       - name: Build
         run: cmake --build build --config Release --parallel 2
       - name: Test
@@ -303,7 +315,7 @@ jobs:
         run: cmake --build build --target check-native-package --config Release
       - name: Verify extracted macOS app signature and GUI runtime
         if: runner.os == 'macOS'
-        run: python3 tests/macos_package_smoke.py --packages build/packages
+        run: python3 tests/macos_package_smoke.py --packages build/packages --require-detector
       - name: Verify Windows package runtime
         if: runner.os == 'Windows'
         shell: pwsh

@@ -51,6 +51,10 @@ while True:
  box=struct.pack('<9f',x,y,z,4,2,1.5,.25,.8,0)
  send(reply.pack(b'LDR1',revision,1,40,2)+b'ok'+box)
 )PY";
+#ifndef _WIN32
+    std::ifstream protocol_source(worker);
+    const std::string protocol((std::istreambuf_iterator<char>(protocol_source)),std::istreambuf_iterator<char>());
+#endif
     std::ofstream(folder/"detector.cfg")<<"python="<<argv[1]<<"\nmodel_dir="<<temporary.u8string()<<"\nprovider=cpu\n";
     {
       LearnedDetector detector;detector.Start(temporary);
@@ -86,6 +90,27 @@ while True:
     filters.classes=0;filters.min_confidence=.1f;Check(!filters.Accepts(person),"No targets still displays a class");
     std::filesystem::remove(folder/"detector.cfg");
     {LearnedDetector missing;missing.Start(temporary);Check(!missing.Status().configured,"Missing runtime was presented as working detection");}
+#ifndef _WIN32
+    const auto bundle=temporary/std::filesystem::u8path("LiDAR Studio.app/Contents/Resources");
+    const auto scripts=bundle/"python";
+    std::filesystem::create_directories(scripts);
+    std::ofstream(scripts/"detector_worker.py")<<protocol;
+    const auto runtime=bundle/"detector/runtime/bin";
+    std::filesystem::create_directories(runtime);
+    std::filesystem::create_symlink(std::filesystem::absolute(argv[1]),runtime/"python3");
+    for(const auto & variant:{std::string("tiny"),std::string("short_range")}) {
+      std::filesystem::create_directories(bundle/"detector/models"/(variant=="tiny" ? "centerpoint-tiny-v4.1" : "centerpoint-shortrange-v2.0.0"));
+      LearnedDetector bundled;bundled.Start(scripts,variant);
+      Wait([&]{const auto status=bundled.Status();Check(!status.failed,status.message.c_str());return status.ready;});
+      bundled.Submit(301,{{1,2,3,0}},.35f,0);
+      std::optional<DetectorResult> result;
+      Wait([&]{result=bundled.Poll();return result.has_value();});
+      Check(result->detections.size()==1,"Bundled runtime did not return detections");
+      Check(!std::filesystem::exists(folder/"detector.cfg"),"Bundled runtime required a user setup file");
+    }
+    std::ofstream(folder/"detector.cfg")<<"python=/missing/python\nmodel_dir="<<temporary.u8string()<<'\n';
+    {LearnedDetector explicit_config;explicit_config.Start(scripts);Check(!explicit_config.Status().configured,"Bundled fallback silently replaced an explicit user configuration");}
+#endif
     ConfigEnvironment(previous);std::filesystem::remove_all(temporary.parent_path());
     std::cout<<"learned_detector_smoke: protocol, latest request, yaw, process failure and cancellation passed\n";return 0;
   } catch (const std::exception & error) {

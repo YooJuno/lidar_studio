@@ -32,7 +32,7 @@ class Child {
 public:
   ~Child() {Close();}
   void Open(const std::filesystem::path & python,const std::filesystem::path & worker,
-    const std::filesystem::path & model,const std::string & variant,const std::string & provider,const std::filesystem::path & log) {
+    const std::filesystem::path & model,const std::string & variant,const std::string & provider,const std::filesystem::path & log,bool bundled=false) {
 #ifdef _WIN32
     SECURITY_ATTRIBUTES sa{sizeof(SECURITY_ATTRIBUTES),nullptr,TRUE};
     HANDLE child_in=nullptr,child_out=nullptr;
@@ -50,7 +50,7 @@ public:
       }
       result.append(slashes*2,L'\\');return result+L'"';
     };
-    std::wstring command=quote(python.wstring())+L" -u "+quote(worker.wstring())+L" --model-dir "+quote(model.wstring())+
+    std::wstring command=quote(python.wstring())+(bundled ? L" -E -s -B -u " : L" -B -u ")+quote(worker.wstring())+L" --model-dir "+quote(model.wstring())+
       L" --provider "+quote(std::wstring(provider.begin(),provider.end()))+
       L" --model "+quote(std::wstring(variant.begin(),variant.end()))+
       L" --native-dir "+quote(ExecutablePath().parent_path().wstring());
@@ -71,9 +71,11 @@ public:
     posix_spawn_file_actions_adddup2(&actions,input[0],STDIN_FILENO);
     posix_spawn_file_actions_adddup2(&actions,output[1],STDOUT_FILENO);
     if (error>=0) posix_spawn_file_actions_adddup2(&actions,error,STDERR_FILENO);
-    std::array<std::string,11> args{python.string(),"-u",worker.string(),"--model-dir",model.string(),
-      "--provider",provider,"--model",variant,"--native-dir",ExecutablePath().parent_path().string()};
-    std::array<char *,12> argv{};for (std::size_t i=0;i<args.size();++i) argv[i]=args[i].data();
+    std::vector<std::string> args{python.string(),"-B","-u"};
+    if(bundled) {args.push_back("-E");args.push_back("-s");}
+    args.insert(args.end(),{worker.string(),"--model-dir",model.string(),"--provider",provider,
+      "--model",variant,"--native-dir",ExecutablePath().parent_path().string()});
+    std::vector<char *> argv;for(auto & arg:args) argv.push_back(arg.data());argv.push_back(nullptr);
     const int rc=posix_spawnp(&pid_,python.c_str(),&actions,nullptr,argv.data(),environ);
     posix_spawn_file_actions_destroy(&actions);close(input[0]);close(output[1]);if (error>=0) close(error);
     if (rc!=0) {pid_=-1;close(input[1]);close(output[0]);throw std::runtime_error("Cannot start detector Python runtime");}
@@ -176,22 +178,34 @@ void LearnedDetector::Start(const std::filesystem::path & root,const std::string
   }
   if (variant=="short_range") model=!short_model.empty() ? short_model : model.empty() ?
     std::filesystem::path{} : model.parent_path()/"centerpoint-shortrange-v2.0.0";
+  // Packaged Mac builds contain an offline, relocatable CPU runtime. Explicit
+  // user configurations retain priority; a new Mac needs no setup command.
+  bool bundled=false;
+  if((variant=="tiny" || variant=="short_range") && python.empty() && model.empty()) {
+    const auto assets=root.parent_path()/"detector";
+    const auto runtime=assets/"runtime/bin/python3";
+    const auto weights=assets/"models"/(variant=="short_range" ? "centerpoint-shortrange-v2.0.0" : "centerpoint-tiny-v4.1");
+    if(std::filesystem::is_regular_file(runtime) && std::filesystem::is_directory(weights)) {
+      python=runtime;model=weights;provider="cpu";bundled=true;
+    }
+  }
   {std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->stop=false;impl_->result.reset();impl_->status={};
     if (!std::filesystem::is_regular_file(python) || !std::filesystem::is_directory(model)) {
       impl_->status.message="Model runtime is not installed. Run detector setup.";return;
     }
-    impl_->status.configured=true;impl_->status.message="Loading "+variant+" model...";
+    impl_->status.configured=true;impl_->status.message="Loading "+std::string(bundled ? "bundled " : "")+variant+" model...";
   }
-  impl_->thread=std::thread([this,root,python,model,variant,provider,config] {
+  impl_->thread=std::thread([this,root,python,model,variant,provider,config,bundled] {
 #ifndef _WIN32
     // A closed worker pipe must raise an error, never terminate the GUI.
     sigset_t blocked;sigemptyset(&blocked);sigaddset(&blocked,SIGPIPE);pthread_sigmask(SIG_BLOCK,&blocked,nullptr);
 #endif
     try {
+      std::filesystem::create_directories(config.parent_path());
       {std::lock_guard<std::mutex> process_lock(impl_->process_mutex);
         std::lock_guard<std::mutex> lock(impl_->mutex);if (impl_->stop) return;
-        impl_->child.Open(python,root/"detector_worker.py",model,variant,provider,config.parent_path()/"detector.log");
+        impl_->child.Open(python,root/"detector_worker.py",model,variant,provider,config.parent_path()/"detector.log",bundled);
       }
       auto ready=ReadReply(impl_->child,0);
       if (ready.revision || !ready.error.empty()) throw std::runtime_error(ready.error.empty() ? "Invalid detector startup reply" : ready.error);

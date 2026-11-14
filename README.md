@@ -108,7 +108,9 @@ Exports contain **NPY** (`float32`, `N × 4`: `x, y, z, intensity`), matching **
 
 ## Optional detection and live sensors
 
-From a source checkout, install pretrained models once, then enable a model in **Objects**:
+**Mac downloads include the original tiny and AWML ShortRange models with a private CPU runtime.** Open a cloud, then enable a model in **Objects**; Homebrew and a separate Python installation are not required. The first model load can take a few seconds. An explicit user detector configuration takes priority over the built-in runtime.
+
+For Linux/Windows packages or source checkouts, install pretrained models once, then enable a model in **Objects**:
 
 ```bash
 python3 tools/setup_detector.py          # CPU
