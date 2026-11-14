@@ -94,6 +94,7 @@ def main():
     parser.add_argument('--packages', type=Path, required=True)
     parser.add_argument('--require-gui', action='store_true', help='Fail if the runner cannot render OpenGL')
     args = parser.parse_args()
+    args.packages = args.packages.resolve()
     if sys.platform != 'darwin':
         parser.error('Run this verification on a macOS runner')
     packages = sorted([*args.packages.glob('*.zip'), *args.packages.glob('*.dmg')])

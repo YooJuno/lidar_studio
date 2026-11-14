@@ -16,6 +16,9 @@ def probe_library(library):
     glfw.glfwSetErrorCallback.argtypes = [callback_type]
     glfw.glfwSetErrorCallback(callback)
     glfw.glfwInit.restype = ctypes.c_int
+    # Cocoa otherwise changes the Python process cwd to Python.app/Resources.
+    glfw.glfwInitHint.argtypes = [ctypes.c_int, ctypes.c_int]
+    glfw.glfwInitHint(0x51001, 0)  # GLFW_COCOA_CHDIR_RESOURCES
     glfw.glfwWindowHint.argtypes = [ctypes.c_int, ctypes.c_int]
     glfw.glfwCreateWindow.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_void_p]
     glfw.glfwCreateWindow.restype = ctypes.c_void_p
