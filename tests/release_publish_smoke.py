@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Exercise promotion boundaries without changing a GitHub repository."""
 import hashlib
+import json
 from pathlib import Path
 import sys
 import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
-from publish_release import publish
+from publish_release import find_release, publish
 
 SHA = 'a' * 40
 
@@ -26,15 +27,21 @@ class FakeGitHub:
                 return {'object': {'sha': self.tag_sha, 'type': 'commit'}} if self.tag_sha else None
             if path.endswith('/git/refs'):
                 self.tag_sha = SHA; return {}
-            if '/releases/tags/' in path:
-                if not self.created and not self.published: return None
+            if path.endswith('/releases') and '--method' in args:
+                request = json.loads(Path(args[args.index('--input') + 1]).read_text())
+                if request['draft'] is not True: raise AssertionError('Release must start as a draft')
+                self.created = True
+                return {'id': 123, 'draft': True}
+            if '/releases?' in path or path.endswith('/releases/123'):
+                if not self.created and not self.published: return []
                 assets = [{'name': p.name, 'size': p.stat().st_size,
                            'digest': 'sha256:' + hashlib.sha256(p.read_bytes()).hexdigest()}
                           for p in self.folder.iterdir() if p.is_file()] if self.uploaded else []
                 if self.missing_upload: assets = assets[:-1]
                 if self.corrupt_upload and assets: assets[0]['digest'] = 'sha256:' + '0' * 64
-                return {'draft': not self.published, 'html_url': 'https://example.test/release', 'assets': assets}
-        if args[:2] == ('release', 'create'): self.created = True
+                release = {'id': 123, 'tag_name': 'v0.2.53', 'draft': not self.published,
+                           'html_url': 'https://example.test/release', 'assets': assets}
+                return [release] if '/releases?' in path else release
         if args[:2] == ('release', 'upload'): self.uploaded = True
         if args[:2] == ('release', 'edit'): self.published = True
         return ''
@@ -52,11 +59,11 @@ class ReleasePublishTests(unittest.TestCase):
 
     def test_assets_and_checksums_are_verified_before_publishing(self):
         gh = FakeGitHub(self.folder); self.publish(gh)
-        create = next(i for i, c in enumerate(gh.calls) if c[:2] == ('release', 'create'))
+        create = next(i for i, c in enumerate(gh.calls) if '--method' in c and c[-2] == '--input')
         upload = next(i for i, c in enumerate(gh.calls) if c[:2] == ('release', 'upload'))
         edit = next(i for i, c in enumerate(gh.calls) if c[:2] == ('release', 'edit'))
         self.assertLess(create, upload); self.assertLess(upload, edit)
-        self.assertIn('--draft', gh.calls[create]); self.assertIn('--latest', gh.calls[edit])
+        self.assertIn('--latest', gh.calls[edit])
         self.assertEqual(len((self.folder / 'SHA256SUMS').read_text().splitlines()), 5)
         self.assertTrue(gh.published)
 
@@ -83,8 +90,16 @@ class ReleasePublishTests(unittest.TestCase):
 
     def test_failed_draft_can_be_resumed(self):
         gh = FakeGitHub(self.folder, tag_sha=SHA); gh.created = True; self.publish(gh)
-        self.assertFalse(any(c[:2] == ('release', 'create') for c in gh.calls))
+        self.assertFalse(any('--method' in c and any(a.endswith('/releases') for a in c) for c in gh.calls))
         self.assertTrue(gh.published)
+
+    def test_draft_lookup_checks_later_pages(self):
+        class Pages:
+            def run(self, *args):
+                if args[-1].endswith('page=1'):
+                    return [{'tag_name': f'v1.0.{i}'} for i in range(100)]
+                return [{'tag_name': 'v0.2.53', 'id': 123, 'draft': True}]
+        self.assertEqual(find_release(Pages(), 'repos/owner/repo', 'v0.2.53')['id'], 123)
 
 
 if __name__ == '__main__':

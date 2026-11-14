@@ -236,7 +236,7 @@ jobs:
         include:
           - os: windows-2022
             name: Windows x64
-          - os: macos-14
+          - os: macos-15
             name: macOS
     env:
       RELEASE_VERSION: ${{ needs.metadata.outputs.version }}

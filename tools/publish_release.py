@@ -28,6 +28,20 @@ def digest(path):
     return checksum.hexdigest()
 
 
+def find_release(gh, api_root, tag):
+    # The tag endpoint only guarantees published releases. The authenticated
+    # list also includes drafts, so interrupted uploads can safely resume.
+    page = 1
+    while True:
+        releases = gh.run('api', f'{api_root}/releases?per_page=100&page={page}')
+        for release in releases:
+            if release['tag_name'] == tag:
+                return release
+        if len(releases) < 100:
+            return None
+        page += 1
+
+
 def package_files(directory, version):
     files = sorted(path for path in directory.iterdir() if path.is_file() and path.name != 'SHA256SUMS')
     expected = [('Linux', '.deb'), ('Linux', '.tar.gz'), ('Windows', '.zip'), ('Darwin', '.zip'), ('Darwin', '.dmg')]
@@ -60,7 +74,7 @@ def publish(directory, repo, sha, version, tag, run_url, gh=None):
             commit = gh.run('api', f'{api_root}/commits/{tag}')['sha']
         if commit != sha:
             raise ValueError('Refusing to move an existing release tag to a different commit')
-    release = gh.run('api', f'{api_root}/releases/tags/{tag}', allow_missing=True)
+    release = find_release(gh, api_root, tag)
     if release and not release['draft']:
         print(f'{tag} is already published from this commit; published assets remain unchanged.')
         return release['html_url']
@@ -75,12 +89,12 @@ def publish(directory, repo, sha, version, tag, run_url, gh=None):
     )
     if release is None:
         with tempfile.TemporaryDirectory(prefix='lidar-release-') as temporary:
-            note_path = Path(temporary) / 'notes.md'
-            note_path.write_text(notes, encoding='utf-8')
-            gh.run('release', 'create', tag, '--repo', repo, '--verify-tag', '--target', sha,
-                   '--draft', '--title', f'LiDAR Studio {tag}', '--notes-file', str(note_path))
+            request_path = Path(temporary) / 'release.json'
+            request_path.write_text(json.dumps({'tag_name': tag, 'target_commitish': sha, 'draft': True,
+                                               'name': f'LiDAR Studio {tag}', 'body': notes}), encoding='utf-8')
+            release = gh.run('api', '--method', 'POST', f'{api_root}/releases', '--input', str(request_path))
     gh.run('release', 'upload', tag, '--repo', repo, *map(str, files), '--clobber')
-    uploaded = gh.run('api', f'{api_root}/releases/tags/{tag}')
+    uploaded = gh.run('api', f'{api_root}/releases/{release["id"]}')
     assets = {asset['name']: asset for asset in uploaded['assets']}
     for path in files:
         asset = assets.get(path.name)
