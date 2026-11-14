@@ -77,6 +77,7 @@ target_include_directories(lidar_viewer_imgui PUBLIC
   ${dear_imgui_SOURCE_DIR} ${dear_imgui_SOURCE_DIR}/backends)
 target_link_libraries(lidar_viewer_imgui PUBLIC glfw ${CMAKE_DL_LIBS})
 find_package(PCL REQUIRED COMPONENTS common filters kdtree segmentation)
+find_package(Boost REQUIRED)
 find_package(nanoflann REQUIRED)
 
 # Optional offline bag reader; no ROS node, DDS connection or sensor driver.
@@ -172,6 +173,7 @@ lidar_warnings(lidar_viewer_tracking)
 add_library(lidar_viewer_export STATIC src/roi_export.cpp src/data_io.cpp src/dataset.cpp src/dataset_curation.cpp src/training_job.cpp)
 target_include_directories(lidar_viewer_export PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(lidar_viewer_export SYSTEM PRIVATE ${PCL_INCLUDE_DIRS})
+target_link_libraries(lidar_viewer_export PRIVATE Boost::headers)
 target_link_libraries(lidar_viewer_export PUBLIC lidar_viewer_roi lidar_viewer_bag Threads::Threads)
 lidar_warnings(lidar_viewer_export)
 
@@ -212,6 +214,7 @@ target_include_directories(lidar_studio PRIVATE
 )
 
 target_link_libraries(lidar_studio PRIVATE
+  Boost::headers
   glfw
   GLEW::GLEW
   OpenGL::GL
