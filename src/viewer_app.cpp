@@ -4211,6 +4211,7 @@ void BuildAppSettings(ViewerState & state)
   ImGui::Spacing();
   ImGui::TextUnformatted("Interface scale");ImGui::SetNextItemWidth(-1);
   if (ImGui::SliderFloat("##AppUiScale",&state.ui_scale,.75f,1.5f,"%.2fx",ImGuiSliderFlags_AlwaysClamp)) state.app_settings_dirty=true;
+  TraceUi("app_ui_scale");
   const bool editing=ImGui::IsItemActive();
   if (ImGui::Button("Reset to 100%")) {state.ui_scale=1;state.app_settings_dirty=true;}
   ImGui::Spacing();ImGui::TextUnformatted("Inspector width");ImGui::SetNextItemWidth(-1);

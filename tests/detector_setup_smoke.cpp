@@ -11,6 +11,10 @@ void Check(bool value,const char * message) {if(!value) throw std::runtime_error
 void Environment(const char * key,const std::string & value) {
 #ifdef _WIN32
   _putenv_s(key,value.c_str());
+  // Keep the UTF-8 CRT fixture and the UTF-16 environment inherited by
+  // CreateProcessW consistent, including the Korean test-directory name.
+  Check(SetEnvironmentVariableW(std::filesystem::u8path(key).c_str(),std::filesystem::u8path(value).c_str())!=0,
+    "Cannot set the Unicode helper environment");
 #else
   setenv(key,value.c_str(),1);
 #endif
@@ -48,7 +52,9 @@ config=Path(os.environ['XDG_CONFIG_HOME'])/'lidar_viewer'
 )";
     DetectorSetup setup{fs::u8path(argv[1])};std::ofstream(mode)<<"slow";
     Check(setup.Start(root,script),"Preparation did not start");Check(!setup.Start(root,script),"Duplicate preparation started");
-    Wait([&]{return fs::exists(entered) && setup.Progress().bytes==4;});
+    Wait([&]{const auto progress=setup.Progress();
+      if(progress.stage==DetectorSetupStage::Failed) throw std::runtime_error(progress.error+"\n"+progress.log);
+      return fs::exists(entered) && progress.bytes==4;});
     Check(setup.Progress().Active(),"Preparation ran on the calling thread");
     {DetectorSetup concurrent{fs::u8path(argv[1])};concurrent.Start(root,script);
       Wait([&]{return !concurrent.Progress().Active();});

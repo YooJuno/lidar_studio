@@ -101,7 +101,10 @@ struct DetectorSetup::Impl {
       process.Poll();
       if(!status.empty()) {
         try {
-          boost::property_tree::ptree state;boost::property_tree::read_json(status.string(),state);
+          // A filesystem-path stream preserves Unicode paths on Windows;
+          // Boost's narrow filename overload cannot represent every username.
+          std::ifstream file(status);
+          boost::property_tree::ptree state;boost::property_tree::read_json(file,state);
           Report(state.get<std::string>("message"),state.get<std::uint64_t>("bytes",0),state.get<std::uint64_t>("total_bytes",0));
         } catch(const std::exception &) {} // Atomic status may not exist yet.
       }
