@@ -165,7 +165,7 @@ void LearnedDetector::Start(const std::filesystem::path & root,const std::string
   if (variant!="tiny" && variant!="short_range") throw std::invalid_argument("Unknown detector model");
   Stop();
   const auto config=UserConfigurationDirectory()/"detector.cfg";
-  std::filesystem::path python,model,short_model;std::string provider="auto",line;
+  std::filesystem::path python,model,short_model;std::string provider="auto",line;bool managed=false;
   std::ifstream file(config);
   while (std::getline(file,line)) {
     if (!line.empty() && line.back()=='\r') line.pop_back();
@@ -175,12 +175,13 @@ void LearnedDetector::Start(const std::filesystem::path & root,const std::string
     else if (key=="model_dir") model=std::filesystem::u8path(value);
     else if (key=="short_range_model_dir") short_model=std::filesystem::u8path(value);
     else if (key=="provider" && value=="cpu") provider=value;
+    else if (key=="managed_runtime") managed=value=="1";
   }
   if (variant=="short_range") model=!short_model.empty() ? short_model : model.empty() ?
     std::filesystem::path{} : model.parent_path()/"centerpoint-shortrange-v2.0.0";
   // Packaged Mac builds contain an offline, relocatable CPU runtime. Explicit
   // user configurations retain priority; a new Mac needs no setup command.
-  bool bundled=false;
+  bool bundled=managed;
   if((variant=="tiny" || variant=="short_range") && python.empty() && model.empty()) {
     const auto assets=root.parent_path()/"detector";
     const auto runtime=assets/"runtime/bin/python3";

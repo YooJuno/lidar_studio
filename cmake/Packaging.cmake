@@ -88,6 +88,8 @@ install(TARGETS lidar_viewer_native
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/tools/setup_detector.py"
   "${CMAKE_CURRENT_SOURCE_DIR}/tools/setup_centerpoint_training.py" DESTINATION "${resource_destination}/tools")
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/README.md" DESTINATION "${resource_destination}")
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE" "${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_NOTICES.md"
+  DESTINATION "${resource_destination}")
 if(APPLE AND LIDAR_STUDIO_BUNDLED_DETECTOR)
   foreach(required IN ITEMS runtime/bin/python3 models/centerpoint-tiny-v4.1/centerpoint-tiny-v4.1-portable-v2.onnx
       models/centerpoint-shortrange-v2.0.0/centerpoint-shortrange-v2.0.0-portable-v2.onnx manifest.json)

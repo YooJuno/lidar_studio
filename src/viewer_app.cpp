@@ -11,6 +11,8 @@
 #include "lidar_viewer/algorithms/pipeline.hpp"
 #include "lidar_viewer/algorithms/ground_removal.hpp"
 #include "lidar_viewer/app.hpp"
+#include "lidar_viewer/app_info.hpp"
+#include "lidar_viewer/about_ui.hpp"
 #include "lidar_viewer/ui_layout.hpp"
 #include "lidar_viewer/settings_io.hpp"
 #include "lidar_viewer/camera_2d.hpp"
@@ -27,6 +29,7 @@
 #include "lidar_viewer/file_dialog.hpp"
 #include "lidar_viewer/live_io.hpp"
 #include "lidar_viewer/learned_detector.hpp"
+#include "lidar_viewer/detector_setup.hpp"
 #include "lidar_viewer/object_tracker.hpp"
 #include "lidar_viewer/platform.hpp"
 #include "lidar_viewer/background_worker.hpp"
@@ -552,6 +555,7 @@ struct ViewerState
   bool inspector_resizing{false};
   bool app_settings_loaded{false}, open_app_settings{false};
   bool app_settings_dirty{false};
+  bool open_about{false};
   std::string app_settings_error;
   float font_raster_scale{1.0f};
   float height_color_min{-1.0f};
@@ -664,6 +668,9 @@ struct ViewerState
   std::vector<lidar_viewer::algorithms::Cluster> clusters;
   std::vector<lidar_viewer::algorithms::Detection> detections;
   std::unique_ptr<lidar_viewer::LearnedDetector> detector;
+  std::unique_ptr<lidar_viewer::DetectorSetup> detector_setup;
+  lidar_viewer::DetectorSetupProgress detector_setup_progress;
+  bool detector_setup_applied{false};
   std::shared_ptr<const std::vector<KittiPoint>> detector_input;
   std::vector<lidar_viewer::algorithms::Detection> full_detections;
   lidar_viewer::TrackingParams tracking_params;
@@ -935,6 +942,23 @@ void AppendClusterBox(
 
 std::pair<Color, Color> DetectionClassColors(int class_id)
 {
+  if(ui::IsLight()) {
+    switch(class_id) {
+      case lidar_viewer::algorithms::DetectionClassCar:
+        return {{.04f,.38f,.62f,.08f},{.02f,.35f,.55f,1}};
+      case lidar_viewer::algorithms::DetectionClassBus:
+        return {{.64f,.36f,.04f,.08f},{.55f,.29f,.03f,1}};
+      case lidar_viewer::algorithms::DetectionClassTruck:
+        return {{.76f,.23f,.14f,.08f},{.68f,.16f,.09f,1}};
+      case lidar_viewer::algorithms::DetectionClassPerson:
+        return {{.06f,.48f,.23f,.08f},{.04f,.39f,.17f,1}};
+      case lidar_viewer::algorithms::DetectionClassCyclist:
+        return {{.58f,.45f,.03f,.08f},{.46f,.34f,.01f,1}};
+      case lidar_viewer::algorithms::DetectionClassTree:
+        return {{.08f,.42f,.14f,.08f},{.05f,.34f,.10f,1}};
+      default:return {{.59f,.20f,.55f,.08f},{.51f,.12f,.47f,1}};
+    }
+  }
   switch (class_id) {
     case lidar_viewer::algorithms::DetectionClassCar:
       return {{0.12f, 0.72f, 1.00f, 0.14f}, {0.12f, 0.84f, 1.00f, 0.92f}};
@@ -965,7 +989,8 @@ void RebuildClusterBoxes(ViewerState & state)
   if (state.algorithm_config.detection.enabled) {
     state.cluster_boxes.batches.reserve(5);
     for (const auto & detection : state.detections) {
-      auto [fill_color, line_color] = DetectionClassColors(detection.class_id);
+      const auto colors=DetectionClassColors(detection.class_id);
+      auto fill_color=colors.first,line_color=colors.second;
       const auto index=static_cast<std::size_t>(&detection-state.detections.data());
       if (index<state.visible_tracks.size() && state.visible_tracks[index].id) {
         if (state.visible_tracks[index].predicted) {fill_color.a*=.15f;line_color.a*=.45f;}
@@ -990,8 +1015,8 @@ void RebuildClusterBoxes(ViewerState & state)
   }
   if (state.algorithm_config.clustering.enabled) {
     state.cluster_boxes.batches.push_back({
-      {0.08f, 0.72f, 1.0f, 0.12f},
-      {0.08f, 0.86f, 1.0f, 0.86f},
+      ui::IsLight() ? Color{.04f,.38f,.62f,.08f} : Color{0.08f,0.72f,1.0f,0.12f},
+      ui::IsLight() ? Color{.02f,.35f,.55f,1} : Color{0.08f,0.86f,1.0f,0.86f},
       {},
       {}
     });
@@ -1125,6 +1150,16 @@ bool UpdateDetector(ViewerState & state)
     return true;
   }
   return false;
+}
+
+void UpdateDetectorSetup(ViewerState & state)
+{
+  if(!state.detector_setup) return;
+  state.detector_setup_progress=state.detector_setup->Progress();
+  if(state.detector_setup_progress.stage==lidar_viewer::DetectorSetupStage::Ready && !state.detector_setup_applied) {
+    state.detector_setup_applied=true;state.detector_retry=true;
+    state.detector_completed=0;state.detector_error.clear();
+  }
 }
 
 void UpdateSourceDurations(ViewerState & state)
@@ -4165,6 +4200,9 @@ void BuildAppSettings(ViewerState & state)
   int theme=ui::IsLight() ? 1 : 0;
   if(ImGui::Combo("##AppTheme",&theme,"Dark\0Light\0")) {
     ui::ApplicationTheme()=theme==1 ? ui::Theme::Light : ui::Theme::Dark;
+    RebuildClusterBoxes(state);
+    if(state.studio_parent) RebuildClusterBoxes(*state.studio_parent);
+    if(state.point_review) RebuildClusterBoxes(*state.point_review);
     state.app_settings_dirty=true;
   }
   TraceUi("app_theme");
@@ -4552,6 +4590,9 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         (state.live_stats.clouds==0 ? "WAITING" : (state.live_stats.cloud_age_ms>1000 ? "STALE" : "LIVE"))) : "DISCONNECTED") :
       (state.loading_bag_source ? "OPENING INPUT" :
         (has_input ? (state.review_window ? "REVIEW" : state.is_playing ? "PLAYING" : "PAUSED") : "READY"))));
+  ImGui::SameLine(layout.header.w-176*s);
+  if(ImGui::SmallButton("About")) state.open_about=true;
+  TraceUi("open_about");
   ImGui::SameLine(layout.header.w-115*s);
   if (ImGui::SmallButton("Help")) ImGui::OpenPopup("Shortcuts");
   if (ImGui::BeginPopup("Shortcuts")) {
@@ -4939,6 +4980,8 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
           const auto status=state.detector ? state.detector->Status() : lidar_viewer::DetectorStatus{};
           if(!state.detector_input || state.detector_input->empty()) {
             ImGui::TextColored(ui::WarningColor(),"Open a point cloud to start detection");
+          } else if(state.detector_setup_progress.Active()) {
+            ImGui::TextColored(ui::InfoColor(),"Preparing detection models...");
           } else if(status.failed || !state.detector_error.empty()) {
             ImGui::TextColored(ui::ErrorColor(),"Object detection unavailable");
             const auto & error=state.detector_error.empty() ? status.message : state.detector_error;
@@ -4946,7 +4989,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
           } else if(!status.configured && state.detector) {
             ImGui::TextColored(ui::WarningColor(),"Detection model is not installed");
             TraceUi("object_status_missing");
-            ImGui::TextWrapped("Install the model runtime before enabling learned detection.");
+            ImGui::TextWrapped("Prepare the CPU models here to start detection.");
           } else if(!status.ready) {
             ImGui::TextColored(ui::InfoColor(),"Loading detection model...");
           } else {
@@ -4959,6 +5002,38 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         Tip(detection.model=="short_range" ?
           "Original AWML model; XY range +/-51.2 m. Uses the full gravity-aligned scan before ground/ROI filtering. Ground height and IMU alignment must be correct." :
           "Original Autoware tiny model; XY range +/-76.8 m. Uses the full gravity-aligned scan before ground/ROI filtering. Ground height and IMU alignment must be correct.");
+        const auto model_status=state.detector ? state.detector->Status() : lidar_viewer::DetectorStatus{};
+        const auto & setup_progress=state.detector_setup_progress;
+        if(enabled && (setup_progress.Active() || !model_status.configured || model_status.failed)) {
+          ImGui::Spacing();
+          if(setup_progress.Active()) {
+            ImGui::TextWrapped("%s",setup_progress.message.c_str());
+            const float fraction=setup_progress.total_bytes ?
+              std::clamp(static_cast<float>(setup_progress.bytes)/setup_progress.total_bytes,0.f,1.f) : 0.f;
+            ImGui::ProgressBar(fraction,{-1,0},setup_progress.total_bytes ? nullptr : "Working...");
+            TraceUi("object_setup_progress");
+            if(ImGui::Button("Cancel preparation",{-1,0})) state.detector_setup->Cancel();
+            TraceUi("object_setup_cancel");
+          } else {
+            if(setup_progress.stage==lidar_viewer::DetectorSetupStage::Failed)
+              ImGui::TextWrapped("%s",setup_progress.error.c_str());
+            else if(setup_progress.stage==lidar_viewer::DetectorSetupStage::Canceled)
+              ImGui::TextWrapped("Preparation canceled. Downloaded files will be reused.");
+            const bool retry=setup_progress.stage==lidar_viewer::DetectorSetupStage::Failed ||
+              setup_progress.stage==lidar_viewer::DetectorSetupStage::Canceled;
+            if(ImGui::Button(retry ? "Retry preparation" : "Install CPU models",{-1,0})) {
+              if(!state.detector_setup) state.detector_setup=std::make_unique<lidar_viewer::DetectorSetup>();
+              state.detector_setup_applied=false;
+              state.detector_setup->Start(lidar_viewer::ProjectResourcePath("python"),lidar_viewer::ProjectResourcePath("tools/setup_detector.py"));
+              UpdateDetectorSetup(state);
+            }
+            TraceUi("object_setup_install");
+            ImGui::TextWrapped("Downloads both models once. Detection starts automatically when ready.");
+            if(model_status.configured && ImGui::Button("Retry model",{-1,0})) state.detector_retry=true;
+          }
+          if(!setup_progress.log.empty() && ImGui::CollapsingHeader("Installation details"))
+            ImGui::TextWrapped("%s",setup_progress.log.c_str());
+        }
         ImGui::Spacing();SectionTitle("Targets");
         const std::array<int,5> classes={3,4,0,2,1};
         bool filter_changed=false;
@@ -5008,15 +5083,6 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
             if(state.status_object_average_ms>=0) ImGui::TextDisabled("Average %.3f s",state.status_object_average_ms*.001);
             else ImGui::TextDisabled("Average --");
             Tip("Mean of the last 30 completed detections, including packing, IPC and model processing. Model loading and queue wait are excluded.");
-          }
-          if (!status.configured || status.failed) {
-            const auto setup=lidar_viewer::ProjectResourcePath("tools/setup_detector.py");
-            ImGui::TextWrapped("Setup requires Python 3.10-3.13. Mac releases include the CPU model runtime.");
-            if(ImGui::Button("Copy setup command",{-1,0})) {
-              const auto command=std::string("python3 \"")+setup.u8string()+"\"";
-              ImGui::SetClipboardText(command.c_str());
-            }
-            if (ImGui::Button("Retry model",{-1,0})) state.detector_retry=true;
           }
         }
         const bool tracking_options=ImGui::CollapsingHeader("Tracking options");TraceUi("tracking_options");
@@ -5397,6 +5463,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   BuildInputLoading(state);
   BuildExampleDownload(state.studio_parent ? *state.studio_parent : state,s);
   BuildAppSettings(state);
+  lidar_viewer::DrawAboutDialog(state.open_about);
   BuildDatasetReviewDialog(state);
   if(training_owner.open_training && !training_owner.training_workspace) training_owner.training_workspace=std::make_unique<lidar_viewer::TrainingWorkspace>();
   if(training_owner.training_workspace) training_owner.training_workspace->Draw(training_owner.open_training,CurrentDatasetRoot(state),s);
@@ -5603,7 +5670,7 @@ void RenderClusterBoxes(ViewerState & state,const Mat4 & mvp)
 void RenderDatasetBoxes(const ViewerState & state,const Mat4 & mvp)
 {
   const auto labels=state.frame.annotations;if(!labels || !state.dataset_show_boxes) return;
-  const auto & v=state.ui_layout.viewport;auto * draw=ImGui::GetForegroundDrawList();
+  const auto & v=state.ui_layout.viewport;auto * draw=ImGui::GetBackgroundDrawList();
   draw->PushClipRect({v.x,v.y},{v.x+v.w,v.y+v.h},true);
   for(const auto & annotation:labels->boxes) {
     lidar_viewer::RoiBox box{annotation.class_name,true,annotation.center,annotation.size,annotation.yaw_deg};
@@ -5627,7 +5694,9 @@ void RenderDetectionLabels(const ViewerState & state,const Mat4 & mvp)
 {
   if (!state.algorithm_config.detection.enabled || state.ground_view==ViewerState::GroundView::Ground) return;
   const auto & canvas=state.ui_layout.viewport;
-  auto * draw=ImGui::GetForegroundDrawList();
+  // Scene labels belong below dialogs and panels, even when their 3D anchor
+  // projects behind an open About/settings window.
+  auto * draw=ImGui::GetBackgroundDrawList();
   draw->PushClipRect({canvas.x,canvas.y},{canvas.x+canvas.w,canvas.y+canvas.h},true);
   std::vector<ImVec4> labels;
   for (std::size_t index=0;index<state.detections.size();++index) {
@@ -5674,18 +5743,23 @@ void RenderDetectionLabels(const ViewerState & state,const Mat4 & mvp)
     const auto size=ImGui::CalcTextSize(text);
     // In a top view, projecting the box's 3D top-center still lands in its
     // middle. Anchor outside the complete projected silhouette instead.
-    if(size.x+8>canvas.w) continue;
-    const ImVec2 a{std::clamp((left+right-size.x)*.5f,canvas.x+4,canvas.x+canvas.w-size.x-4),
-      top-size.y-8>=canvas.y+2 ? top-size.y-8 : bottom+8};
-    const ImVec4 rectangle{a.x-4,a.y-2,a.x+size.x+4,a.y+size.y+2};
+    const float scale=state.ui_layout.scale,pad_x=7*scale,pad_y=4*scale,gap=6*scale;
+    if(size.x+2*pad_x>canvas.w) continue;
+    const ImVec2 a{std::clamp((left+right-size.x)*.5f,canvas.x+pad_x,canvas.x+canvas.w-size.x-pad_x),
+      top-size.y-pad_y-gap>=canvas.y+pad_y ? top-size.y-pad_y-gap : bottom+pad_y+gap};
+    const ImVec4 rectangle{a.x-pad_x,a.y-pad_y,a.x+size.x+pad_x,a.y+size.y+pad_y};
     if (rectangle.x<canvas.x || rectangle.z>canvas.x+canvas.w || rectangle.y<canvas.y || rectangle.w>canvas.y+canvas.h) continue;
     if (std::any_of(labels.begin(),labels.end(),[&](const ImVec4 & other) {
         return rectangle.x<other.z+3 && rectangle.z>other.x-3 && rectangle.y<other.w+3 && rectangle.w>other.y-3;
       })) continue;
     labels.push_back(rectangle);
     const auto color=DetectionClassColors(detection.class_id).second;
-    draw->AddRectFilled({a.x-4,a.y-2},{a.x+size.x+4,a.y+size.y+2},ImGui::ColorConvertFloat4ToU32(ui::OverlayBackground()),3);
-    draw->AddText(a,ImGui::ColorConvertFloat4ToU32({color.r,color.g,color.b,1}),text);
+    const ImVec2 badge_min{rectangle.x,rectangle.y},badge_max{rectangle.z,rectangle.w};
+    const auto accent=ImGui::ColorConvertFloat4ToU32({color.r,color.g,color.b,1});
+    draw->AddRectFilled(badge_min,badge_max,ImGui::ColorConvertFloat4ToU32(ui::DetectionLabelBackground()),3*scale);
+    draw->AddRect(badge_min,badge_max,accent,3*scale,0,scale);
+    draw->AddRectFilled({rectangle.x,rectangle.y+3*scale},{rectangle.x+3*scale,rectangle.w-3*scale},accent);
+    draw->AddText(a,ImGui::ColorConvertFloat4ToU32(ui::DetectionLabelText()),text);
   }
   draw->PopClipRect();
 }
@@ -5781,7 +5855,10 @@ int RunViewer(int argc, char ** argv)
     std::optional<float> sensor_height;
     for (int i = 1; i < argc; ++i) {
       const std::string arg = argv[i];
-      if (arg == "--help" || arg == "-h") {
+      if(arg=="--version") {
+        std::cout<<"LiDAR Studio "<<lidar_viewer::app_info::Version<<" | "<<lidar_viewer::app_info::Revision
+          <<" | "<<lidar_viewer::app_info::Platform<<'\n';return 0;
+      } else if (arg == "--help" || arg == "-h") {
         std::cout << "Usage: lidar_studio [INPUT] [--live] [--topic /b2/points] [--sensor-height METRES] [--imu-level] [--imu-topic TOPIC] [--2d|--panorama] [--play] [--detect] [--inspect] [--record-folder DIR]\n"
                   << "INPUT: .bin/.npy/.pcd file, dataset folder/metadata.json, bag collection, ROS 2 bag, .mcap, .db3 or metadata.yaml.\n"
                   << "Without INPUT, show an empty viewer. Click Open... to select a recording.\n"
@@ -6141,6 +6218,7 @@ int RunViewer(int argc, char ** argv)
       const bool geometry_ready=CompleteGeometry(state);
       const bool requested_frame_ready=CompleteFrameRequest(state) || geometry_ready;
       UpdateDatasetEdits(state);
+      UpdateDetectorSetup(state);
       const bool live_detector_ready=UpdateDetector(state);
       if (!live_detector_ready && !geometry_ready) UpdateLiveFrame(state);
       int fb_width = 0, fb_height = 0, window_width = 0, window_height = 0;

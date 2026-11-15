@@ -21,3 +21,10 @@ target_include_directories(lidar_viewer_example PUBLIC "${CMAKE_CURRENT_SOURCE_D
 target_link_libraries(lidar_viewer_example PRIVATE ${example_curl_library} OpenSSL::Crypto Threads::Threads)
 lidar_warnings(lidar_viewer_example)
 target_link_libraries(lidar_studio PRIVATE lidar_viewer_example)
+
+add_library(lidar_viewer_detector_setup STATIC src/detector_setup.cpp)
+target_include_directories(lidar_viewer_detector_setup PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_link_libraries(lidar_viewer_detector_setup PUBLIC lidar_viewer_export
+  PRIVATE ${example_curl_library} OpenSSL::Crypto Boost::headers Threads::Threads)
+lidar_warnings(lidar_viewer_detector_setup)
+target_link_libraries(lidar_studio PRIVATE lidar_viewer_detector_setup)

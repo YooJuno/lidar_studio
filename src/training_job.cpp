@@ -49,9 +49,16 @@ std::optional<int> TrainingJob::ExitCode() const {return impl_->exit;}
 void TrainingJob::Start(const std::filesystem::path & python,const std::filesystem::path & script,
   const std::filesystem::path & request,const std::filesystem::path & log,bool validate_only)
 {
-  if(Running()) throw std::runtime_error("A training job is already running");
   if(!std::filesystem::is_regular_file(script) || !std::filesystem::is_regular_file(request))
     throw std::runtime_error("Training script or request is missing");
+  std::vector<std::string> arguments{python.u8string(),"-u",script.u8string(),"--request",request.u8string()};
+  if(validate_only) arguments.push_back("--validate");
+  StartCommand(arguments,log);
+}
+void TrainingJob::StartCommand(const std::vector<std::string> & arguments,const std::filesystem::path & log)
+{
+  if(Running()) throw std::runtime_error("A helper process is already running");
+  if(arguments.empty() || arguments.front().empty()) throw std::invalid_argument("Missing helper executable");
 #ifdef _WIN32
   const auto quote=[](const std::wstring & value) {
     std::wstring out=L"\"";std::size_t slashes=0;
@@ -59,8 +66,11 @@ void TrainingJob::Start(const std::filesystem::path & python,const std::filesyst
       out.append(c==L'"' ? slashes*2+1 : slashes,L'\\');slashes=0;out+=c;}
     out.append(slashes*2,L'\\');return out+L'"';
   };
-  std::wstring command=quote(python.wstring())+L" -u "+quote(script.wstring())+L" --request "+quote(request.wstring());
-  if(validate_only) command+=L" --validate";
+  std::wstring command;
+  for(const auto & argument:arguments) {
+    if(!command.empty()) command+=L' ';
+    command+=quote(std::filesystem::u8path(argument).wstring());
+  }
   SECURITY_ATTRIBUTES sa{sizeof(SECURITY_ATTRIBUTES),nullptr,TRUE};
   HANDLE output=CreateFileW(log.c_str(),GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,&sa,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr);
   HANDLE input=CreateFileW(L"NUL",GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,&sa,OPEN_EXISTING,0,nullptr);
@@ -93,9 +103,8 @@ void TrainingJob::Start(const std::filesystem::path & python,const std::filesyst
   const int ar=posix_spawnattr_init(&attributes);const bool attributes_ok=ar==0;if(!rc) rc=ar;
   if(!rc) rc=posix_spawnattr_setflags(&attributes,POSIX_SPAWN_SETPGROUP);
   if(!rc) rc=posix_spawnattr_setpgroup(&attributes,0);
-  std::vector<std::string> arguments{python.string(),"-u",script.string(),"--request",request.string()};
-  if(validate_only) arguments.push_back("--validate");
-  std::vector<char *> argv;for(auto & arg:arguments) argv.push_back(arg.data());argv.push_back(nullptr);
+  auto mutable_arguments=arguments;
+  std::vector<char *> argv;for(auto & arg:mutable_arguments) argv.push_back(arg.data());argv.push_back(nullptr);
   pid_t child=-1;if(!rc) rc=posix_spawnp(&child,argv[0],&actions,&attributes,argv.data(),environ);
   if(actions_ok) posix_spawn_file_actions_destroy(&actions);
   if(attributes_ok) posix_spawnattr_destroy(&attributes);

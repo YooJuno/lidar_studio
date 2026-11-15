@@ -180,6 +180,7 @@ lidar_warnings(lidar_viewer_export)
 add_executable(lidar_studio
   src/main.cpp
   src/viewer_app.cpp
+  src/about_ui.cpp
   src/training_ui.cpp
   src/config.cpp
   src/algorithms/ground_removal.cpp
@@ -259,6 +260,12 @@ if(BUILD_TESTING)
   set_tests_properties(background_worker_smoke_test PROPERTIES TIMEOUT 15)
   find_package(Python3 QUIET COMPONENTS Interpreter)
   if(Python3_Interpreter_FOUND)
+    add_executable(detector_setup_smoke_test tests/detector_setup_smoke.cpp)
+    target_link_libraries(detector_setup_smoke_test PRIVATE lidar_viewer_detector_setup)
+    add_test(NAME detector_setup_smoke_test COMMAND detector_setup_smoke_test ${Python3_EXECUTABLE})
+    set_tests_properties(detector_setup_smoke_test PROPERTIES TIMEOUT 30)
+    add_test(NAME detector_setup_installer_test COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_detector_setup.py)
+    set_tests_properties(detector_setup_installer_test PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
     add_test(NAME detector_native_smoke_test COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/tests/detector_native_smoke.py $<TARGET_FILE:lidar_viewer_native>)
     set_tests_properties(detector_native_smoke_test PROPERTIES TIMEOUT 30)
@@ -335,3 +342,4 @@ if(BUILD_TESTING)
 endif()
 
 include(cmake/Packaging.cmake)
+include(cmake/AppInfo.cmake)

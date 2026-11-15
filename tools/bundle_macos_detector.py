@@ -17,8 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'python'))
 from lidar_detection.models import MODELS
 
-PYTHON_URL = 'https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.12.16%2B20261110-aarch64-apple-darwin-install_only_stripped.tar.gz'
-PYTHON_SHA256 = '2f11b8aa3726bdbd87dd9eb76568412faddf4f47e26913fa45d6a2e424972acd'
+RUNTIME = json.loads((ROOT/'python/lidar_detection/runtime.json').read_text())['macos_arm64']
+PYTHON_URL = RUNTIME['url']
+PYTHON_SHA256 = RUNTIME['sha256']
 REQUIREMENTS = ['numpy==2.2.6', 'onnx==1.20.1', 'onnxruntime==1.23.2',
                 'protobuf==7.36.2', 'flatbuffers==25.12.19', 'sympy==1.14.0',
                 'mpmath==1.3.0', 'ml_dtypes==0.5.4', 'typing_extensions==4.16.0',

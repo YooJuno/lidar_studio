@@ -10,12 +10,14 @@ standard ONNX ScatterND bridge, ROS box decoding and circle/BEV suppression.
 Original neural network weights are unchanged. The adapter uses a single scan
 (time lag zero), deterministic sampling and no synthetic temporal sweeps.
 
-Optional model, downloaded separately after explicit setup:
+Original model (bundled in Mac releases or downloaded through in-app setup):
 AutowareFoundation/lidar_centerpoint tiny v4.1
 Revision 494c8171def40bd36cc2feb323e0a5acbfab132b
 https://huggingface.co/AutowareFoundation/lidar_centerpoint
 Model card declares Apache-2.0; see the model card's Legal Notice and training
-data terms. No weights, training data or TensorRT engines are bundled here.
+data terms. Weights are not committed to the source repository. Mac release
+packages include the original weights. No training data or TensorRT engines
+are included.
 
 CenterPoint: Tianwei Yin, Xingyi Zhou, Philipp Krahenbuhl,
 "Center-based 3D Object Detection and Tracking", CVPR 2021.

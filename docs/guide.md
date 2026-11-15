@@ -444,7 +444,9 @@ source /opt/ros/jazzy/setup.bash
 
 공식 **Mac DMG/ZIP에는 tiny·ShortRange 원본 모델과 별도 CPU Python 실행환경이 포함**됩니다. Applications에 복사한 뒤 **Objects → Enable objects**를 켜면 됩니다. Homebrew나 시스템 Python 설치가 필요 없으며, 첫 모델 로딩에는 시간이 걸릴 수 있습니다. 사용자 `detector.cfg`에 지정한 환경은 번들보다 우선합니다. 모델 로딩·미설치·오류 상태는 Method 바로 아래에 표시합니다.
 
-Ubuntu/Windows 배포나 소스 빌드에서는 Python 3.10–3.13으로 선택 기능을 한 번 설치합니다. 시스템 Python 패키지를 바꾸지 않고 사용자 폴더의 별도 가상환경에 설치합니다. Ubuntu에서 venv가 없다면 `python3-venv` 패키지가 필요합니다. 이전 Mac 배포본을 그대로 쓰려면 Homebrew의 `python@3.12`로 `"/Applications/LiDAR Studio.app/Contents/Resources/tools/setup_detector.py"`를 실행하고 **Retry model**을 누릅니다.
+모델이 없는 경우 **Objects → Install CPU models**를 누르면 앱 안에서 두 CPU 모델을 준비합니다. 다운로드 진행 상태와 설치 상세 로그를 표시하며, 취소 후 재시도할 수 있습니다. 검증이 끝나면 선택한 모델로 검출을 자동 시작합니다. Apple Silicon Mac 소스 빌드는 전용 Python 런타임도 직접 준비하므로 터미널이나 별도 Python 설치가 필요 없습니다. Ubuntu/Windows에서는 설치된 Python 3.10–3.13을 사용해 사용자 폴더의 가상환경을 준비합니다. 시스템 Python 패키지는 변경하지 않습니다.
+
+별도 CUDA 환경이나 자동화에는 기존 명령행 설치기를 사용할 수 있습니다.
 
 ```bash
 # CPU: Ubuntu / Windows / macOS

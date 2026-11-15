@@ -2,14 +2,15 @@
 
 #include <imgui.h>
 #include <array>
+#include <atomic>
 
 namespace lidar_viewer::ui
 {
 enum class Theme {Dark, Light};
 
 // Appearance belongs to the application, including all of its workspaces.
-inline Theme & ApplicationTheme() {static Theme theme=Theme::Dark;return theme;}
-inline bool IsLight() {return ApplicationTheme()==Theme::Light;}
+inline std::atomic<Theme> & ApplicationTheme() {static std::atomic<Theme> theme{Theme::Dark};return theme;}
+inline bool IsLight() {return ApplicationTheme().load(std::memory_order_relaxed)==Theme::Light;}
 inline const char * ThemeName() {return IsLight() ? "light" : "dark";}
 inline ImVec4 Tone(ImVec4 dark,ImVec4 light) {return IsLight() ? light : dark;}
 inline ImVec4 ErrorColor() {return Tone({1,.56f,.48f,1},{.73f,.16f,.15f,1});}
@@ -18,6 +19,8 @@ inline ImVec4 SuccessColor() {return Tone({.42f,.85f,.65f,1},{.08f,.44f,.28f,1})
 inline ImVec4 InfoColor() {return Tone({.44f,.76f,1,1},{.08f,.36f,.59f,1});}
 inline ImVec4 SelectionColor() {return Tone({.13f,.32f,.40f,1},{.80f,.89f,.95f,1});}
 inline ImVec4 OverlayBackground() {return Tone({.047f,.067f,.09f,.9f},{.97f,.98f,1,.94f});}
+inline ImVec4 DetectionLabelBackground() {return Tone({.035f,.05f,.07f,1},{1,1,1,1});}
+inline ImVec4 DetectionLabelText() {return Tone({.96f,.98f,1,1},{.08f,.12f,.17f,1});}
 inline ImVec4 AppBackground() {return Tone({.045f,.058f,.079f,1},{.93f,.95f,.97f,1});}
 inline ImVec4 CanvasBackground() {return Tone({.035f,.045f,.063f,1},{1,1,1,1});}
 inline ImVec4 GridColor() {return Tone({.42f,.48f,.56f,.38f},{.48f,.54f,.62f,.22f});}

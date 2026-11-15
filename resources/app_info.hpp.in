@@ -1,0 +1,11 @@
+#pragma once
+namespace lidar_viewer::app_info {
+inline constexpr const char * Version="@CPACK_PACKAGE_VERSION@";
+inline constexpr const char * Revision="@LIDAR_STUDIO_BUILD_REVISION@";
+inline constexpr const char * Built="@LIDAR_STUDIO_BUILD_TIME@";
+inline constexpr const char * Platform="@CMAKE_SYSTEM_NAME@ @CMAKE_SYSTEM_PROCESSOR@";
+inline constexpr const char * Developer="Yoo Junho";
+inline constexpr const char * Email="juno980220@naver.com";
+inline constexpr const char * Repository="https://github.com/YooJuno/lidar_studio";
+inline constexpr const char * License="MIT (original project code)";
+}

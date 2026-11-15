@@ -4,6 +4,8 @@
 
 A desktop workspace for LiDAR playback, ground segmentation, clustering, object detection and interactive ROI editing—from a raw scan to a dataset ready for annotation.
 
+**About** in the top bar shows the version, build revision, developer contact and a license browser.
+
 [Download latest](https://github.com/YooJuno/lidar_studio/releases/latest) · [Latest builds](https://github.com/YooJuno/lidar_studio/actions/workflows/build-release.yml) · [Detailed guide (Korean)](docs/guide.md)
 
 ## Highlights
@@ -115,7 +117,9 @@ Exports contain **NPY** (`float32`, `N × 4`: `x, y, z, intensity`), matching **
 
 **Mac downloads include the original tiny and AWML ShortRange models with a private CPU runtime.** Open a cloud, then enable a model in **Objects**; Homebrew and a separate Python installation are not required. The first model load can take a few seconds. An explicit user detector configuration takes priority over the built-in runtime.
 
-For Linux/Windows packages or source checkouts, install pretrained models once, then enable a model in **Objects**:
+If the models are missing, choose **Objects → Install CPU models**. Preparation runs in the background with download progress, cancellation and retry. Both models load automatically after validation. Apple Silicon source builds also prepare their own Python runtime; no terminal or separate Python installation is needed. Linux/Windows setup uses an installed Python 3.10–3.13.
+
+The optional command-line installer remains available for custom CUDA environments:
 
 ```bash
 python3 tools/setup_detector.py          # CPU
@@ -125,6 +129,16 @@ python3 tools/setup_detector.py          # CPU
 Class and score changes filter cached predictions without repeating inference. Detection quality depends on the sensor and scene; geometric clusters have no semantic class. [Model setup](docs/guide.md#사람차량-인식--원본-tier-iv-모델).
 
 **Live → Connect** subscribes to ROS 2 LiDAR and IMU topics. Freeze the displayed scan, resume the latest data or record the original stream to a bag. Subscription and recording continue while the display is frozen. Sensor drivers run separately. [Sensor setup and recording](docs/guide.md#실시간-lidar--imu).
+
+## License and contact
+
+Original LiDAR Studio code is licensed under [MIT](LICENSE), copyright 2026 Yoo Junho.
+Files with their own license headers and third-party components keep those terms;
+see [third-party notices](THIRD_PARTY_NOTICES.md). Pretrained models retain their
+original licenses. KITTI-derived demo media and UrbanV2X examples have separate
+noncommercial data licenses; they are not covered by the application's MIT license.
+
+Developer: **Yoo Junho** · [juno980220@naver.com](mailto:juno980220@naver.com) · [Issues](https://github.com/YooJuno/lidar_studio/issues).
 
 ## Development
 

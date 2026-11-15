@@ -15,6 +15,8 @@ public:
   TrainingJob(const TrainingJob &)=delete;TrainingJob & operator=(const TrainingJob &)=delete;
   void Start(const std::filesystem::path & python,const std::filesystem::path & script,
     const std::filesystem::path & request,const std::filesystem::path & log,bool validate_only);
+  // Reuse the same owned process-group lifecycle for application setup helpers.
+  void StartCommand(const std::vector<std::string> & arguments,const std::filesystem::path & log);
   void Poll();void Cancel();
   bool Running() const;bool Stopping() const;
   std::optional<int> ExitCode() const;
