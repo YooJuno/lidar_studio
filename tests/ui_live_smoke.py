@@ -105,6 +105,15 @@ def main():
             counts = {t["topic_metadata"]["name"]: t["message_count"] for t in data["topics_with_message_count"]}
             result["checks"]["received_and_recorded_while_frozen"] = counts.get("/fixture/points", 0) >= 8 and counts.get("/fixture/imu", 0) >= 50
             result["checks"]["static_tf_recorded"] = counts.get("/tf_static", 0) >= 1
+            def inspect_bag(*options):
+                return subprocess.run([str(viewer), str(metadata.parent), "--inspect", *options],
+                    env=env, cwd=private, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=10)
+            automatic = inspect_bag()
+            explicit = inspect_bag("--topic", "/fixture/points")
+            mismatched = inspect_bag("--topic", "/b2/points")
+            (output / "inspect-recording.log").write_text(automatic.stdout + explicit.stdout + mismatched.stdout)
+            result["checks"]["recorded_custom_topic_reopens_automatically"] = automatic.returncode == 0 and "first frame" in automatic.stdout
+            result["checks"]["explicit_topic_stays_strict"] = explicit.returncode == 0 and mismatched.returncode != 0 and "/fixture/points" in mismatched.stdout
             # Export the exact frozen frame, using raw XYZI rather than display
             # colors or a new frame pulled from the still-running subscriber.
             controls.click('tab_ROI');controls.click('roi_purpose_display');controls.click('roi_export')

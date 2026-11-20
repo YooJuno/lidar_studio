@@ -7,13 +7,27 @@ import os
 from pathlib import Path
 import re
 import shutil
+import struct
 import subprocess
 import tempfile
 import time
 import traceback
 from ui_gl_smoke import X11,capture,changed_pixels,settings_inventory
 from ui_controls import Controls
+from ui_direct_live_smoke import mid360_packet
 from ui_playback_smoke import write_fixture
+
+
+def write_pcap_fixture(path):
+    with path.open('wb') as capture_file:
+        capture_file.write(struct.pack('<IHHIIII', 0xa1b2c3d4, 2, 4, 0, 0, 65535, 101))
+        for i in range(40):
+            payload = mid360_packet(i)
+            udp = struct.pack('!HHHH', 56300, 56301, len(payload) + 8, 0)
+            ipv4 = struct.pack('!BBHHHBBH4s4s', 0x45, 0, len(udp) + len(payload) + 20,
+                0, 0, 64, 17, 0, b'\x7f\x00\x00\x01', b'\x7f\x00\x00\x01')
+            packet = ipv4 + udp + payload
+            capture_file.write(struct.pack('<IIII', 1, i * 10000, len(packet), len(packet)) + packet)
 
 
 def main():
@@ -96,6 +110,20 @@ def main():
         (out/'explicit-open.log').write_text(reopened.stdout)
         check('explicit_open_restores_a_removed_source',reopened.returncode==0 and str(a) not in manifest.read_text())
         check('all_original_data_bytes_preserved',fingerprint(a)==originals[a.name] and fingerprint(b)==originals[b.name] and fingerprint(out/'unplugged_recording')==originals[c.name])
+        standalone=out/'single.pcap'
+        recording=out/'sensors_20261120_120000_capture';recording.mkdir()
+        write_pcap_fixture(standalone);write_pcap_fixture(recording/'lidar.pcap')
+        for run, name, source in [(3,'file',standalone),(4,'directory',recording)]:
+            start(run,[str(source),'--play','--2d'])
+            wait(lambda:'Opened point cloud:' in logs());menu();click_row(source,True)
+            x11.key(window,'Escape');menu();restore()
+            wait(lambda:row(source) is not None)
+            count=logs().count('Opened point cloud:')
+            click_row(source)
+            check('restoring_active_pcap_'+name+'_keeps_playback',
+                  logs().count('Opened point cloud:')==count and
+                  bool(Controls(x11,window,logpath).rect('playback_playing',after=len(logs()))))
+            stop()
         check('original_profiles_unchanged',before==settings_inventory(repo));result['status']='passed'
     except Exception as error:
         result.update(status='failed',error=str(error),traceback=traceback.format_exc())

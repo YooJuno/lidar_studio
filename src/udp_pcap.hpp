@@ -19,5 +19,7 @@ private:
   fs::path path_, temporary_;
   std::ofstream stream_;
   std::uint64_t packets_{0};
+  std::uint64_t next_offset_{0}, first_point_offset_{0};
+  std::uint64_t source_fingerprint_{0};
 };
 }  // namespace lidar_viewer

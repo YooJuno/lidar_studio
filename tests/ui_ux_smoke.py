@@ -1,9 +1,63 @@
 #!/usr/bin/env python3
 """Private Xvfb: fixed navigation, independent scroll, resizing and BIN timeline."""
-import argparse,json,os,re,shutil,struct,subprocess,tempfile,time,traceback
+import argparse,errno,json,os,re,shutil,struct,subprocess,tempfile,time,traceback
 from pathlib import Path
 from ui_controls import Controls
 from ui_gl_smoke import X11,capture,changed_pixels,settings_inventory
+
+
+def check_read_recovery(x, window, controls, clouds, out, log_path, check):
+ bad_frame=clouds/'0002.bin'
+ original=bad_frame.read_bytes()
+ bad_frame.unlink()
+ os.mkfifo(bad_frame)
+ x.key(window,'Right')
+ before=capture(x,window,out/'06_before_seek.png')
+ controls.click('timeline',.75)
+ # Relieve the blocked speculative read only after requesting a different frame.
+ deadline=time.monotonic()+5
+ while True:
+  try:
+   os.close(os.open(bad_frame,os.O_WRONLY|os.O_NONBLOCK));break
+  except OSError as error:
+   if error.errno!=errno.ENXIO or time.monotonic()>=deadline:raise
+   time.sleep(.05)
+ time.sleep(.4)
+ bounds=(500,180,1540,750)
+ after=capture(x,window,out/'07_valid_seek_after_prefetch_error.png')
+ check('failed_prefetch_keeps_a_different_seek',changed_pixels(before,after,bounds)>80)
+ check('speculative_failure_is_silent','Could not load frame' not in log_path.read_text(errors='replace'))
+ bad_frame.unlink()
+ bad_frame.write_bytes(b'invalid')
+ offset=len(log_path.read_text(errors='replace'))
+ controls.click('timeline',.18)
+ controls.rect('dismiss_error',after=offset)
+ time.sleep(.3)
+ check('selected_bad_frame_stops_without_retry',log_path.read_text(errors='replace')[offset:].count('Could not load frame 3:')==1)
+ controls.click('timeline',.75)
+ time.sleep(.3)
+ offset=len(log_path.read_text(errors='replace'))
+ try:
+  controls.rect('dismiss_error',timeout=.3,after=offset)
+ except AssertionError:
+  recovered=True
+ else:
+  recovered=False
+ check('valid_seek_clears_frame_error',recovered)
+
+ bad_frame.write_bytes(original)
+ controls.click('playback_loop')  # The compact-view check saved this profile with Loop off.
+ controls.rect('playback_loop_on')
+ controls.click('playback_toggle')
+ controls.rect('playback_playing')
+ controls.click('open_input');controls.click('open_input_file')
+ controls.rect('dismiss_error',after=offset)
+ time.sleep(.5)
+ offset=len(log_path.read_text(errors='replace'))
+ check('failed_open_error_stays_visible_while_playing',bool(controls.rect('dismiss_error',after=offset)))
+ check('failed_open_preserves_playback',bool(controls.rect('playback_playing',after=offset)))
+ controls.click('dismiss_error')
+ capture(x,window,out/'08_recovered_playback.png')
 
 
 def main():
@@ -17,6 +71,10 @@ def main():
   points.extend((i*.2+x*.1,2+y*.1,z*.1,.9) for x in range(8) for y in range(8) for z in range(15))
   (clouds/f'{i:04d}.bin').write_bytes(b''.join(struct.pack('<4f',*p) for p in points))
  env=dict(os.environ,XDG_CONFIG_HOME=str(out/'settings'),LIDAR_VIEWER_UI_TRACE='1');profile=out/'settings/lidar_viewer/app_settings.cfg'
+ corrupt=out/'corrupt.bin';corrupt.write_bytes(b'invalid')
+ picker=out/'picker';picker.mkdir()
+ chooser=picker/'zenity';chooser.write_text('#!/bin/sh\nprintf "%s\\n" "$LIDAR_TEST_OPEN"\n');chooser.chmod(0o755)
+ env.update(PATH=str(picker)+os.pathsep+env['PATH'],LIDAR_TEST_OPEN=str(corrupt))
  before=settings_inventory(repo);result={'status':'started','checks':{},'output':str(out)};process=x=window=None
  def check(label,v):
   result['checks'][label]=bool(v)
@@ -24,10 +82,12 @@ def main():
  def prefs():return dict(s.split('=',1) for s in profile.read_text().splitlines() if '=' in s)
  try:
   x=X11();subprocess.run(['xrdb','-merge'],input='Xft.dpi: 96\n',text=True,check=True)
-  for run in range(2):
+  for run in range(3):
    log_path=out/f'viewer-{run}.log'
    with log_path.open('wb') as log:
-    process=subprocess.Popen([str(viewer),str(clouds),'--2d','--play'],cwd=private,env=env,stdout=log,stderr=subprocess.STDOUT)
+    launch=[str(viewer),str(clouds),'--2d']
+    if run<2:launch.append('--play')
+    process=subprocess.Popen(launch,cwd=private,env=env,stdout=log,stderr=subprocess.STDOUT)
     deadline=time.monotonic()+20;window=None
     while not window:
      if process.poll() is not None or time.monotonic()>deadline:raise RuntimeError('Viewer did not open')
@@ -77,9 +137,12 @@ def main():
      c.chord('s');user=out/'settings/lidar_viewer/profiles/default.cfg'
      saved=user if user.exists() else private/'config/profiles/default.cfg'
      check('panel_width_is_not_a_data_setting','inspector_width=' not in saved.read_text())
-    else:
+    elif run==1:
      r=c.rect('inspector_resize');check('panel_width_is_restored_on_launch',440<r[0]<455)
      capture(x,window,out/'05_restored_width.png')
+    else:
+     c.rect('timeline')
+     check_read_recovery(x,window,c,clouds,out,log_path,check)
     process.terminate();process.wait(timeout=5);process=None;window=None
   check('original_profiles_unchanged',before==settings_inventory(repo));result['status']='passed'
  except Exception as e:

@@ -26,6 +26,7 @@ struct LidarDatagram
 {
   std::vector<std::uint8_t> payload;
   UdpRoute route;
+  bool selected_point{false};
   std::int64_t received_ns{0};
 };
 

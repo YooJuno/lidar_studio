@@ -6,6 +6,7 @@ namespace lidar_viewer
 {
 inline constexpr const char * kLivePcapFilename = "lidar.pcap";
 inline constexpr const char * kPcapCorrectionSuffix = ".calibration";
+inline constexpr const char * kPcapSourceSuffix = ".source";
 
 fs::path FindLidarPcap(const fs::path & path);
 std::vector<FrameHandle> IndexLidarPcap(const fs::path & path, InputLoadState * load = nullptr);

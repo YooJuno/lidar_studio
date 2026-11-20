@@ -41,6 +41,7 @@ struct LiveStats
   bool connected{false}, recording{false}, record_busy{false}, record_stopping{false};
   std::uint64_t clouds{0}, imu_samples{0}, decode_errors{0}, replaced_frames{0};
   std::uint64_t recorded_messages{0}, recorded_bytes{0}, record_dropped{0};
+  std::uint64_t recorded_point_packets{0}; // Direct Ethernet packets on the selected stream.
   double cloud_hz{0}, cloud_age_ms{-1}, imu_age_ms{-1};
   std::filesystem::path recording_path;
   std::string error, record_error;

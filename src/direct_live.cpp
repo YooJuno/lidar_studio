@@ -404,7 +404,8 @@ struct DirectLiveSession::Impl
     }
   }
 
-  void QueueRecordingPacket(const std::uint8_t * data, std::size_t size, const UdpRoute & from, std::int64_t received_ns)
+  void QueueRecordingPacket(const std::uint8_t * data, std::size_t size, const UdpRoute & from,
+    std::int64_t received_ns, bool selected_point)
   {
     // The receiver calls this with the recording state locked.
     if (!stats.record_busy || stop_requested) return;
@@ -415,7 +416,7 @@ struct DirectLiveSession::Impl
       return;
     }
     const bool wake_recorder = queue.empty();
-    queue.push_back({{data, data + size}, from, received_ns});
+    queue.push_back({{data, data + size}, from, selected_point, received_ns});
     queued_bytes += size + sizeof(LidarDatagram);
     if (wake_recorder) ready.notify_one();
   }
@@ -450,16 +451,16 @@ struct DirectLiveSession::Impl
       std::memcpy(from.source_ip.data(), &sender.sin_addr, 4);
       const auto size = static_cast<std::size_t>(bytes);
       const auto received_ns = NowNs();
-      if (route) {
-        if (route->source_ip != from.source_ip) continue;
-        if (socket->auxiliary || route->destination_port == from.destination_port) {
-          std::lock_guard<std::mutex> lock(mutex);
-          QueueRecordingPacket(data.data(), size, from, received_ns);
-        }
-        if (!(*route == from)) continue;
+      if (route && route->source_ip != from.source_ip) continue;
+      const bool point_route = !socket->auxiliary && (!route || *route == from);
+      auto packet = point_route
+        ? InspectLidarPacket(data.data(), size, ouster ? &*ouster : nullptr, hesai_at ? &*hesai_at : nullptr)
+        : std::nullopt;
+      if (route && (socket->auxiliary || route->destination_port == from.destination_port)) {
+        std::lock_guard<std::mutex> lock(mutex);
+        QueueRecordingPacket(data.data(), size, from, received_ns, packet && packet->model == stats.sensor_model);
       }
-      if (socket->auxiliary) continue;
-      auto packet = InspectLidarPacket(data.data(), size, ouster ? &*ouster : nullptr, hesai_at ? &*hesai_at : nullptr);
+      if (!point_route) continue;
       if (!packet && !route && options.model == Model::Auto && !ouster && !tried_ouster &&
           (socket->port == DirectLidarDefaultPort(Model::OusterOs) || (filtered_ip && options.udp_port))) {
         tried_ouster = true;
@@ -580,11 +581,15 @@ struct DirectLiveSession::Impl
           batch.swap(queue);
           queued_bytes = 0;
           lock.unlock();
-          std::uint64_t bytes = 0;
-          for (const auto & packet : batch) bytes += writer.Write(packet);
+          std::uint64_t bytes = 0, point_packets = 0;
+          for (const auto & packet : batch) {
+            bytes += writer.Write(packet);
+            if (packet.selected_point) ++point_packets;
+          }
           lock.lock();
           stats.recorded_messages += batch.size();
           stats.recorded_bytes += bytes;
+          stats.recorded_point_packets += point_packets;
           // Deallocation of packet buffers must not hold up UDP reception.
           lock.unlock();
           batch.clear();
@@ -658,7 +663,7 @@ void DirectLiveSession::StartRecording(const fs::path & destination)
   if (status.record_busy) throw std::runtime_error("A recording is already active or being saved");
   status.recording_path = path;
   status.record_error.clear();
-  status.recorded_messages = status.recorded_bytes = status.record_dropped = 0;
+  status.recorded_messages = status.recorded_bytes = status.record_dropped = status.recorded_point_packets = 0;
   status.record_busy = true;
   impl_->stop_requested = false;
   impl_->ready.notify_one();

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Private Xvfb: application scale survives profile changes and never enters data profiles."""
+"""Private Xvfb: application layout is shared by workspaces and independent of data profiles."""
 import argparse
 import json
 import os
@@ -39,6 +39,16 @@ def main():
     def check(label,value):
         result['checks'][label]=bool(value)
         if not value:raise AssertionError(label)
+    def preferences():
+        app = Path(env['XDG_CONFIG_HOME']) / 'lidar_viewer/app_settings.cfg'
+        return dict(line.split('=', 1) for line in app.read_text().splitlines() if '=' in line)
+
+    def check_workspace_layout(label, scale, panel_width, after):
+        left, _, right, _ = controls.rect('open_input', after=after)
+        divider, _, _, _ = controls.rect('inspector_resize', after=after)
+        check(label, abs((right - left) - default_open_width * scale) < 3 and
+              abs(divider - (panel_width + 18) * scale) < 3)
+
     try:
         x11=X11();subprocess.run(['xrdb','-merge'],input='Xft.dpi: 96\n',text=True,check=True)
         for index,path in enumerate(sources):
@@ -53,10 +63,47 @@ def main():
                 controls=Controls(x11,window,log_path)
                 if index==0:
                     left, _, right, _ = controls.rect('open_input')
-                    scaled_open_width = (right - left) * 1.1
+                    default_open_width = right - left
+                    scaled_open_width = default_open_width * 1.1
+
+                    # Create the second workspace before changing any application settings.
+                    offset = len(log_path.read_text())
+                    controls.click('open_dataset')
+                    controls.rect('dataset_review_path', after=offset)
+                    controls.enter('dataset_review_path', path)
+                    controls.rect('dataset_current_0', after=offset)
+                    offset = len(log_path.read_text())
+                    controls.click('review_back')
+                    controls.rect('tab_Align', after=offset)
+
+                    divider_x, divider_y = controls.center('inspector_resize')
+                    controls.drag((divider_x, divider_y), (divider_x + 80, divider_y))
+                    panel_width = float(preferences()['inspector_width'])
+                    check('viewer_divider_saved_width', 390 <= panel_width <= 410)
                     controls.click('app_settings')
                     controls.enter('app_ui_scale',1.1,ctrl_click=True)
                     controls.click('app_settings')
+
+                    offset = len(log_path.read_text())
+                    controls.click('open_dataset')
+                    controls.rect('dataset_current_0', after=offset)
+                    check_workspace_layout('review_immediately_uses_viewer_scale_and_width',
+                                           1.1, panel_width, len(log_path.read_text()))
+
+                    # Editing the width from the other workspace must preserve the shared scale.
+                    offset = len(log_path.read_text())
+                    controls.click('app_settings')
+                    controls.rect('app_inspector_width', after=offset)
+                    controls.enter('app_inspector_width', 450, ctrl_click=True)
+                    x11.key(window, 'Escape')
+                    prefs = preferences()
+                    check('review_width_change_saves_both_prefs', abs(float(prefs['ui_scale']) - 1.1) < .001 and
+                          float(prefs['inspector_width']) == 450)
+
+                    offset = len(log_path.read_text())
+                    controls.click('review_back')
+                    controls.rect('tab_Align', after=offset)
+                    check_workspace_layout('viewer_immediately_uses_review_width', 1.1, 450, len(log_path.read_text()))
                 deadline=time.monotonic()+5
                 while True:
                     left,_,right,_=controls.rect('open_input')
@@ -72,9 +119,9 @@ def main():
                 user=Path(env['XDG_CONFIG_HOME'])/'lidar_viewer/profiles'/f'{name}.cfg'
                 profile=user if user.is_file() else private/f'config/profiles/{name}.cfg'
                 check(f'profile_{index}_does_not_store_app_scale','ui_scale=' not in profile.read_text())
-                app=Path(env['XDG_CONFIG_HOME'])/'lidar_viewer/app_settings.cfg'
-                prefs=dict(line.split('=',1) for line in app.read_text().splitlines() if '=' in line)
+                prefs = preferences()
                 check(f'profile_{index}_keeps_global_scale',abs(float(prefs['ui_scale'])-1.1)<.001)
+                check_workspace_layout(f'profile_{index}_uses_shared_width', 1.1, 450, len(log_path.read_text()))
                 process.terminate();process.wait(timeout=5);process=None
         check('original_profiles_unchanged',before==settings_inventory(repo));result['status']='passed'
     except Exception as error:

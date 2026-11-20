@@ -99,7 +99,7 @@ lidar_studio --live --lidar-model mid360 --lidar-ip 192.168.1.123
 
 - **Recording parent folder** 아래 `sensors_YYYYMMDD_HHMMSS_microseconds/lidar.pcap`으로 저장합니다. PCAP에는 UDP 본문 전체와 PC 수신 시각, IP 주소와 포트가 들어갑니다. Ethernet 헤더 및 그 밖의 IP 헤더 필드는 소켓에 전달되지 않아 PCAP용 IPv4·UDP 헤더를 재구성합니다.
 - 센서 타임스탬프는 UDP 본문에 원본 그대로 남습니다. 재생 프레임 간격은 정상 센서 시간을 우선 사용하며, 시간이 없거나 재설정되면 수신 시각으로 계산합니다. 앱은 선택한 센서와 같은 IP의 보조 UDP 패킷을 함께 저장합니다. 이 경로의 IMU 패킷은 저장할 수 있으며 화면 자세 보정은 ROS 2 토픽 연결에서 지원합니다.
-- `lidar.pcap.calibration`이 있으면 PCAP과 함께 옮깁니다. 외부 캡처에는 같은 이름의 `.json`, `.dat` 또는 `.csv` 보정 파일을 둘 수 있습니다. 앱에서 저장한 PCAP은 Wireshark에서도 열 수 있습니다.
+- 녹화를 옮길 때 PCAP과 함께 `lidar.pcap.source` 및 보정 파일(`lidar.pcap.calibration`, 있는 경우)을 가져갑니다. `.source`는 여러 스트림이 한 PCAP에 섞여 있어도 라이브에서 보던 스트림을 재생하는 데 쓰입니다. 포인트 없이 보조 패킷만 저장한 경우에는 앱에 해당 상태가 표시됩니다. 외부 캡처에는 같은 이름의 `.json`, `.dat` 또는 `.csv` 보정 파일을 둘 수 있습니다. PCAP은 Wireshark에서도 열 수 있습니다.
 
 ### ROS 2 토픽 연결
 
@@ -166,6 +166,8 @@ GitHub Actions의 **Build and release**는 PR·main push·수동 실행에서 �
 ## 수집한 ROS 2 bag 열기
 
 실행 중에는 상단 **Open → Open file...** 또는 **Ctrl+O**로 시스템 파일 선택 창을 열 수 있습니다. 선택하면 해당 bag을 열고 첫 프레임에서 정지합니다. 취소하거나 열기에 실패하면 현재 점군을 유지하며, 재생 중이었다면 재생도 복원합니다. 로딩 카드에는 파일명·색인한 LiDAR 프레임/전체 수·IMU 표본 수·남은 시간(ETA)·선택 메시지의 스캔 진행률을 표시합니다. 전체 수를 아직 모르는 단계는 활동 표시줄로 구분합니다. **Cancel opening / Esc**로 취소할 수 있으며, 명령행에서 bag을 열어도 창이 먼저 표시됩니다. 단일 bag을 고르는 동작은 상위 폴더 전체를 등록하지 않습니다.
+
+bag에서 `/b2/points`를 우선 사용합니다. PointCloud2 토픽이 하나이면 이름에 관계없이 자동으로 선택합니다. 여러 토픽 중 하나를 지정할 때는 `--topic /your/points`로 실행합니다.
 
 ```bash
 git clone --recursive https://github.com/YooJuno/lidar_studio.git

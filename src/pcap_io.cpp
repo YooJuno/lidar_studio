@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <locale>
 #include <utility>
 
 namespace lidar_viewer
@@ -24,6 +25,22 @@ constexpr std::uint32_t kRawIpv4 = 101;
 constexpr std::size_t kPcapHeader = 24, kPcapRecord = 16, kIpHeader = 20, kUdpHeader = 8;
 constexpr std::size_t kMaxPcapPayload = 65536 + 32;
 constexpr std::size_t kPcapWindow = 256 * 1024;
+constexpr const char * kPcapSourceVersion = "lidar-studio-pcap-source-v1";
+constexpr std::uint64_t kFingerprintSeed = 14695981039346656037ull;
+
+std::uint64_t FingerprintBytes(std::uint64_t hash, const std::uint8_t * bytes, std::size_t size)
+{
+  for (std::size_t i = 0; i < size; ++i) {
+    hash ^= bytes[i];
+    hash *= 1099511628211ull;
+  }
+  return hash;
+}
+
+std::runtime_error InvalidPcapSource()
+{
+  return std::runtime_error("PCAP source information is invalid or belongs to a different capture");
+}
 
 std::uint16_t Be16(const std::uint8_t * bytes)
 {
@@ -170,6 +187,15 @@ public:
     return ExtractUdp(payload, captured, link_, stamp);
   }
 
+  // This is used once per index build. Frame reads only parse UDP as usual.
+  std::uint64_t RecordFingerprint()
+  {
+    if (!Ensure(kPcapRecord)) throw InvalidPcapSource();
+    const auto captured = Read32(window_->data() + next_ + 8);
+    if (captured > kMaxPcapPayload || !Ensure(kPcapRecord + captured)) throw InvalidPcapSource();
+    return FingerprintBytes(kFingerprintSeed, window_->data() + next_, kPcapRecord + captured);
+  }
+
 private:
   bool Ensure(std::size_t bytes)
   {
@@ -215,6 +241,32 @@ private:
   bool little_{false}, nanos_{false};
 };
 
+struct RecordedSource
+{
+  std::uint64_t point_offset{0}, fingerprint{0};
+};
+
+std::optional<RecordedSource> ReadRecordedSource(const fs::path & path, std::uint64_t capture_size)
+{
+  auto sidecar = path;
+  sidecar += kPcapSourceSuffix;
+  if (!fs::exists(sidecar)) return std::nullopt;
+  if (!fs::is_regular_file(sidecar) || fs::file_size(sidecar) > 96) throw InvalidPcapSource();
+  std::ifstream input(sidecar, std::ios::binary);
+  input.imbue(std::locale::classic());
+  std::string version;
+  std::uint64_t size = 0;
+  RecordedSource source;
+  if (!(input >> version >> size >> source.point_offset >> source.fingerprint) ||
+      version != kPcapSourceVersion || size != capture_size ||
+      (source.point_offset && (source.point_offset < kPcapHeader || source.point_offset >= capture_size))) {
+    throw InvalidPcapSource();
+  }
+  input >> std::ws;
+  if (!input.eof()) throw InvalidPcapSource();
+  return source;
+}
+
 FrameHandle FrameStart(const fs::path & path, const std::shared_ptr<const PcapSource> & source,
   std::uint64_t offset, std::size_t block, std::int64_t timestamp, std::size_t number)
 {
@@ -240,6 +292,15 @@ fs::path FindLidarPcap(const fs::path & path)
 std::vector<FrameHandle> IndexLidarPcap(const fs::path & path, InputLoadState * load)
 {
   PcapReader reader(path);
+  // A native capture keeps all raw datagrams in receive order. The source
+  // offset selects the same point route and model that the live viewer used.
+  const auto recorded_source = ReadRecordedSource(path, reader.Size());
+  if (recorded_source) {
+    const auto offset = recorded_source->point_offset;
+    reader.Seek(offset ? offset : kPcapHeader);
+    if (reader.RecordFingerprint() != recorded_source->fingerprint) throw InvalidPcapSource();
+    if (!offset) throw std::runtime_error("The capture contains no packets from the selected LiDAR point stream");
+  }
   auto calibration_path = path;
   calibration_path += kPcapCorrectionSuffix;
   std::string calibration;
@@ -275,10 +336,11 @@ std::vector<FrameHandle> IndexLidarPcap(const fs::path & path, InputLoadState * 
       progress_at = position + 1024u * 1024u;
     }
     const auto udp = reader.Read();
-    if (!udp || (source && !(source->route == udp->route))) continue;
-    const auto packet = InspectLidarPacket(udp->data, udp->size, ouster.get(), hesai_at.get());
+    if (udp && source && !(source->route == udp->route)) continue;
+    const auto packet = udp ? InspectLidarPacket(udp->data, udp->size, ouster.get(), hesai_at.get()) : std::nullopt;
     if (!packet) {
-      if (!source && diagnostic.empty() && udp->route.destination_port == kDefaultLidarUdpPort)
+      if (recorded_source && !source) throw std::runtime_error("Could not decode the selected LiDAR packet in this capture");
+      if (!source && udp && diagnostic.empty() && udp->route.destination_port == kDefaultLidarUdpPort)
         diagnostic = DescribeLidarPacket(udp->data, udp->size);
       continue;
     }
@@ -347,6 +409,7 @@ UdpPcapWriter::UdpPcapWriter(const fs::path & path, std::string_view calibration
   PutLe32(header.data() + 16, 65535);
   PutLe32(header.data() + 20, kRawIpv4);
   stream_.write(reinterpret_cast<const char *>(header.data()), header.size());
+  next_offset_ = header.size();
   if (!calibration.empty()) {
     auto sidecar = path_;
     sidecar += kPcapCorrectionSuffix;
@@ -380,8 +443,16 @@ std::size_t UdpPcapWriter::Write(const LidarDatagram & packet)
   PutBe16(udp + 4, static_cast<std::uint16_t>(kUdpHeader + packet.payload.size()));
   stream_.write(reinterpret_cast<const char *>(header.data()), header.size());
   stream_.write(reinterpret_cast<const char *>(packet.payload.data()), static_cast<std::streamsize>(packet.payload.size()));
+  const bool first_point = packet.selected_point && !first_point_offset_;
+  if (!packets_ || first_point) {
+    source_fingerprint_ = FingerprintBytes(FingerprintBytes(kFingerprintSeed, header.data(), header.size()),
+      packet.payload.data(), packet.payload.size());
+  }
+  if (first_point) first_point_offset_ = next_offset_;
+  const auto bytes = header.size() + packet.payload.size();
+  next_offset_ += bytes;
   ++packets_;
-  return header.size() + packet.payload.size();
+  return bytes;
 }
 
 void UdpPcapWriter::Finish()
@@ -391,6 +462,14 @@ void UdpPcapWriter::Finish()
     fs::remove(temporary_);
     throw std::runtime_error("Recording ended before any LiDAR packets were saved");
   }
+  auto sidecar = path_;
+  sidecar += kPcapSourceSuffix;
+  std::ofstream source;
+  source.exceptions(std::ios::failbit | std::ios::badbit);
+  source.imbue(std::locale::classic());
+  source.open(sidecar, std::ios::binary);
+  source << kPcapSourceVersion << ' ' << next_offset_ << ' ' << first_point_offset_ << ' ' << source_fingerprint_ << '\n';
+  source.close();
   fs::rename(temporary_, path_);
 }
 }  // namespace lidar_viewer

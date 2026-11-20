@@ -230,6 +230,35 @@ template<class Predicate> void WaitFor(Predicate ready, const char * failure)
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
 }
+
+void CheckRejectsMismatchedPcapSource(const fs::path & capture, std::uint64_t record_offset)
+{
+  const auto other = capture.parent_path() / "same-size.pcap";
+  auto source = capture, other_source = other;
+  source += kPcapSourceSuffix;
+  other_source += kPcapSourceSuffix;
+  fs::copy_file(capture, other);
+  fs::copy_file(source, other_source);
+  // Adjust the receive timestamp at the referenced record without
+  // changing the capture size, packet layout or sensor payload.
+  std::fstream output(other, std::ios::binary | std::ios::in | std::ios::out);
+  output.exceptions(std::ios::failbit | std::ios::badbit);
+  const auto offset = static_cast<std::streamoff>(record_offset);
+  output.seekg(offset);
+  const auto old = output.get();
+  output.seekp(offset);
+  output.put(static_cast<char>(old ^ 1));
+  output.close();
+  Check(fs::file_size(capture) == fs::file_size(other), "Wrong metadata fixture must retain the original file size");
+  try {
+    IndexLidarPcap(other);
+  } catch (const std::runtime_error & error) {
+    Check(std::string_view(error.what()).find("belongs to a different capture") != std::string_view::npos,
+      "Equal-size metadata mismatch was not diagnosed");
+    return;
+  }
+  throw std::runtime_error("Accepted a source file from a different same-size capture");
+}
 }  // namespace
 
 int main()
@@ -270,15 +299,22 @@ int main()
        displayed->frame.source_intensities->at(0)==173,"UDP sweep assembly or reflectivity preservation failed");
     const auto folder=temporary/"capture";
     live.StartRecording(folder);
+    const auto foreign = XtPacket(0,16);
     const std::vector<std::uint8_t> raw_aux{0x37,0x08,0x29,0x99,0x00,0x02,0xab,0x42,0xaf};
     const std::vector<std::uint8_t> raw_unknown{0x72,0x19,0x23,0x45,0x67,0x89,0xcd,0xef};
+    other_sensor_port.Send(foreign,port);
+    WaitFor([&]{return live.Stats().recorded_messages==1;},"First foreign point packet was not captured");
     sender.Send(raw_aux,auxiliary);
+    WaitFor([&]{return live.Stats().recorded_messages==2;},"Auxiliary packet was not captured");
     other_sensor_port.Send(raw_unknown,port);
+    WaitFor([&]{return live.Stats().recorded_messages==3;},"Unknown same-IP packet was not captured");
+    Check(live.Stats().recorded_point_packets==0,"Unselected packets counted as points from the live stream");
     for (unsigned start=capture_first;start<capture_end;start+=burst_size) {
       const auto end=std::min(start+burst_size,capture_end);
       send(start,end);
-      WaitFor([&]{return live.Stats().recorded_messages==end-capture_first+2;},
+      WaitFor([&]{return live.Stats().recorded_messages==end-capture_first+3;},
         "Recorder missed raw point or auxiliary UDP while the display stopped consuming");
+      Check(live.Stats().recorded_point_packets==end-capture_first,"Selected point packet count is incorrect");
     }
     Check(!fs::exists(folder/kLivePcapFilename) && live.Stats().replaced_frames>0,
       "Recorder exposed an unfinished capture or retained a playback queue");
@@ -290,12 +326,14 @@ int main()
     const std::vector<std::uint8_t> bytes{std::istreambuf_iterator<char>(capture), {}};
     capture.close();
     const auto originals = XtPacket(20);
-    for (const auto * payload : {&raw_aux, &raw_unknown, &originals}) {
-      const auto record = std::search(bytes.begin(),bytes.end(),payload->begin(),payload->end());
+    auto next=bytes.cbegin();
+    for (const auto * payload : {&foreign, &raw_aux, &raw_unknown, &originals}) {
+      const auto record = std::search(next,bytes.cend(),payload->begin(),payload->end());
       Check(record!=bytes.end(),"PCAP did not preserve the full UDP payload");
       Check(record-bytes.begin()>28 && record[-12]==127 && record[-9]==1,"PCAP lost the destination IPv4 address");
+      next=record+payload->size();
     }
-    auto next=bytes.cbegin();
+    next=bytes.cbegin();
     for (unsigned i=capture_first;i<capture_end;++i) {
       const auto payload=XtPacket(i);
       const auto record=std::search(next,bytes.cend(),payload.begin(),payload.end());
@@ -304,6 +342,7 @@ int main()
     }
     const auto frames=IndexLidarPcap(path);
     Check(frames.size()>2,"PCAP did not retain full sweeps");
+    Check(frames.front().label=="Hesai XT32 #1","Playback did not select the same stream as the live viewer");
     Check(frames[2].bag_timestamp_ns-frames[1].bag_timestamp_ns>=40000000,
       "Playback lost sensor timestamps after the back-to-back capture");
     std::size_t count=0;
@@ -313,6 +352,35 @@ int main()
       count+=points.points.size();
     }
     Check(count==(capture_end-capture_first)*8*32,"Playback lost or duplicated returns at a cut inside a packet");
+    CheckRejectsMismatchedPcapSource(path, frames.front().payload_offset);
+
+    // Copies without source information still use ordinary PCAP discovery.
+    const auto loose = temporary/"loose.pcap";
+    fs::copy_file(path,loose);
+    const auto loose_frames = IndexLidarPcap(loose);
+    Check(loose_frames.size()==1 && ReadLidarPcapFrame(loose_frames.front()).points.size()==8*16,
+      "Legacy PCAP discovery did not select the first supported stream");
+
+    const auto raw_only = temporary/"raw-only";
+    live.StartRecording(raw_only);
+    other_sensor_port.Send(foreign,port);
+    sender.Send(raw_aux,auxiliary);
+    WaitFor([&]{return live.Stats().recorded_messages==2;},"Raw-only capture lost its datagrams");
+    live.StopRecording();
+    WaitFor([&]{return !live.Stats().record_busy;},"Raw-only PCAP did not finish");
+    const auto raw_path=FindLidarPcap(raw_only);
+    Check(!raw_path.empty() && live.Stats().recorded_point_packets==0 && live.Stats().record_error.empty(),
+      "Raw-only capture was lost or marked playable");
+    bool reports_no_points = false;
+    try {
+      IndexLidarPcap(raw_path);
+    } catch (const std::runtime_error & error) {
+      reports_no_points = std::string_view(error.what()).find("no packets from the selected LiDAR point stream") !=
+        std::string_view::npos;
+    }
+    Check(reports_no_points,"Raw-only capture replay switched to a foreign point stream");
+    CheckRejectsMismatchedPcapSource(raw_path, 24);
+
     live.StartRecording(temporary/"disconnect");
     send(capture_end,capture_end+6);
     WaitFor([&]{return live.Stats().packets>=capture_end+6;},"Receiver stopped after finalizing");
