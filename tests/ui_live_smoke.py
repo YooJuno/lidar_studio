@@ -69,10 +69,11 @@ def main():
             wait_for(x11.viewer_window)
             window = x11.viewer_window()
             x11.focus(window); x11.resize(window, 1600, 960)
+            controls=Controls(x11,window,log_path)
             if args.connect_with_dialog:
-                x11.click(window,350,30)
+                controls.click('open_live')
                 shot("00_live_dialog")
-                x11.click(window,555,638)
+                controls.click('live_connect')
             wait_for(lambda: "Live first frame:" in log_path.read_text(errors="replace"))
             time.sleep(.3)
             moving_a = shot("01_live")
@@ -92,12 +93,12 @@ def main():
             frozen_b = shot("04_still_frozen")
             result["checks"]["pause_freezes_geometry"] = changed_pixels(frozen_a, frozen_b, crop) == 0
             # Recording is independent of the paused display.
-            x11.click(window, 420, 878)
+            controls.click('live_record')
             wait_for(lambda: "Live recording:" in log_path.read_text(errors="replace"))
             time.sleep(.8)
             frozen_recording = shot("05_recording_while_frozen")
             result["checks"]["record_does_not_unfreeze_display"] = changed_pixels(frozen_a, frozen_recording, crop) == 0
-            x11.click(window, 420, 878)
+            controls.click('live_record')
             wait_for(lambda: len(list((output / "recordings").glob("*/metadata.yaml"))) == 1)
             metadata = next((output / "recordings").glob("*/metadata.yaml"))
             data = yaml.safe_load(metadata.read_text())["rosbag2_bagfile_information"]
@@ -106,7 +107,6 @@ def main():
             result["checks"]["static_tf_recorded"] = counts.get("/tf_static", 0) >= 1
             # Export the exact frozen frame, using raw XYZI rather than display
             # colors or a new frame pulled from the still-running subscriber.
-            controls=Controls(x11,window,log_path)
             controls.click('tab_ROI');controls.click('roi_purpose_display');controls.click('roi_export')
             controls.enter('export_directory','.')
             controls.click('export_start')

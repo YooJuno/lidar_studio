@@ -44,13 +44,16 @@ def find_release(gh, api_root, tag):
 
 def package_files(directory, version):
     files = sorted(path for path in directory.iterdir() if path.is_file() and path.name != 'SHA256SUMS')
-    expected = [('Linux', '.deb'), ('Linux', '.tar.gz'), ('Windows', '.zip'), ('Darwin', '.zip'), ('Darwin', '.dmg')]
-    if len(files) != len(expected):
-        raise ValueError('Expected exactly five platform packages: Linux DEB/TGZ, Windows ZIP, macOS ZIP/DMG')
-    for system, suffix in expected:
-        matches = [p for p in files if p.name.startswith(f'lidar_studio-{version}-{system}-') and p.name.endswith(suffix)]
-        if len(matches) != 1 or not matches[0].stat().st_size:
-            raise ValueError(f'Missing, empty or ambiguous {system} {suffix} package for {version}')
+    expected = {
+        'Linux-x86_64.deb', 'Linux-x86_64.tar.gz',
+        'Linux-x86_64-standalone.deb', 'Linux-x86_64-standalone.tar.gz',
+        'Windows-AMD64.zip', 'Darwin-arm64.zip', 'Darwin-arm64.dmg',
+    }
+    expected = {f'lidar_studio-{version}-{name}' for name in expected}
+    seen = {p.name for p in files if p.stat().st_size}
+    if seen != expected or len(files) != len(expected):
+        raise ValueError(f'Invalid packages for {version}. Missing or empty: {sorted(expected - seen)}. '
+                         f'Unexpected: {sorted({p.name for p in files} - expected)}')
     return files
 
 
@@ -81,8 +84,8 @@ def publish(directory, repo, sha, version, tag, run_url, gh=None):
     notes = (
         f'Automatically built from [{sha[:7]}](https://github.com/{repo}/commit/{sha}) after all platform checks passed.\n\n'
         f'[Build and validation]({run_url})\n\n'
-        '- **Ubuntu 24.04:** ROS 2 Jazzy bag/live LiDAR and IMU support, MCAP recording, ground segmentation and ROI tools.\n'
-        '- **Windows / macOS:** standalone CPU point-cloud inspection, ground segmentation, detection adapters and ROI/dataset tools; ROS 2 is not bundled.\n'
+        '- **Direct Ethernet on Ubuntu, Windows and macOS:** receive supported LiDARs and record raw UDP packets to PCAP.\n'
+        '- **Ubuntu 24.04:** choose the standalone package for direct sensor input, or the Jazzy package for ROS 2 bags, topics and MCAP recording.\n'
         '- **Mac object detection is ready offline:** original CenterPoint tiny + AWML ShortRange weights and a private CPU Python runtime are included; no Homebrew/model setup is needed.\n'
         '- Linux/Windows learned detection and all custom training environments use the optional setup described in the README.\n'
         '- **macOS requires Apple Silicon and macOS 15 or later.** Intel Macs are not supported by the ARM64 package.\n'

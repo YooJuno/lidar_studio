@@ -242,6 +242,55 @@ jobs:
             build/Testing/Temporary/
             build/test_artifacts/
 
+  ubuntu-standalone:
+    name: Ubuntu 24.04 / standalone
+    needs: metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          submodules: recursive
+      - name: Install dependencies
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y ninja-build libglfw3-dev libglew-dev libpcl-dev \
+            libnanoflann-dev libcurl4-openssl-dev libssl-dev zenity xvfb xauth x11-utils x11-xserver-utils \
+            libxtst6 python3-pil python3-numpy libgl1-mesa-dri dpkg-dev
+      - name: Build and test without ROS
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
+            -DLIDAR_VIEWER_ENABLE_CUDA=OFF -DLIDAR_VIEWER_ENABLE_ROSBAG=OFF \
+            -DLIDAR_VIEWER_USER_SETTINGS=ON -DCPACK_PACKAGE_VERSION="$RELEASE_VERSION"
+          cmake --build build --parallel 2
+          ctest --test-dir build --output-on-failure
+          LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s '-screen 0 1920x1200x24' \
+            /usr/bin/python3 tests/ui_direct_live_smoke.py --viewer build/lidar_studio --output build/test_artifacts/direct-live
+      - name: Package and verify runtime dependencies
+        run: |
+          cpack --config build/CPackConfig.cmake
+          cmake --build build --target check-native-package
+          deb=(build/packages/*-standalone.deb)
+          depends=$(dpkg-deb --field "${deb[0]}" Depends)
+          if [[ "$depends" == *ros-jazzy* ]]; then exit 1; fi
+          dpkg-deb --extract "${deb[0]}" build/package-smoke
+          build/package-smoke/usr/lib/lidar_studio/lidar_studio --help | grep -F 'ROS 2 bag backend: not built'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: packages-Ubuntu-standalone
+          path: build/packages/*-standalone.*
+          if-no-files-found: error
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: diagnostics-Ubuntu-standalone
+          path: |
+            build/Testing/Temporary/
+            build/test_artifacts/
+
   portable:
     name: ${{ matrix.name }} / CPU
     needs: metadata
@@ -363,7 +412,7 @@ jobs:
   release:
     name: Publish GitHub release
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
-    needs: [metadata, ubuntu, portable]
+    needs: [metadata, ubuntu, ubuntu-standalone, portable]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

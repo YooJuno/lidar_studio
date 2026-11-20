@@ -41,7 +41,7 @@ void FileDialog::Open(const std::filesystem::path & initial_folder,bool director
     directory ? "--title=Choose folder" : any_file ? "--title=Choose file" : "--title=Open LiDAR data","--filename="+filename};
   if (directory) arguments.push_back("--directory");
   else {
-    if(!any_file) arguments.push_back("--file-filter=LiDAR data | metadata.yaml metadata.json *.db3 *.mcap *.bin *.npy *.pcd");
+    if(!any_file) arguments.push_back("--file-filter=LiDAR data | metadata.yaml metadata.json *.db3 *.mcap *.pcap *.bin *.npy *.pcd");
     arguments.push_back("--file-filter=All files | *");
   }
 #endif

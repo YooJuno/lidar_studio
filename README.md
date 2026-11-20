@@ -10,7 +10,8 @@ A desktop workspace for LiDAR playback, ground segmentation, clustering, object 
 
 ## Highlights
 
-- **Point clouds, easy to explore.** Switch between 3D, rotatable 2D and a **360° sensor panorama** with distance colors. Pan and zoom without losing your view between frames. Browse BIN, NPY and PCD folders, scrub recordings and review labels.
+- **Point clouds, easy to explore.** Switch between 3D, rotatable 2D and a **360° sensor panorama** with distance colors. Browse BIN, NPY, PCD and LiDAR PCAP recordings and review labels.
+- **Direct Ethernet recording.** Connect a supported Hesai, Velodyne, Livox, Ouster or RoboSense LiDAR and view or record its UDP stream with no ROS setup.
 - **Visual ground segmentation.** Choose **FugSeg, GSeg3D, Patchwork++, Fast grid, Grid or RANSAC**. Tune parameters and show all points, ground only or obstacles only. Align scans manually or use IMU leveling.
 - **Clustering for obstacle analysis.** Group points with **Euclidean 3D** or **Projected XY** clustering, adjust distance and vertical separation, and inspect cluster boxes.
 - **Learned object detection.** Use **AWML ShortRange** or **CenterPoint tiny** for people, bicycles, cars, trucks and buses. Filter classes and confidence, and follow persistent object IDs with Kalman tracking.
@@ -43,13 +44,13 @@ Both previews use the same **90 consecutive KITTI Raw scans**, shown at the sour
 
 Get the newest verified package from [Latest release](https://github.com/YooJuno/lidar_studio/releases/latest) or an artifact from [Actions](https://github.com/YooJuno/lidar_studio/actions/workflows/build-release.yml).
 
-| Platform | Launch | Inputs |
+| Platform | Launch | Connectivity |
 | --- | --- | --- |
-| Ubuntu 24.04 | Install the `.deb`, then run `lidar_studio` | BIN, NPY, PCD; ROS 2 bags and live topics with Jazzy |
-| Windows | Extract the ZIP; run `lidar_studio.exe` | BIN, NPY, PCD |
-| macOS 15+ (Apple Silicon) | Copy `LiDAR Studio.app` to Applications | BIN, NPY, PCD |
+| Ubuntu 24.04 | Install the `-standalone.deb`, then run `lidar_studio` | Direct Ethernet and PCAP. The Jazzy package also opens ROS 2 bags and topics. |
+| Windows | Extract the ZIP and run `lidar_studio.exe` | Direct Ethernet and PCAP |
+| macOS 15+ (Apple Silicon) | Copy `LiDAR Studio.app` to Applications | Direct Ethernet and PCAP |
 
-Ubuntu installation: `sudo apt install ./lidar_studio-*.deb` (**ROS 2 Jazzy** required). Windows/macOS packages and ROS-disabled source builds work without ROS.
+For standalone Ubuntu use `sudo apt install ./lidar_studio-*-standalone.deb`. To use ROS 2 bags and topics, install the `.deb` without `-standalone` with ROS 2 Jazzy configured.
 
 The macOS download is **ad-hoc signed, not Apple-notarized**; macOS may block its first launch. See [macOS launch troubleshooting](docs/guide.md#macos-first-launch) for signature verification and a per-app exception. Intel Macs are not supported by the ARM64 download.
 
@@ -60,9 +61,7 @@ The macOS download is **ad-hoc signed, not Apple-notarized**; macOS may block it
 sudo apt install cmake g++ libglfw3-dev libglew-dev libpcl-dev libnanoflann-dev libcurl4-openssl-dev libssl-dev zenity
 git clone --recursive https://github.com/YooJuno/lidar_studio.git
 cd lidar_studio
-# For ROS 2 bag/live support, source Jazzy before configuring:
-# source /opt/ros/jazzy/setup.bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DLIDAR_VIEWER_ENABLE_CUDA=OFF -DLIDAR_VIEWER_ENABLE_ROSBAG=OFF
 cmake --build build --parallel 2
 ./build/lidar_studio
 ```
@@ -113,7 +112,13 @@ Use **ROI → Display ROI → Export points…** to select frames, sampling inte
 
 Exports contain **NPY** (`float32`, `N × 4`: `x, y, z, intensity`), matching **PCD** files and **JSON** metadata. Choose original sensor or aligned coordinates. ROI/class names are saved as **draft annotation metadata**; pointwise ground truth and object-box labels are separate annotations for review and training. [Label formats and training setup](docs/guide.md#데이터셋-열람과-학습).
 
-## Optional detection and live sensors
+## Live sensors
+
+Put the computer on the sensor's Ethernet subnet and set the sensor to send UDP data to the computer. In **Live**, choose **Auto** or select the model, then **Connect**. **Record** saves raw point and available auxiliary packets to `lidar.pcap`. Pause freezes the display while recording continues. Use **Open saved PCAP** to replay the recording.
+
+Supported models include **Hesai XT32, XT16, XT32M2X, AT128 / AT128P; Velodyne VLP‑16, Puck Hi‑Res, HDL‑32E, VLP‑32C; Livox Mid‑360; Ouster OS0 / OS1 / OS2; and RoboSense M1 / M2 / M3**. The guide lists ports, per-sensor calibration files and the optional ROS 2 source. [Sensor setup and recording](docs/guide.md#실시간-lidar--imu).
+
+## Optional detection
 
 **Mac downloads include the original tiny and AWML ShortRange models with a private CPU runtime.** Open a cloud, then enable a model in **Objects**; Homebrew and a separate Python installation are not required. The first model load can take a few seconds. An explicit user detector configuration takes priority over the built-in runtime.
 
@@ -127,8 +132,6 @@ python3 tools/setup_detector.py          # CPU
 ```
 
 Class and score changes filter cached predictions without repeating inference. Detection quality depends on the sensor and scene; geometric clusters have no semantic class. [Model setup](docs/guide.md#사람차량-인식--원본-tier-iv-모델).
-
-**Live → Connect** subscribes to ROS 2 LiDAR and IMU topics. Freeze the displayed scan, resume the latest data or record the original stream to a bag. Subscription and recording continue while the display is frozen. Sensor drivers run separately. [Sensor setup and recording](docs/guide.md#실시간-lidar--imu).
 
 ## License and contact
 

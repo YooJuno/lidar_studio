@@ -52,9 +52,10 @@ enum class InputFormat
   Numpy,
   Pcd,
   DatasetXyzi,
+  LidarPcap,
 };
 
-namespace lidar_viewer {struct DatasetSample;struct DatasetAnnotations;}
+namespace lidar_viewer {struct DatasetSample;struct DatasetAnnotations;struct PcapSource;}
 struct FrameHandle
 {
   fs::path path;
@@ -67,6 +68,11 @@ struct FrameHandle
   std::size_t bag_duplicate_index{0};
   std::shared_ptr<const lidar_viewer::ImuTimeline> imu_timeline{};
   std::shared_ptr<const lidar_viewer::DatasetSample> dataset_sample{};
+  // PCAP scans can begin or end within a packet. The source is shared by
+  // all handles so a long capture retains only an index in memory.
+  std::shared_ptr<const lidar_viewer::PcapSource> pcap_source{};
+  std::uint64_t pcap_end_offset{0};
+  std::uint8_t pcap_start_block{0}, pcap_end_block{0};
 };
 
 struct FrameData

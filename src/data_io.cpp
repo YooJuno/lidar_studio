@@ -1,4 +1,5 @@
 #include "lidar_viewer/data_io.hpp"
+#include "lidar_viewer/pcap_io.hpp"
 #include "lidar_viewer/bag_io.hpp"
 #include "lidar_viewer/dataset.hpp"
 
@@ -287,6 +288,9 @@ std::vector<FrameHandle> ResolveInputFrames(
   lidar_viewer::InputLoadState * load)
 {
   if (load) load->CheckCancelled();
+  if (const auto capture=lidar_viewer::FindLidarPcap(input); !capture.empty()) {
+    return lidar_viewer::IndexLidarPcap(capture,load);
+  }
   if (IsRos2BagInput(input)) {
     return ResolveBagFrames(input, bag_topic, imu_topic, load);
   }
@@ -299,7 +303,7 @@ std::vector<FrameHandle> ResolveInputFrames(
   }
   if (fs::is_regular_file(input)) {
     if (input.extension() != ".bin") {
-      throw std::runtime_error("Expected .bin, .npy, .pcd, dataset metadata.json or ROS 2 bag: " + input.string());
+      throw std::runtime_error("Expected .bin, .npy, .pcd, .pcap, dataset metadata.json or ROS 2 bag: " + input.string());
     }
     return ResolveFramesFromFile(input);
   }
@@ -332,6 +336,14 @@ std::vector<FrameHandle> ResolveInputFrames(
 
 FrameData LoadFrame(const FrameHandle & handle, FrameIntensity intensity, FrameReadIsolation isolation)
 {
+  if (handle.format == InputFormat::LidarPcap) {
+    auto frame = lidar_viewer::ReadLidarPcapFrame(handle);
+    FinalizeFrame(frame,FrameIntensity::Original);
+    if (intensity == FrameIntensity::DisplayNormalized) {
+      for (auto & point : frame.points) point.intensity /= 255.f;
+    }
+    return frame;
+  }
   if (handle.format==InputFormat::Numpy || handle.format==InputFormat::Pcd || handle.format==InputFormat::DatasetXyzi) {
     auto frame=lidar_viewer::LoadDatasetFrame(handle);FinalizeFrame(frame,intensity,true);return frame;
   }

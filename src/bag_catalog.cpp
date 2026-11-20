@@ -1,4 +1,5 @@
 #include "lidar_viewer/bag_catalog.hpp"
+#include "lidar_viewer/pcap_io.hpp"
 #include "lidar_viewer/settings_io.hpp"
 
 #include <algorithm>
@@ -16,7 +17,7 @@ namespace fs = std::filesystem;
 
 bool IsStorage(const fs::path & path)
 {
-  return path.extension() == ".mcap" || path.extension() == ".db3";
+  return path.extension() == ".mcap" || path.extension() == ".db3" || path.extension() == ".pcap";
 }
 
 bool IsBagDirectory(const fs::path & path)
@@ -83,6 +84,13 @@ fs::path ContainingBag(fs::path path)
   return {};
 }
 
+fs::path ContainingRecording(const fs::path & path, bool directory)
+{
+  if (directory) return !lidar_viewer::FindLidarPcap(path).empty() ? path : ContainingBag(path);
+  if (path.extension() == ".pcap") return path.filename() == lidar_viewer::kLivePcapFilename ? path.parent_path() : path;
+  return ContainingBag(path.parent_path());
+}
+
 void ReadFilenameDate(BagSource & source)
 {
   // Recording names used by sensor_collection. Do not mistake an unrelated
@@ -120,7 +128,7 @@ std::vector<BagSource> DiscoverBagSources(const std::filesystem::path & input)
   const bool is_directory = fs::is_directory(selected, error);
   if (!is_directory && selected.filename() != "metadata.yaml" && !IsStorage(selected)) return sources;
 
-  const auto selected_bag = ContainingBag(is_directory ? selected : selected.parent_path());
+  const auto selected_bag = ContainingRecording(selected, is_directory);
   if (!selected_bag.empty() || !is_directory) {
     BagSource source;
     source.path = selected_bag.empty() ? selected : selected_bag;
@@ -137,7 +145,7 @@ std::vector<BagSource> DiscoverBagSources(const std::filesystem::path & input)
     // A loose symlink may point at a chunk inside a recorded bag. Normalize
     // it too, so aliases cannot expose individual chunks as extra recordings.
     if (!canonical.empty() && IsStorage(canonical)) {
-      const auto bag = ContainingBag(canonical.parent_path());
+      const auto bag = ContainingRecording(canonical, false);
       if (!bag.empty()) canonical = bag;
     }
     if (canonical.empty() || !seen_sources.insert(canonical).second) return;
@@ -157,7 +165,7 @@ std::vector<BagSource> DiscoverBagSources(const std::filesystem::path & input)
       const auto path = entry->path();
       error.clear();
       if (entry->is_directory(error)) {
-        if (IsBagDirectory(path)) {
+        if (IsBagDirectory(path) || !lidar_viewer::FindLidarPcap(path).empty()) {
           add(path);
         } else if (!entry->is_symlink(error)) {
           pending.push_back(path);

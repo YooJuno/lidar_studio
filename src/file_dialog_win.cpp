@@ -69,7 +69,7 @@ void FileDialog::Open(const std::filesystem::path & folder,bool directory,bool a
       return FileDialogResult{{},item ? "Cannot read the selected directory" : ""};
     }
     OPENFILENAMEW options{}; options.lStructSize=sizeof(options);
-    options.lpstrFilter=any_file ? L"All files\0*.*\0\0" : L"LiDAR data\0metadata.yaml;metadata.json;*.db3;*.mcap;*.bin;*.npy;*.pcd\0All files\0*.*\0\0";
+    options.lpstrFilter=any_file ? L"All files\0*.*\0\0" : L"LiDAR data\0metadata.yaml;metadata.json;*.db3;*.mcap;*.pcap;*.bin;*.npy;*.pcd\0All files\0*.*\0\0";
     options.lpstrFile=buffer.data(); options.nMaxFile=static_cast<DWORD>(buffer.size());
     options.lpstrInitialDir=initial.c_str(); options.lpstrTitle=any_file ? L"Choose file" : L"Open LiDAR data";
     options.Flags=OFN_FILEMUSTEXIST|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR|OFN_EXPLORER|OFN_ENABLEHOOK;

@@ -51,7 +51,8 @@ class ReleasePublishTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(); self.addCleanup(self.temporary.cleanup)
         self.folder = Path(self.temporary.name)
-        for name in ['Linux-x86_64.deb', 'Linux-x86_64.tar.gz', 'Windows-AMD64.zip', 'Darwin-arm64.zip', 'Darwin-arm64.dmg']:
+        for name in ['Linux-x86_64.deb', 'Linux-x86_64.tar.gz', 'Linux-x86_64-standalone.deb',
+                     'Linux-x86_64-standalone.tar.gz', 'Windows-AMD64.zip', 'Darwin-arm64.zip', 'Darwin-arm64.dmg']:
             (self.folder / ('lidar_studio-0.2.53-' + name)).write_bytes(('package ' + name).encode())
 
     def publish(self, gh):
@@ -64,7 +65,7 @@ class ReleasePublishTests(unittest.TestCase):
         edit = next(i for i, c in enumerate(gh.calls) if c[:2] == ('release', 'edit'))
         self.assertLess(create, upload); self.assertLess(upload, edit)
         self.assertIn('--latest', gh.calls[edit])
-        self.assertEqual(len((self.folder / 'SHA256SUMS').read_text().splitlines()), 5)
+        self.assertEqual(len((self.folder / 'SHA256SUMS').read_text().splitlines()), 7)
         self.assertTrue(gh.published)
 
     def test_missing_platform_never_creates_a_tag_or_release(self):

@@ -9,7 +9,7 @@
 
 namespace lidar_viewer
 {
-enum class InputLoadStage { Opening, Indexing, PreparingImu, ReadingFirstFrame, PreparingDisplay };
+enum class InputLoadStage { Opening, Indexing, IndexingPcap, PreparingImu, ReadingFirstFrame, PreparingDisplay };
 
 struct InputLoadProgress
 {
@@ -38,7 +38,7 @@ public:
     const std::lock_guard<std::mutex> lock(mutex_);
     const auto now=std::chrono::steady_clock::now();
     auto eta=progress_.indexing_eta_seconds;
-    if(progress.stage!=InputLoadStage::Indexing) {indexing_started_.reset();eta.reset();}
+    if(progress.stage!=InputLoadStage::Indexing && progress.stage!=InputLoadStage::IndexingPcap) {indexing_started_.reset();eta.reset();}
     else {
       if(!indexing_started_ || progress.messages<progress_.messages || progress.total_messages!=progress_.total_messages) {
         indexing_started_=now;eta_sampled_=now;eta.reset();
@@ -81,6 +81,7 @@ inline const char * InputLoadStageName(InputLoadStage stage)
   switch (stage) {
     case InputLoadStage::Opening: return "Opening recording";
     case InputLoadStage::Indexing: return "Indexing ROS bag";
+    case InputLoadStage::IndexingPcap: return "Indexing LiDAR capture";
     case InputLoadStage::PreparingImu: return "Preparing IMU alignment";
     case InputLoadStage::ReadingFirstFrame: return "Reading first point cloud";
     case InputLoadStage::PreparingDisplay: return "Preparing display";

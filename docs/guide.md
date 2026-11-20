@@ -2,7 +2,7 @@
 
 기능 소개와 빠른 시작은 영문 [README](../README.md)를 참고하세요. 이 문서는 센서 설정, 알고리즘 파라미터, 라벨 형식, 테스트와 측정 기록을 다룹니다.
 
-CMake + OpenGL 기반 LiDAR 뷰어입니다. `.bin`, NPY·PCD 데이터셋과 ROS 2 PointCloud2 bag을 지원합니다.
+CMake + OpenGL 기반 LiDAR 뷰어입니다. 직접 연결한 Ethernet LiDAR, PCAP, BIN·NPY·PCD 파일, ROS 2 PointCloud2 bag을 지원합니다.
 
 ## Build
 
@@ -15,8 +15,7 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel 2
 ```
 
-ROS 환경을 읽고 빌드하면 bag 입력이 활성화됩니다. ROS 없는 `.bin` 전용 빌드는
-`-DLIDAR_VIEWER_ENABLE_ROSBAG=OFF`로 구성할 수 있습니다.
+ROS 환경을 읽고 빌드하면 bag 입력이 활성화됩니다. `-DLIDAR_VIEWER_ENABLE_ROSBAG=OFF`로 구성하면 ROS 설치 없이 Ethernet 연결, PCAP 녹화·재생과 포인트 파일을 사용할 수 있습니다.
 시스템 파일 선택 창에는 `zenity`가 필요합니다(Ubuntu: `sudo apt install zenity`). 파일 경로를 명령행에 직접 지정하는 실행과 `--inspect`는 파일 선택 창을 사용하지 않습니다.
 
 UI는 고정 버전의 [Dear ImGui](https://github.com/ocornut/imgui/tree/f5befd2d29e66809cd1110a152e375a7f1981f06)와 GLFW/OpenGL 백엔드를 사용합니다. 최초 CMake 구성 시 소스를 받아 `build/_deps`에 보관하며, 이후에는 캐시를 사용합니다.
@@ -77,11 +76,37 @@ Viewer·Point clouds·Train 간 이동에도 유지됩니다. 데이터별 프�
 
 ## 실시간 LiDAR · IMU
 
-프로그램을 먼저 실행한 뒤 상단 **Live... → Connect**를 누릅니다. 센서 드라이버는 별도로 실행돼 있어야 합니다. 기본 토픽은 XT32 `/b2/points`, IMU `/vn100/imu/data_ned`이며, 연결 창에서 변경할 수 있습니다. 뷰어가 센서 설정을 바꾸거나 로봇 구동 명령을 발행하지는 않습니다.
+### 센서 직접 연결
+
+1. 센서 전원과 Ethernet을 연결합니다. PC 유선 어댑터를 센서와 같은 IPv4 서브넷으로 설정하고, 센서의 UDP 목적지를 PC 주소 또는 해당 네트워크의 브로드캐스트 주소로 지정합니다.
+2. **Live → Direct Ethernet**에서 **Auto** 또는 모델을 선택한 뒤 **Connect**를 누릅니다. 단독 설치에서는 **Live**를 열면 직접 연결 설정이 바로 표시됩니다. 기본 포트는 아래 표에서 확인할 수 있습니다. 변경한 포트, 센서 주소, 멀티캐스트 그룹, 보정 파일은 **Network and calibration**에서 설정합니다.
+3. 화면 아래 **Record**를 누르면 수신 중인 스트림을 저장합니다. **Pause** 또는 **Space**를 눌러도 수신과 녹화가 이어집니다. **Stop REC** 후 **Live → Open saved PCAP**으로 열거나 파일 선택 창에서 `lidar.pcap`을 선택합니다.
+
+| 센서 | 포인트 UDP | 보정·보조 스트림 |
+| --- | ---: | --- |
+| Hesai XT32 / XT16 / XT32M2X | 2368 | 장비 각도 CSV 선택 가능. 기본값은 공칭 빔 각도이며 GPS UDP 10110을 저장합니다. [PandarXT 규격](https://www.hesaitech.com/wp-content/uploads/2025/02/PandarXT_User_Manual_X01-en-250220.pdf) · [XT32M2X 규격](https://www.hesaitech.com/wp-content/uploads/2025/11/XT32M2X_User_Manual_X03-en-251110.pdf) |
+| Hesai AT128 / AT128P | 2368 | 센서별 v1.5 각도 보정 `.dat` 필요. [AT128P 규격](https://www.hesaitech.com/wp-content/uploads/2025/03/AT128P_User_Manual_A02-en-250310.pdf) |
+| Velodyne VLP-16 / Puck, Puck Hi-Res, HDL-32E, VLP-32C | 2368 | 모델 ID가 포함된 패킷 지원. 위치·GPS UDP 8308 저장. [Velodyne 드라이버](https://github.com/ros-drivers/velodyne/tree/ros2) |
+| Livox Mid-360 | 56301 | 포인트 UDP 목적지를 미리 설정. IMU UDP 56401 저장. [Mid-360 프로토콜](https://github.com/Livox-SDK/livox_wiki_en/blob/master/source/tutorials/new_product/mid360/livox_eth_protocol_mid360.md) |
+| Ouster OS0 / OS1 / OS2 | 7502 | 센서 IPv4로 메타데이터를 읽거나 `.json` 파일 지정. 설정된 IMU 포트 저장. [Ouster 데이터 규격](https://static.ouster.dev/sensor-docs/image_route1/image_route3/sensor_data/sensor-data.html) |
+| RoboSense M1 / M2 / M3 | 6699 | 일반 MSOP 스트림 지원. DIFOP UDP 7788 저장. [RoboSense 드라이버](https://github.com/RoboSense-LiDAR/rs_driver/blob/main/doc/howto/09_online_lidar_advanced_topics.md) |
+
+```bash
+lidar_studio --live --lidar-model xt32
+lidar_studio --live --lidar-model mid360 --lidar-ip 192.168.1.123
+```
+
+- **Recording parent folder** 아래 `sensors_YYYYMMDD_HHMMSS_microseconds/lidar.pcap`으로 저장합니다. PCAP에는 UDP 본문 전체와 PC 수신 시각, IP 주소와 포트가 들어갑니다. Ethernet 헤더 및 그 밖의 IP 헤더 필드는 소켓에 전달되지 않아 PCAP용 IPv4·UDP 헤더를 재구성합니다.
+- 센서 타임스탬프는 UDP 본문에 원본 그대로 남습니다. 재생 프레임 간격은 정상 센서 시간을 우선 사용하며, 시간이 없거나 재설정되면 수신 시각으로 계산합니다. 앱은 선택한 센서와 같은 IP의 보조 UDP 패킷을 함께 저장합니다. 이 경로의 IMU 패킷은 저장할 수 있으며 화면 자세 보정은 ROS 2 토픽 연결에서 지원합니다.
+- `lidar.pcap.calibration`이 있으면 PCAP과 함께 옮깁니다. 외부 캡처에는 같은 이름의 `.json`, `.dat` 또는 `.csv` 보정 파일을 둘 수 있습니다. 앱에서 저장한 PCAP은 Wireshark에서도 열 수 있습니다.
+
+### ROS 2 토픽 연결
+
+기존 센서 드라이버로 받으려면 **Live → ROS 2 topics → Connect**를 선택합니다. 기본 토픽은 XT32 `/b2/points`, IMU `/vn100/imu/data_ned`입니다.
 
 ```bash
 source /opt/ros/jazzy/setup.bash
-./build/lidar_studio --live --topic /b2/points \
+./build/lidar_studio --ros-live --topic /b2/points \
   --imu-topic /vn100/imu/data_ned --sensor-height 0.57 --imu-level --2d
 ```
 
@@ -98,13 +123,14 @@ source /opt/ros/jazzy/setup.bash
 
 | 배포 | 지원 기능 | 실행 환경 |
 | --- | --- | --- |
-| Ubuntu 24.04 x86_64 `.deb`, `.tar.gz` | BIN·ROS bag·실시간 LiDAR/IMU·MCAP 녹화·ROI·지면분리 | ROS 2 Jazzy APT 저장소 및 런타임 |
-| Windows x64 `.zip` | BIN·ROI·지면분리·네이티브 파일 선택 | 포함된 DLL과 `lidar_studio.exe`를 같은 폴더에 유지 |
-| macOS ARM64 `.zip`, `.dmg` | BIN·ROI·지면분리·네이티브 파일 선택 | Apple Silicon, macOS 15 이상 (Intel Mac 미지원) |
+| Ubuntu 24.04 x86_64 `-standalone.deb`, `-standalone.tar.gz` | 직접 Ethernet, PCAP, BIN·NPY·PCD | Ubuntu 24.04 |
+| Ubuntu 24.04 x86_64 `.deb`, `.tar.gz` | 직접 연결 및 ROS bag·실시간 ROS 토픽·MCAP 녹화 | ROS 2 Jazzy APT 저장소 및 런타임 |
+| Windows x64 `.zip` | 직접 Ethernet, PCAP, BIN·NPY·PCD | 포함된 DLL과 `lidar_studio.exe`를 같은 폴더에 유지 |
+| macOS ARM64 `.zip`, `.dmg` | 직접 Ethernet, PCAP, BIN·NPY·PCD | Apple Silicon, macOS 15 이상 (Intel Mac 미지원) |
 
 배포 파일은 CPU 빌드입니다. CUDA는 소스에서 선택적으로 켭니다. Windows/macOS 배포에는 ROS 2가 포함되지 않아 ROS bag·실시간 ROS 연결은 비활성화됩니다. macOS 번들은 ad-hoc 서명이며 Apple Developer ID 서명·공증은 포함하지 않습니다.
 
-- Ubuntu: ROS 2 Jazzy 저장소를 설정한 뒤 `sudo apt install ./lidar_studio-*.deb`, 실행은 앱 메뉴의 **LiDAR Studio** 또는 `lidar_studio`입니다. 실행 스크립트가 Jazzy 환경을 읽습니다.
+- Ubuntu에서 ROS 없이 사용하려면 `sudo apt install ./lidar_studio-*-standalone.deb`를 실행합니다. ROS가 필요한 경우 Jazzy 저장소를 설정하고 `-standalone`이 없는 `.deb` 파일을 설치합니다. 앱 메뉴의 **LiDAR Studio** 또는 `lidar_studio`로 실행합니다.
 - 저장소·실행 파일·배포 파일 이름은 `lidar_studio`입니다. Ubuntu 패키지 ID는 Debian 명명 규칙에 맞춘 `lidar-studio`이며, 이전 `lidar-viewer` 실행 명령도 지원합니다. 설정·모델 저장 위치와 desktop ID는 기존 값을 유지해 ROI와 설치한 모델, 독 아이콘 연결을 이어 씁니다.
 - Windows: ZIP을 풀고 `lidar_studio.exe`를 실행합니다. **Open... → Open file...**에서 `.bin`도 선택할 수 있습니다.
 - macOS: DMG의 `LiDAR Studio.app`을 Applications에 복사하거나 ZIP의 앱을 실행합니다.

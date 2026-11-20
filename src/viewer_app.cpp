@@ -28,6 +28,7 @@
 #include "lidar_viewer/app_icon.hpp"
 #include "lidar_viewer/file_dialog.hpp"
 #include "lidar_viewer/live_io.hpp"
+#include "lidar_viewer/pcap_io.hpp"
 #include "lidar_viewer/learned_detector.hpp"
 #include "lidar_viewer/detector_setup.hpp"
 #include "lidar_viewer/object_tracker.hpp"
@@ -78,6 +79,25 @@ constexpr const char * kSettingsFileName = "lidar_viewer_settings.cfg";
 constexpr const char * kProfilesDir = "config/profiles";
 constexpr const char * kAlgorithmsConfigPath = "config/algorithms.yaml";
 constexpr const char * kDefaultInputPath = "dataset/gangnam/2019_10_04_12_28_25.bin";
+using LidarModel = lidar_viewer::DirectLidarModel;
+constexpr std::pair<LidarModel, const char *> kDirectModels[] = {
+  {LidarModel::Auto, "auto"},
+  {LidarModel::HesaiXt32, "xt32"},
+  {LidarModel::HesaiXt16, "xt16"},
+  {LidarModel::HesaiXt32M2X, "xt32m2x"},
+  {LidarModel::HesaiAt128, "at128"},
+  {LidarModel::VelodyneVlp16, "vlp16"},
+  {LidarModel::VelodynePuckHiRes, "puck-hi-res"},
+  {LidarModel::VelodyneHdl32e, "hdl32e"},
+  {LidarModel::VelodyneVlp32c, "vlp32c"},
+  {LidarModel::LivoxMid360, "mid360"},
+  {LidarModel::OusterOs, "ouster-os"},
+  {LidarModel::RobosenseM1, "rs-m1"},
+  {LidarModel::RobosenseM2, "rs-m2"},
+  {LidarModel::RobosenseM3, "rs-m3"},
+};
+
+bool IsPcapCapture(const fs::path & path) {return !lidar_viewer::FindLidarPcap(path).empty();}
 
 float Dot(const Vec3 & a, const Vec3 & b)
 {
@@ -501,8 +521,15 @@ struct ViewerState
   lidar_viewer::LiveSession live;
   lidar_viewer::LiveStats live_stats;
   bool live_mode{false}, live_paused{false}, live_has_frame{false}, open_live_dialog{false};
+  bool live_select_ros{false}, live_using_ros{false};
+  LidarModel live_sensor_model{LidarModel::Auto};
+  int live_udp_port{0};
+  int live_auxiliary_port{0};
   std::uint64_t live_display_sequence{0};
   std::array<char, 256> live_points_topic{}, live_imu_topic{};
+  std::array<char, 64> live_sensor_ipv4{}, live_multicast_ipv4{};
+  std::array<char, 2048> live_calibration{};
+  lidar_viewer::FileDialog live_calibration_picker;
   std::array<char, 2048> live_record_folder{};
   std::string bag_topic{"/b2/points"};
   std::string bag_imu_topic;
@@ -1173,6 +1200,7 @@ void UpdateSourceDurations(ViewerState & state)
       if (item.available) state.unavailable_sources.erase(item.path);
       else state.unavailable_sources.insert(item.path);
       if (!item.read_duration) continue;
+      if (!item.duration && state.bag_durations.count(item.path)) continue;
       auto formatted=FormatBagDuration(item.duration);
       if (std::getenv("LIDAR_VIEWER_CATALOG_TRACE"))
         std::cout<<"Bag duration: "<<item.path<<" | "<<formatted<<std::endl;
@@ -1847,6 +1875,7 @@ std::optional<double> EstimateInputFps(const ViewerState & state)
   }
 
   switch (state.frames.front().format) {
+    case InputFormat::LidarPcap:
     case InputFormat::Ros2Bag: {
       std::vector<double> intervals;
       for (std::size_t i = 1; i < state.frames.size(); ++i) {
@@ -2027,7 +2056,8 @@ void OpenInputPath(ViewerState & state, const fs::path & input)
     throw std::runtime_error("Wait for the example operation to finish or cancel its download");
   auto path=input.filename()=="metadata.json" ? input.parent_path() : input;
   if((path.filename()=="points" || path.filename()=="pointcloud") && fs::is_regular_file(path.parent_path()/"metadata.json")) path=path.parent_path();
-  const bool dataset=state.review_window || lidar_viewer::IsDatasetFile(path) || (fs::is_directory(path) && !IsRos2BagInput(path));
+  const bool dataset=state.review_window || lidar_viewer::IsDatasetFile(path) ||
+    (fs::is_directory(path) && !IsRos2BagInput(path) && !IsPcapCapture(path));
   auto sources=dataset ? std::vector<BagSource>{} : DiscoverBagSources(path);
   if(dataset) {const auto canonical=fs::canonical(path);sources.push_back({canonical,canonical.filename().u8string(),{}, {}});}
   if (sources.empty() && input.extension()==".bin" && fs::is_regular_file(input)) {
@@ -2035,7 +2065,7 @@ void OpenInputPath(ViewerState & state, const fs::path & input)
     sources.push_back({path,path.filename().u8string(),{}, {}});
   }
   if (sources.size() != 1)
-    throw std::runtime_error("Select a point cloud file, dataset folder or ROS 2 bag");
+    throw std::runtime_error("Select a point cloud file, dataset folder, PCAP or ROS 2 bag");
   const auto selected = sources.front().path;
   UnhideBagSource(state,selected);
   std::optional<fs::path> current;
@@ -2282,6 +2312,10 @@ void CompleteBagLoad(ViewerState & state)
     state.alignment_initialized = true;
     state.dataset_profile = profile;
     BuildFileGroups(state);
+    if (state.frames.front().format == InputFormat::LidarPcap) {
+      const auto duration = state.frames.back().bag_timestamp_ns - state.frames.front().bag_timestamp_ns;
+      state.bag_durations.insert_or_assign(state.bag_sources[selected].path, FormatBagDuration(duration));
+    }
     state.input_fps_estimate = EstimateInputFps(state);
     SyncPlaybackFpsToInput(state);
     state.current_playback_fps = 0;
@@ -2338,10 +2372,30 @@ void SetLivePaused(ViewerState & state, bool paused)
 void ConnectLive(ViewerState & state)
 {
   if (state.live.Active() || state.loading_bag_source || state.bag_picker.Active() || state.folder_scan_future.valid()) return;
-  state.live.Connect({state.live_points_topic.data(), state.live_imu_topic.data()});
-  if (state.dataset_profile != "rosbag") {
-    state.dataset_profile = "rosbag";
+  if (state.live_select_ros) {
+    state.live.Connect({state.live_points_topic.data(), state.live_imu_topic.data()});
+  } else {
+    if (state.live_udp_port < 0 || state.live_udp_port > 65535 || state.live_auxiliary_port < 0 || state.live_auxiliary_port > 65535)
+      throw std::runtime_error("UDP ports must be 1 to 65535, or 0 for the model default");
+    lidar_viewer::DirectLiveOptions options;
+    options.model = state.live_sensor_model;
+    options.udp_port = static_cast<std::uint16_t>(state.live_udp_port);
+    options.auxiliary_port = static_cast<std::uint16_t>(state.live_auxiliary_port);
+    options.sensor_ipv4 = state.live_sensor_ipv4.data();
+    options.multicast_ipv4 = state.live_multicast_ipv4.data();
+    options.calibration_file = ExpandFolderPath(state.live_calibration.data());
+    state.live.ConnectDirect(options);
+  }
+  state.live_using_ros = state.live_select_ros;
+  const std::string profile = state.live_using_ros ? "rosbag" : "direct-lidar";
+  if (state.dataset_profile != profile) {
+    state.dataset_profile = profile;
     state.calibration = {};
+    state.roi = {};
+    state.imu_level_enabled = false;
+    state.imu_mount = {};
+    state.ground_removal_enabled = false;
+    state.algorithm_config = lidar_viewer::LoadPipelineConfig(AlgorithmsConfigPath());
     LoadSettings(state);
     if (state.bag_sensor_height_override) state.calibration.z_m = *state.bag_sensor_height_override;
     if (state.imu_level_cli_override) state.imu_level_enabled = true;
@@ -2367,14 +2421,27 @@ void ConnectLive(ViewerState & state)
   state.live_mode = true; state.live_paused = false; state.live_has_frame = false; state.live_display_sequence = 0;
   state.live_stats = state.live.Stats(); state.frame_dirty = true;
   state.ui_error.clear();
-  std::cout << "Live connected: " << state.live_points_topic.data() << " | IMU "
-            << state.live_imu_topic.data() << std::endl;
+  if (state.live_using_ros) {
+    std::cout << "Live connected: " << state.live_points_topic.data() << " | IMU " << state.live_imu_topic.data() << std::endl;
+  } else {
+    std::cout << "Direct LiDAR listening: " << lidar_viewer::DirectLidarModelName(state.live_sensor_model) << std::endl;
+  }
 }
 
 void UpdateLiveFrame(ViewerState & state)
 {
   if (!state.live_mode) return;
-  state.live_stats = state.live.Stats();
+  auto stats = state.live.Stats();
+  if (!state.live_using_ros && state.live_stats.sensor_model == LidarModel::Auto && stats.sensor_model != LidarModel::Auto) {
+    std::cout << "Direct LiDAR detected: " << lidar_viewer::DirectLidarModelName(stats.sensor_model)
+              << " | " << stats.sensor_address << std::endl;
+  }
+  if (!state.live_using_ros && state.live_stats.record_busy && !stats.record_busy &&
+      !stats.recording_path.empty() && fs::is_regular_file(stats.recording_path)) {
+    SetTransientStatus(state,"LiDAR capture saved");
+    std::cout << "Saved LiDAR capture: " << stats.recording_path << std::endl;
+  }
+  state.live_stats = std::move(stats);
   if (!state.live_stats.connected || state.live_paused || state.geometry_future.valid() || DetectorFramePending(state)) return;
   auto next = state.live.TakeLatest();
   if (!next) return;
@@ -2454,6 +2521,7 @@ fs::path SettingsPath()
 
 std::string DetectDatasetProfile(const fs::path & input_path)
 {
+  if (IsPcapCapture(input_path)) return "direct-lidar";
   if(lidar_viewer::IsDrivingExample(input_path)) {
     const auto folder=fs::is_directory(input_path) ? input_path : input_path.parent_path();
     for(const auto & example:lidar_viewer::DrivingExamples()) if(folder.filename()==example.id) return example.profile;
@@ -3420,7 +3488,9 @@ void BuildSourceSelector(ViewerState & state, float width)
 {
   const auto * group = state.file_groups.empty() ? nullptr : &state.file_groups[state.current_file_group];
   const bool dataset=!state.live_mode && !state.frames.empty() && state.frames.front().dataset_sample!=nullptr;
-  const auto preview = state.live_mode ? std::string("LIVE | ") + state.live_points_topic.data() :
+  const auto preview = state.live_mode ? std::string("LIVE | ") + (state.live_using_ros ? state.live_points_topic.data() :
+      state.live_stats.sensor_model == LidarModel::Auto ? "Waiting for UDP" :
+      lidar_viewer::DirectLidarModelName(state.live_stats.sensor_model)) :
     dataset ? std::string("Dataset | ")+std::to_string(state.frames.size())+" samples | "+
       (state.current_bag_source ? state.bag_sources[*state.current_bag_source].path.filename().u8string() : (group ? group->display_name : "")) :
     state.current_bag_source ? BagLabel(state,state.bag_sources[*state.current_bag_source]) :
@@ -3512,7 +3582,8 @@ void BuildSourceSelector(ViewerState & state, float width)
       }
       if (!shown) ImGui::TextDisabled("No bags match this date or name.");
     }
-    if (!state.current_bag_source && !state.frames.empty() && state.frames.front().format != InputFormat::Ros2Bag) {
+    if (!state.current_bag_source && !state.frames.empty() && state.frames.front().format != InputFormat::Ros2Bag &&
+        state.frames.front().format != InputFormat::LidarPcap) {
       if (!state.bag_sources.empty()) {
         ImGui::Separator();
         ImGui::TextDisabled(state.frames.front().dataset_sample ? "Current dataset" : "Current BIN sequence");
@@ -3592,7 +3663,7 @@ void BuildFolderPicker(ViewerState & state)
     }
     scanning = false;
   }
-  ImGui::TextWrapped("Choose a folder containing ROS 2 bags. Subfolders are included; recordings stay in place.");
+  ImGui::TextWrapped("Choose a folder containing LiDAR captures or ROS 2 bags. Subfolders are included.");
   ImGui::BeginDisabled(scanning);
   ImGui::SetNextItemWidth(-85.f * state.ui_layout.scale);
   const bool entered = ImGui::InputText("##FolderPath", state.folder_path_input.data(),
@@ -3633,41 +3704,125 @@ void BuildFolderPicker(ViewerState & state)
   ImGui::EndPopup();
 }
 
+void TraceUi(const char * id);
+
 void BuildLiveDialog(ViewerState & state)
 {
   const auto display = ImGui::GetIO().DisplaySize;
   ImGui::SetNextWindowPos({display.x * .5f, display.y * .5f}, ImGuiCond_Appearing, {.5f, .5f});
-  ImGui::SetNextWindowSize({std::min(650.f * state.ui_layout.scale, display.x - 32.f), 0}, ImGuiCond_Appearing);
+  const float s = state.ui_layout.scale;
+  ImGui::SetNextWindowSize({std::min(540.f * s, display.x - 32.f), 0}, ImGuiCond_Appearing);
   if (!ImGui::BeginPopupModal("Live sensors", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) return;
-  const bool available = lidar_viewer::LiveSession::Available();
   const bool connected = state.live.Active();
-  ImGui::TextWrapped("Subscribe to existing ROS 2 sensor topics. Sensor drivers are started separately.");
-  if (!available) ImGui::TextWrapped("This build has no live ROS 2 backend. Reconfigure after sourcing ROS 2.");
-  ImGui::BeginDisabled(connected || !available);
-  ImGui::TextUnformatted("LiDAR PointCloud2 topic");
-  ImGui::SetNextItemWidth(-1); ImGui::InputText("##LivePointsTopic", state.live_points_topic.data(), state.live_points_topic.size());
-  ImGui::TextUnformatted("IMU topic (optional)");
-  ImGui::SetNextItemWidth(-1); ImGui::InputText("##LiveImuTopic", state.live_imu_topic.data(), state.live_imu_topic.size());
+  if (auto result=state.live_calibration_picker.Poll()) {
+    if (!result->error.empty()) state.ui_error = result->error;
+    if (!result->path.empty()) {
+      const auto name = result->path.u8string();
+      if (name.size() >= state.live_calibration.size()) state.ui_error = "Calibration path is too long";
+      else {
+        state.live_calibration.fill(0);
+        std::copy(name.begin(), name.end(), state.live_calibration.begin());
+      }
+    }
+  }
+  const bool ros_available = lidar_viewer::LiveSession::Available();
+  ImGui::BeginDisabled(connected || state.live_calibration_picker.Active());
+  if (ros_available) {
+    if (ImGui::RadioButton("Direct Ethernet", !state.live_select_ros)) state.live_select_ros = false;
+    TraceUi("live_direct_source");
+    ImGui::SameLine();
+    if (ImGui::RadioButton("ROS 2 topics", state.live_select_ros)) state.live_select_ros = true;
+    TraceUi("live_ros_source");
+    ImGui::Spacing();
+  }
+  const bool ros = state.live_select_ros && ros_available;
+  if (ros) {
+    ImGui::TextUnformatted("LiDAR PointCloud2 topic");
+    ImGui::SetNextItemWidth(-1); ImGui::InputText("##LivePointsTopic", state.live_points_topic.data(), state.live_points_topic.size());
+    ImGui::TextUnformatted("IMU topic (optional)");
+    ImGui::SetNextItemWidth(-1); ImGui::InputText("##LiveImuTopic", state.live_imu_topic.data(), state.live_imu_topic.size());
+  } else {
+    ImGui::TextUnformatted("LiDAR model");
+    ImGui::SetNextItemWidth(-1);
+    const bool models_open = ImGui::BeginCombo("##DirectModel", lidar_viewer::DirectLidarModelName(state.live_sensor_model), ImGuiComboFlags_HeightLarge);
+    TraceUi("live_direct_model");
+    if (models_open) {
+      for (const auto & model : kDirectModels) {
+        if (ImGui::Selectable(lidar_viewer::DirectLidarModelName(model.first), state.live_sensor_model == model.first))
+          state.live_sensor_model = model.first;
+        TraceUi((std::string("live_model_") + model.second).c_str());
+      }
+      ImGui::EndCombo();
+    }
+    if (state.live_udp_port > 0) ImGui::TextDisabled("Listening port: UDP %d", state.live_udp_port);
+    else if (state.live_sensor_model == LidarModel::Auto) ImGui::TextDisabled("Automatic ports: UDP 2368, 7502, 6699, 56301");
+    else ImGui::TextDisabled("Default port: UDP %u", static_cast<unsigned>(lidar_viewer::DirectLidarDefaultPort(state.live_sensor_model)));
+    if (state.live_sensor_model == LidarModel::HesaiAt128 && state.live_calibration[0] == '\0')
+      ImGui::TextDisabled("Sensor angle correction file required (.dat)");
+    if (state.live_sensor_model == LidarModel::OusterOs && state.live_sensor_ipv4[0] == '\0' && state.live_calibration[0] == '\0')
+      ImGui::TextDisabled("Sensor IPv4 or metadata file required (.json)");
+    if (ImGui::CollapsingHeader("Network and calibration")) {
+      TraceUi("live_direct_network");
+      ImGui::TextUnformatted("UDP port (0 = model default)");
+      ImGui::SetNextItemWidth(-1); ImGui::InputInt("##UdpPort", &state.live_udp_port, 0);
+      TraceUi("live_udp_port");
+      ImGui::TextUnformatted("Auxiliary UDP port (0 = model default)");
+      ImGui::SetNextItemWidth(-1); ImGui::InputInt("##AuxUdpPort", &state.live_auxiliary_port, 0);
+      Tip("Record IMU, position or device information packets on this port.");
+      ImGui::TextUnformatted("Sensor IPv4 (optional)");
+      ImGui::SetNextItemWidth(-1); ImGui::InputTextWithHint("##SensorIpv4", "Use the first supported sender", state.live_sensor_ipv4.data(), state.live_sensor_ipv4.size());
+      ImGui::TextUnformatted("Multicast group (optional)");
+      ImGui::SetNextItemWidth(-1); ImGui::InputTextWithHint("##MulticastIpv4", "Leave empty for unicast or broadcast", state.live_multicast_ipv4.data(), state.live_multicast_ipv4.size());
+      ImGui::TextUnformatted("Calibration");
+      ImGui::SetNextItemWidth(std::max(140.f*s, ImGui::GetContentRegionAvail().x-90.f*s));
+      ImGui::InputTextWithHint("##LiveCalibration", "Hesai .csv / .dat or Ouster .json", state.live_calibration.data(), state.live_calibration.size());
+      ImGui::SameLine();
+      if (ImGui::Button("Browse...")) {
+        try {state.live_calibration_picker.OpenFile(lidar_viewer::UserHome());}
+        catch (const std::exception & error) {state.ui_error = error.what();}
+      }
+    } else {
+      TraceUi("live_direct_network");
+    }
+  }
   ImGui::EndDisabled();
   ImGui::BeginDisabled(state.live_stats.record_busy);
   ImGui::TextUnformatted("Recording parent folder");
   ImGui::SetNextItemWidth(-1); ImGui::InputText("##LiveRecordingFolder", state.live_record_folder.data(), state.live_record_folder.size());
   ImGui::EndDisabled();
-  ImGui::TextWrapped("Pause freezes the display only. Receiving and raw recording continue. Play returns to the latest frame.");
+  ImGui::TextDisabled("%s", ros ? "ROS 2 bag (.mcap)" : "LiDAR packet capture (.pcap)");
   if (state.live_mode) {
-    ImGui::Text("Received: %llu clouds / %llu IMU samples", static_cast<unsigned long long>(state.live_stats.clouds),
-      static_cast<unsigned long long>(state.live_stats.imu_samples));
-    ImGui::Text("LiDAR: %.1f Hz / age %.0f ms", state.live_stats.cloud_hz, state.live_stats.cloud_age_ms);
-    if (!state.live_stats.error.empty()) ImGui::TextWrapped("Receive error: %s", state.live_stats.error.c_str());
-    if (!state.live_stats.recording_path.empty()) ImGui::TextWrapped("Bag: %s", state.live_stats.recording_path.c_str());
-    ImGui::Text("Recorded: %llu messages / %.1f MiB / %llu dropped",
-      static_cast<unsigned long long>(state.live_stats.recorded_messages), state.live_stats.recorded_bytes / 1048576.,
-      static_cast<unsigned long long>(state.live_stats.record_dropped));
+    ImGui::Separator();
+    if (state.live_using_ros) {
+      ImGui::Text("Received: %llu clouds / %llu IMU samples", static_cast<unsigned long long>(state.live_stats.clouds),
+        static_cast<unsigned long long>(state.live_stats.imu_samples));
+    } else if (state.live_stats.sensor_model != LidarModel::Auto) {
+      ImGui::Text("%s  |  %s", lidar_viewer::DirectLidarModelName(state.live_stats.sensor_model), state.live_stats.sensor_address.c_str());
+      if (state.live_stats.factory_calibration) ImGui::TextDisabled("Sensor calibration loaded");
+      else if (state.live_stats.sensor_model != LidarModel::LivoxMid360 && state.live_stats.sensor_model != LidarModel::RobosenseM1 &&
+          state.live_stats.sensor_model != LidarModel::RobosenseM2 && state.live_stats.sensor_model != LidarModel::RobosenseM3)
+        ImGui::TextDisabled("Nominal beam angles");
+      ImGui::Text("UDP received: %llu  |  Sequence gaps: %llu", static_cast<unsigned long long>(state.live_stats.packets),
+        static_cast<unsigned long long>(state.live_stats.sequence_gaps));
+      if (state.live_stats.auxiliary_port) ImGui::TextDisabled("Auxiliary UDP port %u", static_cast<unsigned>(state.live_stats.auxiliary_port));
+      if (!state.live_stats.auxiliary_error.empty()) ImGui::TextWrapped("Auxiliary packets: %s", state.live_stats.auxiliary_error.c_str());
+    } else if (connected) {
+      ImGui::TextWrapped("Waiting for LiDAR. Check Ethernet and the sensor's UDP destination.");
+    }
+    if (state.live_stats.clouds) ImGui::Text("LiDAR: %.1f Hz  |  %.0f ms since last scan", state.live_stats.cloud_hz, state.live_stats.cloud_age_ms);
+    if (!state.live_stats.error.empty()) ImGui::TextWrapped("%s", state.live_stats.error.c_str());
+    if (!state.live_stats.recording_path.empty()) {
+      ImGui::TextWrapped("%s", state.live_stats.recording_path.u8string().c_str());
+      ImGui::Text("Recorded: %.1f MiB  |  %llu dropped", state.live_stats.recorded_bytes / 1048576.,
+        static_cast<unsigned long long>(state.live_stats.record_dropped));
+    }
     if (!state.live_stats.record_error.empty()) ImGui::TextColored(ui::ErrorColor(), "%s", state.live_stats.record_error.c_str());
   }
   ImGui::Separator();
-  ImGui::BeginDisabled(!available);
-  if (ImGui::Button(connected ? "Disconnect" : "Connect", {130.f * state.ui_layout.scale, 0})) {
+  ImGui::BeginDisabled(state.live_calibration_picker.Active());
+  const bool connect_clicked = ImGui::Button(connected ? "Disconnect" : "Connect", {120.f * s, 0});
+  TraceUi("live_connect");
+  if (connect_clicked) {
     try {
       if (connected) {
         state.live.Disconnect(); state.live_stats=state.live.Stats();
@@ -3680,6 +3835,21 @@ void BuildLiveDialog(ViewerState & state)
   ImGui::EndDisabled();
   ImGui::SameLine();
   if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
+  if (!state.live_using_ros && !state.live_stats.record_busy && state.live_stats.recorded_messages &&
+      fs::is_regular_file(state.live_stats.recording_path)) {
+    ImGui::SameLine();
+    const bool open = ImGui::Button("Open saved PCAP");
+    TraceUi("live_open_capture");
+    if (open) {
+      try {
+        const auto path = state.live_stats.recording_path;
+        state.live.Disconnect();
+        state.live_stats = state.live.Stats();
+        OpenInputPath(state,path);
+        ImGui::CloseCurrentPopup();
+      } catch (const std::exception & error) {state.ui_error = error.what();}
+    }
+  }
   if (!state.ui_error.empty()) ImGui::TextWrapped("%s", state.ui_error.c_str());
   ImGui::EndPopup();
 }
@@ -3704,7 +3874,8 @@ std::string CountText(std::uint64_t count)
 std::string LoadEta(const lidar_viewer::InputLoadProgress & progress,bool canceled)
 {
   if(canceled) return "Stopping reader...";
-  if(progress.stage!=lidar_viewer::InputLoadStage::Opening && progress.stage!=lidar_viewer::InputLoadStage::Indexing)
+  if(progress.stage!=lidar_viewer::InputLoadStage::Opening && progress.stage!=lidar_viewer::InputLoadStage::Indexing &&
+     progress.stage!=lidar_viewer::InputLoadStage::IndexingPcap)
     return "Finalizing...";
   if(!progress.indexing_eta_seconds) return "ETA calculating...";
   if(*progress.indexing_eta_seconds<=0) return "Finalizing...";
@@ -3734,10 +3905,11 @@ void BuildInputLoading(ViewerState & state)
   ImGui::TextUnformatted(source.display_name.c_str());
   Tip(source.path.u8string().c_str());
   ImGui::Spacing();
-  const bool measured=progress.stage==lidar_viewer::InputLoadStage::Indexing && progress.total_messages>0;
+  const bool pcap=progress.stage==lidar_viewer::InputLoadStage::IndexingPcap;
+  const bool measured=(pcap || progress.stage==lidar_viewer::InputLoadStage::Indexing) && progress.total_messages>0;
   char overlay[80];
-  if (measured) std::snprintf(overlay,sizeof(overlay),"%.0f%% of messages scanned",
-    std::min(100.,100.*progress.messages/progress.total_messages));
+  if (measured) std::snprintf(overlay,sizeof(overlay),"%.0f%% of %s scanned",
+    std::min(100.,100.*progress.messages/progress.total_messages),pcap ? "capture" : "messages");
   else std::snprintf(overlay,sizeof(overlay),"%s",canceled ? "Stopping reader..." : "Working...");
   ImGui::PushStyleColor(ImGuiCol_PlotHistogram,{.25f,.68f,.78f,1});
   ImGui::ProgressBar(measured ? std::min(1.f,static_cast<float>(progress.messages)/progress.total_messages) :
@@ -3746,8 +3918,8 @@ void BuildInputLoading(ViewerState & state)
   ImGui::TextDisabled("%s",overlay);
   if (progress.total_frames) ImGui::Text("%s / %s LiDAR frames",CountText(progress.frames).c_str(),CountText(progress.total_frames).c_str());
   else ImGui::Text("%s LiDAR frames",CountText(progress.frames).c_str());
-  ImGui::TextDisabled("%s IMU samples  |  %s",CountText(progress.imu_samples).c_str(),LoadEta(progress,canceled).c_str());
-  Tip("Estimated time to finish indexing. IMU preparation and display setup follow.");
+  if(pcap) ImGui::TextDisabled("%s",LoadEta(progress,canceled).c_str());
+  else ImGui::TextDisabled("%s IMU samples  |  %s",CountText(progress.imu_samples).c_str(),LoadEta(progress,canceled).c_str());
   ImGui::Spacing();
   ImGui::BeginDisabled(canceled);
   if (ImGui::Button("Cancel opening",{140*s,0})) state.input_load->Cancel();
@@ -3819,7 +3991,8 @@ void StartRoiExport(ViewerState & state,bool current_frame_only)
     if (state.live_mode) {
       if (!state.live_has_frame) throw std::runtime_error("Waiting for the first live frame");
       request.live_snapshot=state.base_frame;request.live_sequence=state.live_display_sequence;
-      request.live_topic=state.live_points_topic.data();
+      request.live_topic=state.live_using_ros ? state.live_points_topic.data() :
+        std::string(lidar_viewer::DirectLidarModelName(state.live_stats.sensor_model)) + " UDP";
     } else {
       if (state.frames.empty()) throw std::runtime_error("Open a recording first");
       if (current_frame_only || state.export_scope==0) request.sources.push_back({state.frames[state.current_index],state.current_index});
@@ -4556,7 +4729,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   ImGui::SameLine();
   ImGui::BeginDisabled(example_busy || state.review_window || state.loading_bag_source.has_value() || state.folder_scan_future.valid() || state.bag_picker.Active());
   if (lidar_viewer::ActionButton("##Live",lidar_viewer::UiIcon::Live,"Live",{85*s,0},s)) state.open_live_dialog=true;
-  TraceUi("open_live");Tip("Connect LiDAR and IMU topics, preview and record.");
+  TraceUi("open_live");Tip("Connect an Ethernet LiDAR, inspect the live scan and record packets.");
   ImGui::EndDisabled();ImGui::SameLine(425*s);
   const bool wide_header=layout.header.w>=1050*s;
   const auto workspace_button=[&](const char * id,lidar_viewer::UiIcon icon,const char * label,float width,bool selected) {
@@ -4613,7 +4786,8 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   ImGui::TextUnformatted("Controls");
   ImGui::SameLine();
   ImGui::TextDisabled("  %s", state.live_mode ? "LIVE ROS 2" : has_input ?
-    (dataset_input ? "DATASET" : state.frames.front().format == InputFormat::Ros2Bag ? "ROS 2 BAG" : "BIN") : "NO DATA");
+    (dataset_input ? "DATASET" : state.frames.front().format == InputFormat::Ros2Bag ? "ROS 2 BAG" :
+      state.frames.front().format == InputFormat::LidarPcap ? "PCAP" : "BIN") : "NO DATA");
   ImGui::Spacing();
   ImGui::BeginChild("InspectorBody", {0, std::max(1.f, ImGui::GetContentRegionAvail().y - (state.review_window ? 0.f : 84.f * s))},
     ImGuiChildFlags_None,ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse);
@@ -5223,10 +5397,11 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   state.playback_fps = std::isfinite(state.playback_fps) ? std::clamp(state.playback_fps, .1, 120.) : 10.;
   if (layout.transport.w > 800.f * s) {
     ImGui::SameLine();
-    if (state.live_mode) ImGui::TextDisabled("Live frame %llu", static_cast<unsigned long long>(state.live_display_sequence));
+    if (state.live_mode && state.live_display_sequence) ImGui::TextDisabled("Live frame %llu", static_cast<unsigned long long>(state.live_display_sequence));
+    else if (state.live_mode) ImGui::TextDisabled("Waiting for LiDAR");
     else if (group) {
       const auto & first=state.frames[first_index];
-      const bool recorded=first.format==InputFormat::Ros2Bag;
+      const bool recorded=first.format==InputFormat::Ros2Bag || first.format==InputFormat::LidarPcap;
       const auto seconds=[&](std::size_t i) {
         return recorded ? static_cast<double>((static_cast<long double>(state.frames[i].bag_timestamp_ns)-first.bag_timestamp_ns)*1e-9L) :
           static_cast<double>(i-first_index)/state.input_fps_estimate.value_or(10.);
@@ -5246,17 +5421,28 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   if(!state.review_window) BuildSourceSelector(state, std::max(80.f * s, ImGui::GetContentRegionAvail().x));
   else if(has_input) ImGui::TextUnformatted(state.frames[state.current_index].label.c_str());
   if (state.live_mode) {
-    ImGui::BeginDisabled(!state.live_stats.connected || state.live_stats.record_stopping);
+    ImGui::BeginDisabled(!state.live_stats.connected || state.live_stats.record_stopping ||
+      (!state.live_using_ros && !state.live_stats.packets));
     ImGui::PushStyleColor(ImGuiCol_Button, state.live_stats.record_busy ? ImVec4(.6f,.16f,.16f,1) : ImVec4(.32f,.18f,.2f,1));
     const char * label = state.live_stats.record_stopping ? "Saving..." : (state.live_stats.record_busy ? "Stop REC" : "Record");
     if (ImGui::Button(label, {110.f * s, 0})) {
       try {ToggleLiveRecording(state); state.ui_error.clear();}
       catch (const std::exception & error) {state.ui_error=error.what();}
     }
+    TraceUi("live_record");
     ImGui::PopStyleColor(); ImGui::EndDisabled();
     ImGui::SameLine();
-    ImGui::TextDisabled("Rx %llu | IMU %llu | %.1f Hz", static_cast<unsigned long long>(state.live_stats.clouds),
-      static_cast<unsigned long long>(state.live_stats.imu_samples), state.live_stats.cloud_hz);
+    if (state.live_using_ros) {
+      ImGui::TextDisabled("Rx %llu | IMU %llu | %.1f Hz", static_cast<unsigned long long>(state.live_stats.clouds),
+        static_cast<unsigned long long>(state.live_stats.imu_samples), state.live_stats.cloud_hz);
+    } else {
+      ImGui::TextDisabled("%llu scans  |  %.1f Hz", static_cast<unsigned long long>(state.live_stats.clouds), state.live_stats.cloud_hz);
+      if (!state.live_stats.error.empty()) {
+        ImGui::SameLine();
+        ImGui::TextColored(ui::WarningColor(),"Live input details");
+        Tip(state.live_stats.error.c_str());
+      }
+    }
   } else {
   if (!state.timeline_dragging) state.seek_draft = static_cast<int>(state.current_index - first_index);
   ImGui::SetNextItemWidth(-1);
@@ -5848,6 +6034,10 @@ int RunViewer(int argc, char ** argv)
     bool start_2d = false;
     bool start_panorama=false;
     bool start_live = false;
+    bool ros_live = false;
+    LidarModel lidar_model = LidarModel::Auto;
+    int udp_port = 0, auxiliary_port = 0;
+    std::string lidar_ip, multicast_ip, calibration_path;
     bool point_review=false;
     fs::path record_folder = lidar_viewer::ProjectResourcePath("recordings");
 #ifdef LIDAR_VIEWER_USER_SETTINGS
@@ -5860,12 +6050,19 @@ int RunViewer(int argc, char ** argv)
         std::cout<<"LiDAR Studio "<<lidar_viewer::app_info::Version<<" | "<<lidar_viewer::app_info::Revision
           <<" | "<<lidar_viewer::app_info::Platform<<'\n';return 0;
       } else if (arg == "--help" || arg == "-h") {
-        std::cout << "Usage: lidar_studio [INPUT] [--live] [--topic /b2/points] [--sensor-height METRES] [--imu-level] [--imu-topic TOPIC] [--2d|--panorama] [--play] [--detect] [--inspect] [--record-folder DIR]\n"
-                  << "INPUT: .bin/.npy/.pcd file, dataset folder/metadata.json, bag collection, ROS 2 bag, .mcap, .db3 or metadata.yaml.\n"
+        std::cout << "Usage: lidar_studio [INPUT | --live | --ros-live] [OPTIONS]\n"
+                  << "INPUT: BIN, NPY, PCD, LiDAR PCAP, dataset folder or ROS 2 bag.\n"
                   << "Without INPUT, show an empty viewer. Click Open... to select a recording.\n"
                   << "Open... selects a file or remembers a recordings folder. Ctrl+O opens the file chooser.\n"
                   << "--point-review: open the point cloud and label review workspace.\n"
-                  << "--live: subscribe to live LiDAR/IMU. Pause freezes the display; Play returns to the latest frame.\n"
+                  << "--live: connect directly to a LiDAR over Ethernet. Record saves a PCAP.\n"
+                  << "--lidar-model: auto, xt32, xt16, xt32m2x, at128, vlp16, puck-hi-res, hdl32e, vlp32c, mid360, ouster-os, rs-m1, rs-m2, rs-m3.\n"
+                  << "--udp-port: override the selected model's receive port.\n"
+                  << "--aux-udp-port: override the port used to record auxiliary sensor UDP packets.\n"
+                  << "--lidar-ip / --multicast-ip: filter the sender or join its IPv4 multicast group.\n"
+                  << "--lidar-calibration FILE: supply a manufacturer's calibration file.\n"
+                  << "--ros-live: optionally subscribe to ROS 2 LiDAR and IMU topics.\n"
+                  << "--topic: select a ROS 2 LiDAR topic (default /b2/points).\n"
                   << "--record-folder: parent folder for recordings started explicitly with Record.\n"
                   << "--sensor-height: explicit display Z translation (0..5 m); no automatic bag leveling.\n"
                   << "--imu-level: gravity-align roll/pitch using recorded IMU and a known mount rotation.\n"
@@ -5876,7 +6073,9 @@ int RunViewer(int argc, char ** argv)
                   << "--inspect: index and load the first frame without opening a window.\n"
                   << "ROS 2 bag backend: " << (RosbagInputAvailable() ? "enabled" : "not built") << '\n';
         return 0;
-      } else if (arg == "--topic" || arg == "--sensor-height" || arg == "--imu-topic" || arg == "--record-folder") {
+      } else if (arg == "--topic" || arg == "--sensor-height" || arg == "--imu-topic" || arg == "--record-folder" ||
+                 arg == "--lidar-model" || arg == "--udp-port" || arg == "--aux-udp-port" || arg == "--lidar-ip" ||
+                 arg == "--multicast-ip" || arg == "--lidar-calibration") {
         if (++i >= argc) {
           throw std::runtime_error("Missing value for " + arg);
         }
@@ -5884,13 +6083,31 @@ int RunViewer(int argc, char ** argv)
           record_folder=argv[i];
           if (record_folder.empty()) throw std::runtime_error("Recording folder must not be empty");
         } else if (arg == "--imu-topic") {
+          ros_live = true;
           imu_topic = argv[i];
           if (imu_topic.empty()) throw std::runtime_error("IMU topic must not be empty");
         } else if (arg == "--topic") {
+          ros_live = true;
           bag_topic = argv[i];
           if (bag_topic.empty()) {
             throw std::runtime_error("Bag topic must not be empty");
           }
+        } else if (arg == "--lidar-model") {
+          const std::string key = argv[i];
+          const auto selected = std::find_if(std::begin(kDirectModels),std::end(kDirectModels),
+            [&](const auto & preset) {return key == preset.second;});
+          if (selected == std::end(kDirectModels)) throw std::runtime_error("Unknown LiDAR model: " + key);
+          lidar_model = selected->first;
+        } else if (arg == "--udp-port" || arg == "--aux-udp-port") {
+          const auto port = lidar_viewer::settings::ParseStrictInt(argv[i]);
+          if (port < 1 || port > 65535) throw std::runtime_error("UDP port must be in 1..65535");
+          (arg == "--udp-port" ? udp_port : auxiliary_port) = port;
+        } else if (arg == "--lidar-ip") {
+          lidar_ip = argv[i];
+        } else if (arg == "--multicast-ip") {
+          multicast_ip = argv[i];
+        } else if (arg == "--lidar-calibration") {
+          calibration_path = argv[i];
         } else {
           std::size_t consumed = 0;
           const std::string value = argv[i];
@@ -5916,6 +6133,8 @@ int RunViewer(int argc, char ** argv)
         start_panorama=true;
       } else if (arg == "--live") {
         start_live = true;
+      } else if (arg == "--ros-live") {
+        start_live = ros_live = true;
       } else if (!arg.empty() && arg.front() == '-') {
         throw std::runtime_error("Unknown option: " + arg);
       } else if (input_selected) {
@@ -5928,6 +6147,8 @@ int RunViewer(int argc, char ** argv)
 
     if (start_live && (input_selected || inspect)) throw std::runtime_error("Use --live without INPUT or --inspect");
     if(point_review && start_live) throw std::runtime_error("Point review does not accept live input");
+    if (start_live && ros_live && !lidar_viewer::LiveSession::Available())
+      throw std::runtime_error("This build has direct Ethernet input. The optional ROS 2 backend is unavailable.");
     ViewerState state;
     state.review_window=point_review;state.open_dataset_review=point_review && !input_selected && !inspect;
     state.dataset_tab_requested=point_review;
@@ -5937,7 +6158,14 @@ int RunViewer(int argc, char ** argv)
     };
     copy_text(bag_topic, state.live_points_topic);
     copy_text(imu_topic.empty() ? "/vn100/imu/data_ned" : imu_topic, state.live_imu_topic);
-    copy_text(record_folder.string(), state.live_record_folder);
+    copy_text(record_folder.u8string(), state.live_record_folder);
+    copy_text(lidar_ip, state.live_sensor_ipv4);
+    copy_text(multicast_ip, state.live_multicast_ipv4);
+    copy_text(calibration_path, state.live_calibration);
+    state.live_select_ros = ros_live && lidar_viewer::LiveSession::Available();
+    state.live_sensor_model = lidar_model;
+    state.live_udp_port = udp_port;
+    state.live_auxiliary_port = auxiliary_port;
     state.bag_topic = bag_topic;
     state.bag_imu_topic = imu_topic;
     state.imu_level_cli_override = imu_level;
@@ -5966,7 +6194,8 @@ int RunViewer(int argc, char ** argv)
     } else if (inspect && !state.bag_sources.empty()) {
       input_path = state.bag_sources.front().path;
     }
-    if (load_initial_input && IsRos2BagInput(input_path)) {
+    const bool indexed_capture = load_initial_input && (IsRos2BagInput(input_path) || IsPcapCapture(input_path));
+    if (indexed_capture) {
       const auto canonical = fs::canonical(input_path);
       for (std::size_t i = 0; i < state.bag_sources.size(); ++i)
         if (state.bag_sources[i].path == canonical) state.current_bag_source = i;
@@ -5983,7 +6212,7 @@ int RunViewer(int argc, char ** argv)
     if (sensor_height) {
       state.calibration.z_m = *sensor_height;
     }
-    const bool async_initial_bag=load_initial_input && !point_review && !inspect && IsRos2BagInput(input_path);
+    const bool async_initial_bag=indexed_capture && !point_review && !inspect;
     if (inspect && !input_selected && !state.bag_sources.empty()) {
       // A disconnected or damaged recording must not hide other registered bags.
       for (std::size_t i = 0; i < state.bag_sources.size(); ++i) {

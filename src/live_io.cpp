@@ -1,5 +1,6 @@
 #include "lidar_viewer/live_io.hpp"
 #include "lidar_viewer/bag_io.hpp"
+#include "direct_live.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -342,13 +343,24 @@ void LiveSession::Connect(const LiveOptions & options)
 {
 #ifdef LIDAR_VIEWER_HAS_LIVE_ROS
   if (Active()) throw std::runtime_error("Disconnect the current live session first");
+  Disconnect();
   auto replacement=std::make_unique<Impl>(); replacement->Start(options); impl_=std::move(replacement);
+  direct_.reset();
 #else
   (void)options; throw std::runtime_error("Live ROS 2 input was not built");
 #endif
 }
+void LiveSession::ConnectDirect(const DirectLiveOptions & options)
+{
+  if (Active()) throw std::runtime_error("Disconnect the current live session first");
+  Disconnect();
+  auto replacement = std::make_unique<DirectLiveSession>(options);
+  impl_.reset();
+  direct_ = std::move(replacement);
+}
 void LiveSession::Disconnect()
 {
+  if (direct_) direct_->Disconnect();
 #ifdef LIDAR_VIEWER_HAS_LIVE_ROS
   if (impl_) impl_->Stop();
 #endif
@@ -356,6 +368,7 @@ void LiveSession::Disconnect()
 bool LiveSession::Active() const {return Stats().connected;}
 std::unique_ptr<LiveFrame> LiveSession::TakeLatest()
 {
+  if (direct_) return direct_->TakeLatest();
 #ifdef LIDAR_VIEWER_HAS_LIVE_ROS
   if (impl_) {std::lock_guard<std::mutex> lock(impl_->mutex); return std::move(impl_->latest);}
 #endif
@@ -363,6 +376,7 @@ std::unique_ptr<LiveFrame> LiveSession::TakeLatest()
 }
 LiveStats LiveSession::Stats() const
 {
+  if (direct_) return direct_->Stats();
 #ifdef LIDAR_VIEWER_HAS_LIVE_ROS
   if (impl_) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
@@ -379,6 +393,7 @@ LiveStats LiveSession::Stats() const
 }
 void LiveSession::StartRecording(const std::filesystem::path & destination)
 {
+  if (direct_) {direct_->StartRecording(destination);return;}
 #ifdef LIDAR_VIEWER_HAS_LIVE_ROS
   if (!Active()) throw std::runtime_error("Connect to live sensors before recording");
   if (destination.empty() || std::filesystem::exists(destination)) throw std::runtime_error("Recording needs a new, nonexisting output folder");
@@ -398,6 +413,7 @@ void LiveSession::StartRecording(const std::filesystem::path & destination)
 }
 void LiveSession::StopRecording()
 {
+  if (direct_) {direct_->StopRecording();return;}
 #ifdef LIDAR_VIEWER_HAS_LIVE_ROS
   if (!impl_) return;
   std::lock_guard<std::mutex> lock(impl_->record_mutex);
