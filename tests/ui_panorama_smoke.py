@@ -2,6 +2,9 @@
 """Private Xvfb: real GPU projection, nearest return, navigation and playback."""
 import argparse,json,math,os,shutil,struct,subprocess,tempfile,time,traceback
 from pathlib import Path
+
+import numpy as np
+
 from ui_controls import Controls
 from ui_gl_smoke import X11,capture,changed_pixels,settings_inventory
 
@@ -23,8 +26,9 @@ def main():
         yaw=-math.radians(bearing);pitch=math.radians(elevation)
         return distance*math.cos(pitch)*math.cos(yaw),distance*math.cos(pitch)*math.sin(yaw),distance*math.sin(pitch),.5
     for frame in range(12):
-        points=[point(column*360/512-180,-20+ring*35/31,35+8*math.sin(column*.025)+frame)
-                for ring in range(32) for column in range(512)]
+        # Enough returns for the software GL canvas cache at the test window size.
+        points=[point(column*360/1024-180,-20+ring*35/63,35+8*math.sin(column*.025)+frame)
+                for ring in range(64) for column in range(1024)]
         # A far return comes LAST at exactly the same direction. The depth
         # buffer must retain the blue near return, not the orange far one.
         points.extend([point(30,0,10),point(30,0,60),(0,0,0,.5)])
@@ -41,17 +45,25 @@ def main():
         return dict(line.split('=',1) for line in saved.read_text().splitlines() if '=' in line)
     def view(prefs):
         return tuple(float(prefs['panorama_'+key]) for key in ['center_deg','elevation_deg','horizontal_fov','vertical_fov'])
+    def wait_for_canvas(process, log_path):
+        deadline = time.monotonic() + 20
+        while not (window := x.viewer_window()):
+            if process.poll() is not None or time.monotonic() > deadline:
+                raise RuntimeError(log_path.read_text(errors='replace'))
+            time.sleep(.05)
+        x.focus(window)
+        x.resize(window, 1600, 960)
+        Controls(x, window, log_path).rect('camera_Panorama')
+        time.sleep(.3)
+        return window
     try:
         x=X11();subprocess.run(['xrdb','-merge'],input='Xft.dpi: 96\n',text=True,check=True)
         for run in range(2):
             log_path=out/f'viewer-{run}.log'
             with log_path.open('wb') as log:
                 process=subprocess.Popen([str(viewer),str(clouds),'--panorama'],cwd=private,env=env,stdout=log,stderr=subprocess.STDOUT)
-                deadline=time.monotonic()+20;window=None
-                while not window:
-                    if process.poll() is not None or time.monotonic()>deadline:raise RuntimeError(log_path.read_text(errors='replace'))
-                    window=x.viewer_window();time.sleep(.05)
-                x.focus(window);x.resize(window,1600,960);c=Controls(x,window,log_path);c.rect('camera_Panorama');time.sleep(.3)
+                window = wait_for_canvas(process, log_path)
+                c = Controls(x, window, log_path)
                 prefs=save()
                 if run==1:
                     check('panorama_navigation_restored_on_launch',view(prefs)==last_view and prefs['projection_mode']=='panorama')
@@ -63,7 +75,9 @@ def main():
                 px=round(352+1232*(.5+30/360));py=round(72+718*(.5-2.5/39))
                 pixel=image.getpixel((px,py))
                 check('gpu_projection_undoes_alignment_and_keeps_nearest_return',pixel[2]>pixel[0]+40 and pixel[2]>100)
-                c.click('panorama_color');x.key(window,'Home');x.key(window,'Down');x.key(window,'Return');time.sleep(.2)
+                still = capture(x, window, out/'01_paused.png')
+                check('repeated_paint_preserves_paused_pixels', changed_pixels(image, still, (500,220,1500,730)) == 0)
+                c.click('panorama_color');x.key(window,'End');x.key(window,'Return');time.sleep(.2)
                 colored=capture(x,window,out/'02_point_colors.png');p=colored.getpixel((px,py))
                 check('existing_point_colors_are_available',min(p[:3])>170)
                 c.click('panorama_color');x.key(window,'Home');x.key(window,'Return');time.sleep(.1)
@@ -71,6 +85,8 @@ def main():
                 check('wheel_zooms_without_moving_3d_camera',view(zoom)[2]<200 and abs(float(zoom['camera_3d_yaw_rad'])-.37)<1e-5)
                 c.drag((950,430),(1120,475));moved=save()
                 check('drag_pans_the_panorama',view(moved)!=view(zoom))
+                moved_image = capture(x, window, out/'02_panned.png')
+                check('navigation_repaints_the_cloud', changed_pixels(image, moved_image, (500,220,1500,730)) > 500)
                 x.key(window,'Right');time.sleep(.3);next_frame=save()
                 check('next_frame_keeps_panorama_view',view(next_frame)==view(moved))
                 c.click('camera_3D');three=save()
@@ -86,6 +102,21 @@ def main():
                 check('panorama_playback_continues',changed_pixels(first,second,(500,220,1500,730))>500)
                 last_view=view(save())
                 process.terminate();process.wait(timeout=5);process=None;window=None
+        # Dataset files already store their chosen coordinate space. A CLI
+        # open must not subtract the floor before the spherical projection.
+        samples = private/'below_sensor.npy'
+        bearings = np.deg2rad(np.arange(360))
+        np.save(samples, np.column_stack((12*np.cos(bearings), 12*np.sin(bearings),
+                                        np.full(360, -2), np.full(360, .5))).astype('<f4'))
+        dataset_log = out/'viewer-dataset.log'
+        with dataset_log.open('wb') as log:
+            process = subprocess.Popen([str(viewer), str(samples), '--point-review', '--panorama'],
+                                       cwd=private, env=env, stdout=log, stderr=subprocess.STDOUT)
+            window = wait_for_canvas(process, dataset_log)
+            scan = capture(x, window, out/'06_stored_elevation.png')
+            check('npy_points_keep_stored_elevation_on_cli_open',
+                  sum(blue > 120 for _, _, blue in scan.crop((890, 429, 1050, 433)).getdata()) > 60)
+            process.terminate();process.wait(timeout=5);process=None;window=None
         check('original_profiles_unchanged',settings_inventory(repo)==before);result['status']='passed'
     except Exception as error:
         result.update(status='failed',error=str(error),traceback=traceback.format_exc())

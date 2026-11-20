@@ -41,5 +41,12 @@ int main()
   for(int i=0;i<100;++i) ZoomPanorama(view,10,0,0);
   Check(view.horizontal_fov==360 && view.vertical_fov==180 && view.elevation_deg==0);
   PanoramaView empty;FitPanorama(empty,{});Check(!empty.initialized);
+  const float nan=std::numeric_limits<float>::quiet_NaN();
+  const float huge=std::numeric_limits<float>::max();
+  FitPanorama(empty,{{0,0,.05f,.5f},{0,0,nan,.5f},{huge,huge,huge,.5f}});
+  Check(!empty.initialized);
+  PanoramaView overhead;
+  FitPanorama(overhead,{{0,0,5,.5f},{10,0,10,.5f}});
+  Check(overhead.initialized && Near(overhead.vertical_fov,49) && Near(overhead.elevation_deg,65.5f));
   std::cout<<"Panorama bearings, elevation, invalid returns, fit, seam and anchored zoom passed\n";
 }

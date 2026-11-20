@@ -3,6 +3,7 @@
 #include "lidar_viewer/data_io.hpp"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <optional>
 
 namespace lidar_viewer
@@ -37,11 +38,20 @@ inline void ClampPanorama(PanoramaView & view)
 }
 inline void FitPanorama(PanoramaView & view,const std::vector<KittiPoint> & points,float ground_offset=0)
 {
-  float low=90,high=-90;
-  for(const auto & p:points) if(const auto angle=SensorAngles({p.x,p.y,p.z+ground_offset})) {
-    low=std::min(low,angle->elevation);high=std::max(high,angle->elevation);
+  double lowest=1,highest=-1;
+  constexpr double min_range=.05f,max_range=std::numeric_limits<float>::max();
+  for(const auto & p:points) {
+    const double x=p.x,y=p.y,z=p.z+ground_offset;
+    const double squared_range=x*x+y*y+z*z;
+    if(!(squared_range>min_range*min_range && squared_range<=max_range*max_range)) continue;
+    // Elevation is monotonic in z/range. Find the two extrema before taking angles.
+    const double sine=z/std::sqrt(squared_range);
+    lowest=std::min(lowest,sine);
+    highest=std::max(highest,sine);
   }
-  if(low>high) return; // Empty clouds must not lock in a fake sensor FOV.
+  if(lowest>highest) return;
+  const float low=static_cast<float>(std::asin(std::clamp(lowest,-1.,1.))*180/kPi);
+  const float high=static_cast<float>(std::asin(std::clamp(highest,-1.,1.))*180/kPi);
   view.center_deg=0;view.horizontal_fov=360;
   view.elevation_deg=(low+high)*.5f;
   view.vertical_fov=std::clamp(high-low+4.f,6.f,180.f);
