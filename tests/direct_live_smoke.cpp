@@ -209,10 +209,12 @@ void ProtocolChecks()
   })");
   std::vector<std::uint8_t> ouster(92);
   ouster[0]=1;ouster[42]=1;
+  constexpr std::uint64_t ouster_sensor_time = 1720000000000245000ull;
+  Little(ouster,32,ouster_sensor_time,8);
   Little(ouster,44,6981,4);ouster[47]=121;
   Little(ouster,48,7304,4);ouster[51]=122;
   const auto decoded=metadata.Inspect(ouster.data(),ouster.size());
-  Check(decoded.has_value(),"Valid Ouster format did not identify");
+  Check(decoded && decoded->column_timestamps[0]==ouster_sensor_time,"Ouster lost the 64-bit column timestamp");
   FrameData scan;
   metadata.AppendColumn(scan,ouster.data(),*decoded,0);
   Check(scan.points.size()==2 && std::abs(scan.points[0].x+6.981f)<1e-5f &&
@@ -245,6 +247,7 @@ int main()
       auxiliary = auxiliary_test_port.FreePort();
     }
     DatagramSocket sender;
+    DatagramSocket other_sensor_port;
     LiveSession live;
     DirectLiveOptions options;
     options.udp_port=port;
@@ -266,7 +269,7 @@ int main()
     const std::vector<std::uint8_t> raw_aux{0x37,0x08,0x29,0x99,0x00,0x02,0xab,0x42,0xaf};
     const std::vector<std::uint8_t> raw_unknown{0x72,0x19,0x23,0x45,0x67,0x89,0xcd,0xef};
     sender.Send(raw_aux,auxiliary);
-    sender.Send(raw_unknown,port);
+    other_sensor_port.Send(raw_unknown,port);
     send(16,35);
     WaitFor([&]{return live.Stats().recorded_messages==21;},"Recorder missed raw point or auxiliary UDP while the display stopped consuming");
     Check(!fs::exists(folder/kLivePcapFilename) && live.Stats().replaced_frames>0,

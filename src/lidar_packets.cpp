@@ -6,6 +6,7 @@
 #include <cstring>
 #include <ctime>
 #include <fstream>
+#include <limits>
 #include <locale>
 #include <sstream>
 #include <stdexcept>
@@ -407,7 +408,8 @@ std::int64_t LidarClock::AtFrame(const LidarPacket & packet, std::size_t block, 
       // A clock reset or a synchronization jump must not stall playback.
       if (elapsed && elapsed <= arrival_gap + 5000000000ull) gap = elapsed;
     }
-    last_frame += static_cast<std::int64_t>(gap);
+    const auto remaining = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max() - last_frame);
+    last_frame += static_cast<std::int64_t>(std::min(gap, remaining));
   }
   last_received = received_ns;
   last_sensor = sensor;

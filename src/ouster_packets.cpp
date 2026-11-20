@@ -144,7 +144,7 @@ std::optional<LidarPacket> OusterCalibration::Inspect(const std::uint8_t * data,
     if (measurement >= width_) return {};
     packet.azimuth[column] = static_cast<std::uint16_t>(measurement);
     packet.scan_ids[column] = legacy_ ? Little(header + 10, 2) : frame;
-    packet.column_timestamps[column] = Little(header, 8);
+    packet.column_timestamps[column] = Little(header, 4) | (static_cast<std::uint64_t>(Little(header + 4, 4)) << 32);
   }
   return packet;
 }

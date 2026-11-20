@@ -450,9 +450,12 @@ struct DirectLiveSession::Impl
       const auto size = static_cast<std::size_t>(bytes);
       const auto received_ns = NowNs();
       if (route) {
-        if (route->source_ip != from.source_ip || (!socket->auxiliary && !(*route == from))) continue;
-        std::lock_guard<std::mutex> lock(mutex);
-        QueueRecordingPacket(data.data(), size, from, received_ns);
+        if (route->source_ip != from.source_ip) continue;
+        if (socket->auxiliary || route->destination_port == from.destination_port) {
+          std::lock_guard<std::mutex> lock(mutex);
+          QueueRecordingPacket(data.data(), size, from, received_ns);
+        }
+        if (!(*route == from)) continue;
       }
       if (socket->auxiliary) continue;
       auto packet = InspectLidarPacket(data.data(), size, ouster ? &*ouster : nullptr, hesai_at ? &*hesai_at : nullptr);
