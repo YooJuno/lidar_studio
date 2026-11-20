@@ -69,7 +69,7 @@ Viewer·Point clouds·Train 간 이동에도 유지됩니다. 데이터별 프�
 - **가로:** 센서 방위각 360도. 정면은 가운데, 왼쪽·오른쪽은 각각 화면의 왼쪽·오른쪽이며 후방에서 이어집니다.
 - **세로:** 포인트의 실제 고도각입니다. 링 번호가 없는 BIN·NPY·PCD도 지원하며, 각도가 불균일한 센서에 가상의 링 번호를 부여하지 않습니다.
 - **드래그 / 휠 / F:** 이동 / 커서 기준 확대 / 현재 스캔 전체 각도 범위로 복귀. 재생·프레임 이동 중에는 시점을 유지하며 3D·2D 카메라는 별도로 보존합니다.
-- **View → Color by:** **Distance**, **Intensity**, **Height**, **Uniform** 중에서 고릅니다. 데이터셋의 포인트 라벨 표시가 켜져 있으면 **Point labels**를 선택할 수 있습니다. `C`로 거리 색상과 마지막 포인트 색상을 전환합니다. 거리 범위는 우측 색상표에 표시되며 범위를 넘는 점은 마지막 색상으로 표시됩니다.
+- **View → Color by**에서 **Distance**, **Intensity**, **Height**, **Uniform** 중 하나를 고릅니다. 거리 영상은 Viridis로 표시하며 가까운 포인트는 보라색, 먼 포인트는 노란색입니다. 거리 범위는 우측 색상표에 표시됩니다. 포인트 라벨 표시가 켜져 있으면 **Point labels**를 선택할 수 있으며, `C`로 거리 색상과 마지막 포인트 색상을 전환합니다. [SemanticKITTI 거리 영상 뷰어](https://github.com/PRBonn/semantic-kitti-api/blob/master/auxiliary/laserscanvis.py#L73-L95)
 - **View → Vertical field of view:** 상하 고도각을 조정합니다. Ctrl+클릭하면 직접 입력할 수 있습니다.
 
 원본 스캔은 정렬·IMU 보정을 역변환한 센서 좌표로 펼칩니다. 라벨링 데이터셋은 파일에 저장된 좌표계를 사용합니다. 표시 ROI와 지면/장애물 표시 설정은 유지합니다. 박스 편집과 3D 검출 박스는 **2D 또는 3D**에서 확인합니다. 같은 화면 픽셀에는 가까운 반사점이 우선합니다. 투영 좌표의 기준은 [SemanticKITTI spherical range projection](https://github.com/PRBonn/semantic-kitti-api/blob/master/auxiliary/laserscan.py)과 같습니다.

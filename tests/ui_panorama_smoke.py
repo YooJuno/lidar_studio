@@ -30,7 +30,7 @@ def main():
         points=[point(column*360/1024-180,-20+ring*35/63,35+8*math.sin(column*.025)+frame)
                 for ring in range(64) for column in range(1024)]
         # A far return comes LAST at exactly the same direction. The depth
-        # buffer must retain the blue near return, not the orange far one.
+        # buffer must retain the purple near return in the distance palette.
         points.extend([point(30,0,10),point(30,0,60),(0,0,0,.5)])
         (clouds/f'{frame:04d}.bin').write_bytes(b''.join(struct.pack('<4f',*p) for p in points))
     env=dict(os.environ,XDG_CONFIG_HOME=str(out/'settings'),LIDAR_VIEWER_UI_TRACE='1')
@@ -74,7 +74,9 @@ def main():
                 # ComputeUiLayout at 1600 x 960: canvas (352,72,1232,718).
                 px=round(352+1232*(.5+30/360));py=round(72+718*(.5-2.5/39))
                 pixel=image.getpixel((px,py))
-                check('gpu_projection_undoes_alignment_and_keeps_nearest_return',pixel[2]>pixel[0]+40 and pixel[2]>100)
+                expected = (71, 44, 123)  # Viridis at 10 m on the 0–80 m scale.
+                check('gpu_projection_undoes_alignment_and_keeps_nearest_return',
+                      all(abs(channel - target) <= 5 for channel, target in zip(pixel, expected)))
                 still = capture(x, window, out/'01_paused.png')
                 check('repeated_paint_preserves_paused_pixels', changed_pixels(image, still, (500,220,1500,730)) == 0)
                 c.click('panorama_color');x.key(window,'End');x.key(window,'Return');time.sleep(.2)
@@ -115,7 +117,8 @@ def main():
             window = wait_for_canvas(process, dataset_log)
             scan = capture(x, window, out/'06_stored_elevation.png')
             check('npy_points_keep_stored_elevation_on_cli_open',
-                  sum(blue > 120 for _, _, blue in scan.crop((890, 429, 1050, 433)).getdata()) > 60)
+                  sum(blue > 100 and blue > green + 35
+                      for _, green, blue in scan.crop((890, 429, 1050, 433)).getdata()) > 60)
             process.terminate();process.wait(timeout=5);process=None;window=None
         check('original_profiles_unchanged',settings_inventory(repo)==before);result['status']='passed'
     except Exception as error:

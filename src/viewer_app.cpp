@@ -80,6 +80,16 @@ constexpr const char * kSettingsFileName = "lidar_viewer_settings.cfg";
 constexpr const char * kProfilesDir = "config/profiles";
 constexpr const char * kAlgorithmsConfigPath = "config/algorithms.yaml";
 constexpr const char * kDefaultInputPath = "dataset/gangnam/2019_10_04_12_28_25.bin";
+// Viridis by Nathaniel J. Smith, Stefan van der Walt, and Eric Firing (CC0).
+// https://github.com/BIDS/colormap/blob/master/colormaps.py
+constexpr ImU32 kPanoramaRangeColors[] = {
+  IM_COL32(68, 1, 84, 255), IM_COL32(72, 26, 108, 255), IM_COL32(71, 47, 125, 255),
+  IM_COL32(65, 68, 135, 255), IM_COL32(57, 86, 140, 255), IM_COL32(49, 104, 142, 255),
+  IM_COL32(42, 120, 142, 255), IM_COL32(35, 136, 142, 255), IM_COL32(31, 152, 139, 255),
+  IM_COL32(34, 168, 132, 255), IM_COL32(53, 183, 121, 255), IM_COL32(84, 197, 104, 255),
+  IM_COL32(122, 209, 81, 255), IM_COL32(165, 219, 54, 255), IM_COL32(210, 226, 27, 255),
+  IM_COL32(253, 231, 37, 255),
+};
 using LidarModel = lidar_viewer::DirectLidarModel;
 constexpr std::pair<LidarModel, const char *> kDirectModels[] = {
   {LidarModel::Auto, "auto"},
@@ -281,6 +291,7 @@ GLuint CreateProgram()
     uniform float u_min_height;
     uniform float u_max_height;
     uniform float u_range_max;
+    uniform vec3 u_range_colors[16];
     uniform vec4 u_label_colors[8];
     uniform vec4 u_unlabeled_color;
     uniform vec4 u_background_color;
@@ -296,8 +307,12 @@ GLuint CreateProgram()
     }
 
     void main() {
-      if(u_color_mode==4) {
-        frag_color=vec4(clamp(turbo(v_range/max(u_range_max,0.1)),0.0,1.0),1.0);return;
+      if (u_color_mode == 4) {
+        const int last = u_range_colors.length() - 1;
+        float segment = clamp(v_range / max(u_range_max, 0.1), 0.0, 1.0) * float(last);
+        int left = min(int(segment), last - 1);
+        frag_color = vec4(mix(u_range_colors[left], u_range_colors[left + 1], segment - float(left)), 1.0);
+        return;
       }
       if (u_color_mode == 3) {
         frag_color=v_label<0 ? u_unlabeled_color : v_label==0 ? u_background_color : u_label_colors[(v_label-1)%8];
@@ -339,6 +354,17 @@ GLuint CreateProgram()
 
   glDeleteShader(vs);
   glDeleteShader(fs);
+  glUseProgram(program);
+  constexpr int count = IM_ARRAYSIZE(kPanoramaRangeColors);
+  static_assert(count == 16, "Match u_range_colors in the point shader");
+  std::array<float, count * 3> range_colors{};
+  for (int i = 0; i < count; ++i) {
+    const auto color = ImGui::ColorConvertU32ToFloat4(kPanoramaRangeColors[i]);
+    range_colors[i * 3] = color.x;
+    range_colors[i * 3 + 1] = color.y;
+    range_colors[i * 3 + 2] = color.z;
+  }
+  glUniform3fv(glGetUniformLocation(program, "u_range_colors[0]"), count, range_colors.data());
   return program;
 }
 
@@ -5152,14 +5178,6 @@ void DrawPanoramaOverlay(ImDrawList & draw, const ViewerState & state)
   }
 
   if (panorama.color_mode == 0) {
-    // Samples of the same Turbo palette used by the distance shader.
-    constexpr ImU32 colors[] = {
-      IM_COL32(35, 23, 27, 255), IM_COL32(75, 76, 204, 255), IM_COL32(56, 135, 249, 255),
-      IM_COL32(38, 189, 225, 255), IM_COL32(47, 229, 173, 255), IM_COL32(88, 251, 121, 255),
-      IM_COL32(150, 250, 80, 255), IM_COL32(213, 227, 54, 255), IM_COL32(255, 184, 39, 255),
-      IM_COL32(255, 128, 29, 255), IM_COL32(227, 70, 19, 255), IM_COL32(173, 25, 5, 255),
-      IM_COL32(144, 13, 0, 255),
-    };
     const float x = right - 158 * scale;
     const float y = view.y + 12 * scale;
     const float width = 140 * scale;
@@ -5170,10 +5188,11 @@ void DrawPanoramaOverlay(ImDrawList & draw, const ViewerState & state)
     draw.AddText({x, y}, text_color, "Distance");
     draw.AddText({x, y + 22 * scale}, text_color, "0 m");
     draw.AddText({x + width - ImGui::CalcTextSize(upper).x, y + 22 * scale}, text_color, upper);
-    const float step = width / (IM_ARRAYSIZE(colors) - 1);
-    for (int i = 0; i < IM_ARRAYSIZE(colors) - 1; ++i) {
+    const float step = width / (IM_ARRAYSIZE(kPanoramaRangeColors) - 1);
+    for (int i = 0; i < IM_ARRAYSIZE(kPanoramaRangeColors) - 1; ++i) {
+      const auto low = kPanoramaRangeColors[i], high = kPanoramaRangeColors[i + 1];
       draw.AddRectFilledMultiColor({x + i * step, y + 16 * scale}, {x + (i + 1) * step, y + 22 * scale},
-        colors[i], colors[i + 1], colors[i + 1], colors[i]);
+        low, high, high, low);
     }
   }
   draw.PopClipRect();
