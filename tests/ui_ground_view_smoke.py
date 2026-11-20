@@ -12,6 +12,7 @@ import tempfile
 import time
 import traceback
 from ui_gl_smoke import X11,capture,changed_pixels,settings_inventory
+from ui_controls import Controls
 
 
 def main():
@@ -46,8 +47,8 @@ def main():
         match=re.search(r'Display: (\w+) \| visible (\d+) \| ground (\d+) \| obstacles (\d+) \| ground passes (\d+)',completed.stdout)
         if completed.returncode or not match:raise AssertionError(completed.stdout)
         return match[1],*[int(match[i]) for i in range(2,6)]
-    def select(index):
-        x11.click(window,170,294);x11.key(window,'Home')
+    def select(index,control='ground_display'):
+        controls.click(control);x11.key(window,'Home')
         for _ in range(index):x11.key(window,'Down')
         x11.key(window,'Return');x11.move(window,1450,700);time.sleep(.25)
     try:
@@ -58,7 +59,8 @@ def main():
             while not window:
                 if process.poll() is not None or time.monotonic()>deadline:raise RuntimeError('Viewer did not open')
                 window=x11.viewer_window();time.sleep(.1)
-            x11.focus(window);x11.resize(window,1600,960);x11.click(window,155,140)
+            x11.focus(window);x11.resize(window,1600,960)
+            controls=Controls(x11,window,output/'viewer.log');controls.click('tab_Ground')
             select(1);save();ground=inspect();ground_image=capture(x11,window,output/'01_ground_only.png')
             check('ground_only_enables_segmentation_and_persists',ground[0]=='ground' and ground[1]==ground[2] and ground[2]>0 and ground[3]>0)
             time.sleep(1.1);measured=averages()[-1]
@@ -73,13 +75,11 @@ def main():
             def red_count(picture):
                 return sum(r>170 and g<90 and b<90 for r,g,b in picture.crop((750,230,930,400)).convert('RGB').getdata())
             check('ground_pixels_are_hidden_in_obstacles_view',red_count(ground_image)>50 and red_count(obstacle_image)<red_count(ground_image)*.1)
-            x11.click(window,170,362);x11.key(window,'Home')
-            for _ in range(3):x11.key(window,'Down')
-            x11.key(window,'Return');time.sleep(.2);save();fug=inspect()
+            select(3,'ground_method');save();fug=inspect()
             check('original_fugseg_selects_runs_and_persists','ground_mode=fugseg' in profile.read_text() and fug[2]>1600 and fug[3]>0)
             capture(x11,window,output/'04_fugseg.png')
-            x11.click(window,170,362);x11.key(window,'Home');x11.key(window,'Return');time.sleep(.2)
-            select(1);x11.click(window,46,222);save();disabled=inspect()
+            select(0,'ground_method')
+            select(1);controls.click('ground_enabled');save();disabled=inspect()
             check('disabling_classification_restores_all',disabled[0]=='all' and disabled[1]==len(points) and disabled[2]==0)
         # Exact count checks use the same scene with a smaller 3D ROI.
         base='\n'.join(line for line in profile.read_text().splitlines() if not line.startswith(('roi_','ground_view=','ground_removal_enabled=')))

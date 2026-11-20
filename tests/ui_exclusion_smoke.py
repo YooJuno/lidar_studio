@@ -19,7 +19,7 @@ import subprocess
 import tempfile
 import time
 import traceback
-from ui_gl_smoke import X11, capture, changed_pixels, settings_inventory
+from ui_gl_smoke import X11, capture, settings_inventory
 from ui_controls import Controls
 
 
@@ -187,12 +187,12 @@ while True:
             x11.move(window,1400,700);capture(x11,window,out/'00_unapplied_preview.png')
             stepped=changed(lambda:x11.key(window,'Right'),0)
             check('frame_advance_preserves_last_applied_exclusions',stepped[1]==len(points))
-            paused=capture(x11,window,out/'paused.png')
+            capture(x11,window,out/'paused.png')
             initial=apply(405)
             check('apply_skips_ground_without_changing_detector_input',initial[1]==len(points) and initial[2]>stepped[2])
             x11.move(window,1400,700)
-            applied=capture(x11,window,out/'01_sensor_exclusion.png')
-            check('apply_keeps_paused_state',changed_pixels(paused,applied,(1235,20,1320,48))==0)
+            capture(x11,window,out/'01_sensor_exclusion.png')
+            check('apply_keeps_paused_state',bool(controls.rect('playback_paused',after=len(log_path.read_text()))))
             text=save();check('ground_roi_and_sensor_coordinates_saved','roi_exclude_box=1 "ROI 1" 0 0 0 1 1 1 0' in text)
             passes=initial[2]
             stage(lambda:controls.click('roi_enabled_0'),'uncheck_box_waits_for_apply');apply(0)
@@ -222,12 +222,11 @@ while True:
             # Applying while playing preserves transport state. New frames
             # continue using the applied mask while the next edit is pending.
             x11.key(window,'space');wait(lambda:len(requests())>=previous+4)
-            playing=capture(x11,window,out/'playing.png')
+            capture(x11,window,out/'playing.png')
             controls.click('roi_enabled_0');time.sleep(.4)
             check('playing_frames_keep_applied_mask_during_edit',all(row[0]==405 for row in rows()[-3:]))
-            apply(0,playing=True);time.sleep(.3);after_apply=capture(x11,window,out/'playing_applied.png')
-            check('apply_keeps_playing_state',changed_pixels(playing,after_apply,(1235,20,1320,48))==0 and
-                  changed_pixels(paused,after_apply,(1235,20,1320,48))>0)
+            apply(0,playing=True);time.sleep(.3);capture(x11,window,out/'playing_applied.png')
+            check('apply_keeps_playing_state',bool(controls.rect('playback_playing',after=len(log_path.read_text()))))
             x11.key(window,'space');time.sleep(.3)
             stage(lambda:controls.click('roi_enabled_0'),'paused_reenable_waits_for_apply');apply(405);save()
             check('editing_exclusions_reuses_detector_process',len((private/'python/starts.txt').read_text().splitlines())==1)

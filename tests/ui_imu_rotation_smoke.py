@@ -10,6 +10,7 @@ import tempfile
 import time
 import traceback
 
+from ui_controls import Controls
 from ui_gl_smoke import X11, capture, changed_pixels, settings_inventory
 
 
@@ -39,7 +40,7 @@ def main():
     viewer = private / "build/lidar_viewer"
     shutil.copy2(args.viewer.resolve(), viewer)
     bag = args.bag.expanduser().resolve()
-    env = dict(os.environ, XDG_CONFIG_HOME=str(output / "isolated_config"))
+    env = dict(os.environ, XDG_CONFIG_HOME=str(output / "isolated_config"), LIDAR_VIEWER_UI_TRACE='1')
     before = settings_inventory(repo)
     process = x11 = window = None
     result = {"status": "started", "checks": {}, "screenshots": {}, "output": str(output)}
@@ -103,19 +104,21 @@ def main():
             panned = shot("04_rotated_pan")
             result["checks"]["left_drag_pans_rotated_view"] = changed_pixels(mouse_rotated, panned, crop) > 100
             # Seek beyond the beginning of the bag where IMU coverage starts.
-            x11.click(window, 1000, 878)
+            controls = Controls(x11, window, log_path)
+            left, top, right, bottom = controls.rect('timeline')
+            x11.click(window, round(left + .55 * (right - left)), round((top + bottom) / 2))
             wait_for(lambda: "IMU leveling active:" in log_path.read_text(errors="replace"))
-            x11.click(window, 100, 141)
+            controls.click('tab_Align')
             time.sleep(.3)
             leveled = shot("05_imu_leveling_active")
-            x11.click(window, 46, 222)
+            controls.click('align_auto')
             unlevel = shot("06_imu_leveling_off")
             result["checks"]["imu_toggle_changes_geometry"] = changed_pixels(leveled, unlevel, crop) > 50
-            x11.click(window, 46, 222)
+            controls.click('align_auto')
             wait_for(lambda: log_path.read_text(errors="replace").count("IMU leveling active:") >= 2)
             shot("07_imu_leveling_restored")
             # This binary copy resolves profiles inside private_project.
-            x11.click(window, 170, 850)
+            controls.click('save_profile')
             saved = private / "config/profiles/rosbag.cfg"
             wait_for(lambda: "imu_level_enabled=1" in saved.read_text())
             values = dict(line.split("=", 1) for line in saved.read_text().splitlines() if "=" in line)

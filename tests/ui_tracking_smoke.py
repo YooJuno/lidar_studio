@@ -105,7 +105,7 @@ while True:
             c.click('object_targets_all')
             x11.key(window,'r');c.drag((800,300),(1100,570));c.click('roi_apply');time.sleep(.4)
             check('roi_apply_reuses_neural_result_and_tracking',tracks()==paused and frames()==requests)
-            x11.click(window,280,140);capture(x11,window,out/'01_confirmed_tracks.png')
+            c.click('tab_Objects');capture(x11,window,out/'01_confirmed_tracks.png')
             c.click('tracking_ids');c.click('tracking_ids');wait(lambda:len(tracks())>len(paused))
             check('ids_toggle_keeps_worker_and_inference',frames()==requests and len((private/'python/starts.txt').read_text().splitlines())==1)
             check('explicit_reenable_allocates_fresh_ids',not ({t[1] for t in tracks()[-2:]} & ids))

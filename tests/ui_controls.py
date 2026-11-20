@@ -12,8 +12,10 @@ class Controls:
             if rows:return tuple(map(float,rows[-1]))
             time.sleep(.05)
         raise AssertionError('Control not rendered: '+name)
-    def click(self,name):
-        x,y,r,b=self.rect(name);self.x11.click(self.window,int((x+r)*.5),int((y+b)*.5));time.sleep(.1)
+    def center(self,name,fraction_x=.5):
+        x,y,r,b=self.rect(name);return int(x+(r-x)*fraction_x),int((y+b)*.5)
+    def click(self,name,fraction_x=.5):
+        self.x11.click(self.window,*self.center(name,fraction_x));time.sleep(.1)
     def right_click(self,name):
         x,y,r,b=self.rect(name);self.x11.click(self.window,int((x+r)*.5),int((y+b)*.5),3);time.sleep(.1)
     def double_click(self,name):

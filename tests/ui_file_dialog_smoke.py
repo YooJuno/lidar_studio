@@ -140,12 +140,10 @@ def main():
             result["checks"]["registered_bag_not_loaded_automatically"] = (
                 "No bag loaded." in initial_log and "Indexing ROS" not in initial_log and "Input:" not in initial_log)
             capture(x11, window, output / "00_empty_viewer.png")
-            # Empty playback/seek controls and shortcuts must be safe.
-            for point in [(410, 837), (480, 837), (525, 837), (1050, 878)]:
-                x11.click(window, *point)
+            # Playback shortcuts must be safe before any input is loaded.
             x11.key(window, "space"); x11.key(window, "n"); x11.key(window, "p")
             alive()
-            result["checks"]["empty_playback_controls_are_safe"] = "Indexing ROS" not in log_path.read_text(errors="replace")
+            result["checks"]["empty_playback_shortcuts_are_safe"] = "Indexing ROS" not in log_path.read_text(errors="replace")
             controls = Controls(x11, window, log_path)
             controls.click("open_input"); controls.click("open_input_file")
             wait_for(chooser_window)

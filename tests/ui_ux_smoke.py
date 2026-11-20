@@ -56,10 +56,23 @@ def main():
      check('divider_resize_is_persisted',profile.exists() and 420<=float(prefs()['inspector_width'])<=440)
      resized=capture(x,window,out/'03_wider_panel.png');time.sleep(.35);later=capture(x,window,out/'04_motion_after_resize.png')
      check('resized_canvas_keeps_advancing',changed_pixels(resized,later,(550,180,1540,750))>80)
-     x.resize(window,800,600);time.sleep(.25)
+     offset=len(log_path.read_text());x.resize(window,800,600);time.sleep(.25)
      capture(x,window,out/'04_compact_window.png')
-     for name in ['open_input','open_dataset','open_training','tab_Objects','timeline']:
-      left,top,right,bottom=c.rect(name);check('compact_'+name,0<=left<right<=800 and 0<=top<bottom<=600)
+     navigation=['open_input','open_live','review_back','open_dataset','open_training','open_help','app_settings']
+     transport=['source_selector','timeline','playback_toggle','playback_previous','playback_next','playback_loop','playback_speed']
+     rects={}
+     for name in navigation+['tab_Objects']+transport:
+      left,top,right,bottom=c.rect(name,after=offset)
+      check('compact_'+name,0<=left<right<=800 and 0<=top<bottom<=600)
+      rects[name]=(left,top,right,bottom)
+     check('compact_navigation_is_ordered_without_overlap',all(rects[a][2]<=rects[b][0] for a,b in zip(navigation,navigation[1:])))
+     check('compact_source_has_its_own_row',rects['source_selector'][3]<=rects['timeline'][1])
+     c.click('open_help');c.rect('open_about',after=offset);x.key(window,'Escape')
+     offset=len(log_path.read_text());c.click('playback_toggle')
+     check('compact_playback_action_is_reachable',bool(c.rect('playback_paused',after=offset)))
+     c.click('playback_next');c.enter('playback_speed',12,ctrl_click=True)
+     offset=len(log_path.read_text());c.click('playback_loop')
+     check('compact_playback_options_are_reachable',bool(c.rect('playback_loop_off',after=offset)))
      x.resize(window,1600,960)
      c.chord('s');user=out/'settings/lidar_viewer/profiles/default.cfg'
      saved=user if user.exists() else private/'config/profiles/default.cfg'

@@ -52,6 +52,8 @@ def main():
                 x11.focus(window);x11.resize(window,1600,960)
                 controls=Controls(x11,window,log_path)
                 if index==0:
+                    left, _, right, _ = controls.rect('open_input')
+                    scaled_open_width = (right - left) * 1.1
                     controls.click('app_settings')
                     controls.enter('app_ui_scale',1.1,ctrl_click=True)
                     controls.click('app_settings')
@@ -60,11 +62,11 @@ def main():
                     left,_,right,_=controls.rect('open_input')
                     # Measure a real rendered control, independent of the
                     # theme palette or the settings window's widget positions.
-                    if abs((right-left)-132)<2:break
+                    if abs((right-left)-scaled_open_width)<3:break
                     if time.monotonic()>deadline:raise AssertionError(f'profile_{index}_uses_global_scale: Open width {right-left}')
                     time.sleep(.05)
                 picture=capture(x11,window,output/f'{index}-scale.png')
-                check(f'profile_{index}_uses_global_scale',abs((right-left)-132)<2)
+                check(f'profile_{index}_uses_global_scale',abs((right-left)-scaled_open_width)<3)
                 chord('s')
                 name='default' if index==0 else 'gangnam'
                 user=Path(env['XDG_CONFIG_HOME'])/'lidar_viewer/profiles'/f'{name}.cfg'

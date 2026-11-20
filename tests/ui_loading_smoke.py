@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import time
 import traceback
+from ui_controls import Controls
 from ui_gl_smoke import X11,capture,changed_pixels,settings_inventory
 
 
@@ -22,7 +23,7 @@ def main():
     private=output/'private';(private/'build').mkdir(parents=True);shutil.copytree(repo/'config',private/'config')
     (private/'config/profiles/rosbag.cfg').write_text('ground_removal_enabled=0\nclustering_enabled=0\nroi_enabled=0\nroi_count=0\nimu_level_enabled=0\n')
     viewer=private/'build/lidar_viewer';shutil.copy2(args.viewer.resolve(),viewer)
-    env=dict(os.environ,XDG_CONFIG_HOME=str(output/'isolated'),GSETTINGS_BACKEND='memory',NO_AT_BRIDGE='1')
+    env=dict(os.environ,XDG_CONFIG_HOME=str(output/'isolated'),GSETTINGS_BACKEND='memory',NO_AT_BRIDGE='1',LIDAR_VIEWER_UI_TRACE='1')
     before=settings_inventory(repo);process=x11=window=None;deadline=time.monotonic()+150
     result={'status':'started','checks':{},'output':str(output)};log_path=output/'viewer.log'
     def wait_for(predicate):
@@ -76,12 +77,16 @@ def main():
             capture(x11,window,output/'03_failed_open.png')
             choose(args.small_bag.resolve()/'metadata.yaml');wait_for(lambda:'Opened bag:' in text());time.sleep(.2)
             check('valid_bag_opens_after_cancel_and_error',process.poll() is None)
-            x11.click(window,410,837);playing=capture(x11,window,output/'04_playing.png')
+            controls = Controls(x11, window, log_path)
+            controls.click('playback_toggle')
+            controls.rect('playback_playing')
+            capture(x11,window,output/'04_playing.png')
             choose(args.bag.resolve()/'metadata.yaml');wait_for(lambda:text().count('Indexing ROS 2 bag')>=3)
             capture(x11,window,output/'05_switch_progress.png')
             x11.key(window,'Escape');wait_for(lambda:text().count('Opening canceled; current input preserved')>=2)
-            time.sleep(.3);resumed=capture(x11,window,output/'06_preserved_playback.png')
-            check('canceled_replacement_restores_previous_playback',changed_pixels(playing,resumed,(1235,20,1320,48))==0)
+            controls.rect('playback_playing',after=text().rfind('Opening canceled; current input preserved'))
+            capture(x11,window,output/'06_preserved_playback.png')
+            check('canceled_replacement_restores_previous_playback',True)
             check('canceled_replacement_does_not_replace_input',text().count('Opened bag:')==1)
             check('original_profiles_unchanged',before==settings_inventory(repo));result['status']='passed'
     except Exception as error:

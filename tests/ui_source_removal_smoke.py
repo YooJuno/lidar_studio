@@ -12,6 +12,7 @@ import tempfile
 import time
 import traceback
 from ui_gl_smoke import X11,capture,changed_pixels,settings_inventory
+from ui_controls import Controls
 from ui_playback_smoke import write_fixture
 
 
@@ -30,7 +31,7 @@ def main():
     originals={p.name:fingerprint(p) for p in [a,b,c]}
     config=out/'settings/lidar_viewer';config.mkdir(parents=True)
     (config/'data_folders.cfg').write_text('folder "'+str(bags)+'"\n');manifest=config/'hidden_recordings.cfg'
-    env=dict(os.environ,XDG_CONFIG_HOME=str(out/'settings'),LIDAR_VIEWER_CATALOG_TRACE='1',GSETTINGS_BACKEND='memory',NO_AT_BRIDGE='1')
+    env=dict(os.environ,XDG_CONFIG_HOME=str(out/'settings'),LIDAR_VIEWER_CATALOG_TRACE='1',LIDAR_VIEWER_UI_TRACE='1',GSETTINGS_BACKEND='memory',NO_AT_BRIDGE='1')
     before=settings_inventory(repo);result={'status':'started','checks':{},'output':str(out)}
     x11=X11();process=window=logfile=None;deadline=time.monotonic()+105;logpath=out/'viewer-1.log'
     def logs():return logpath.read_text(errors='replace') if logpath.exists() else ''
@@ -48,7 +49,7 @@ def main():
     def click_row(path,remove=False):
         wait(lambda:row(path) is not None);time.sleep(.25);r=row(path)
         x11.click(window,round(r[2 if remove else 0]),round(r[3 if remove else 1]));time.sleep(.25)
-    def menu():x11.click(window,1120,837);time.sleep(.3)
+    def menu():Controls(x11,window,logpath).click('source_selector');time.sleep(.2)
     def restore():
         wait(lambda:re.search(r'Restore removed UI: ([\d.-]+) ([\d.-]+)',logs()) is not None)
         time.sleep(.25);m=re.findall(r'Restore removed UI: ([\d.-]+) ([\d.-]+)',logs())[-1]
@@ -63,7 +64,7 @@ def main():
     try:
         start(1,[str(b),'--play','--2d'])
         wait(lambda:'Opened bag:' in logs());time.sleep(.3)
-        baseline=capture(x11,window,out/'01_playing.png');menu();click_row(a,True)
+        capture(x11,window,out/'01_playing.png');menu();click_row(a,True)
         wait(lambda:manifest.is_file() and str(a) in manifest.read_text())
         check('trash_does_not_open_the_recording','Indexing ROS 2 bag "'+str(a)+'"' not in logs())
         check('removal_keeps_original_files',fingerprint(a)==originals[a.name])
@@ -72,7 +73,8 @@ def main():
         menu();click_row(b,True);x11.key(window,'Escape');time.sleep(.2)
         active=capture(x11,window,out/'02_removed_active_keeps_playing.png');time.sleep(.35)
         later=capture(x11,window,out/'03_still_playing.png')
-        check('removing_loaded_bag_keeps_playback',changed_pixels(baseline,active,(1235,20,1310,48))==0 and changed_pixels(active,later,(390,180,1540,750))>80)
+        check('removing_loaded_bag_keeps_playback',changed_pixels(active,later,(390,180,1540,750))>80 and
+              bool(Controls(x11,window,logpath).rect('playback_playing',after=len(logs()))))
         menu();restore();check('restore_clears_exclusions','hidden ' not in manifest.read_text())
         count=logs().count('Opened bag:');click_row(b)
         check('restore_recovers_loaded_bag_selection',logs().count('Opened bag:')==count)

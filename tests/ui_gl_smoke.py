@@ -19,6 +19,8 @@ import traceback
 
 from PIL import Image, ImageChops
 
+from ui_controls import Controls
+
 
 class X11:
     def __init__(self):
@@ -242,7 +244,7 @@ def main():
         with (output / "viewer.log").open("wb") as log:
             process = subprocess.Popen(
                 [str(private_viewer), str(bag), "--topic", "/b2/points", "--sensor-height", "0.57"],
-                cwd=private, env=dict(os.environ,XDG_CONFIG_HOME=str(output/"isolated_config")),
+                cwd=private, env=dict(os.environ,XDG_CONFIG_HOME=str(output/"isolated_config"),LIDAR_VIEWER_UI_TRACE="1"),
                 stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             while not window:
                 if process.poll() is not None:
@@ -254,6 +256,7 @@ def main():
                     time.sleep(.1)
             x11.focus(window)
             x11.resize(window, 1600, 960)
+            controls = Controls(x11, window, output / 'viewer.log')
             while "Opened bag:" not in (output / "viewer.log").read_text(errors="replace"):
                 if process.poll() is not None or time.monotonic()>deadline: raise TimeoutError("Initial bag did not load")
                 time.sleep(.1)
@@ -291,8 +294,10 @@ def main():
                 if process.poll() is not None:
                     raise RuntimeError("Viewer exited after resizing")
                 result["checks"][f"resize_{width}x{height}"] = True
+            resize_log = len((output / 'viewer.log').read_text(errors='replace'))
             x11.resize(window, 1600, 960)
-            x11.click(window, 155 * ui_scale, 141 * ui_scale)
+            controls.rect('tab_Ground', after=resize_log)
+            controls.click('tab_Ground')
             shot("06_processing_1600")
             result["checks"]["settings_unchanged"] = before_settings == settings_inventory(repo)
             if not result["checks"]["settings_unchanged"]:

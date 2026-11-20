@@ -41,7 +41,7 @@ UI는 고정 버전의 [Dear ImGui](https://github.com/ocornut/imgui/tree/f5befd
 
 **공개 예제:** **Open… → Driving examples…**에서 센서와 길이를 선택한 뒤 **Download and open**을 누르세요. 로그인 없이 **Velodyne HDL-32E(32채널·360도)**, **Hesai XT32(32채널·360도)**, **Hesai AT128P(128채널·전방 120도)**의 연속 주행 30초·300프레임 또는 1분·600프레임을 받을 수 있습니다. 센서별 용량을 먼저 표시하며, 기본값은 Velodyne 30초·434 MB입니다. 기존 6프레임·12 MB 미리보기도 유지합니다. 진행률·ETA·취소·재시도를 제공하고 길이를 바꿔도 검증한 프레임은 재사용합니다. 센서별 별도 프로파일과 초기 장착 보정값을 사용합니다. 같은 창에서 저장된 프레임 수·용량을 확인하고 **Delete download**로 선택한 예제를 삭제할 수 있습니다. 해당 예제를 보고 있으면 재생부터 닫으며 다른 센서·길이와 내보낸 파일은 유지합니다. [예제·라이선스·KITTI 실행 가이드](examples.md).
 
-입력 경로를 생략하면 **빈 뷰어가 먼저 열립니다.** 상단 **Open... → Open file...**을 누르면 시스템 파일 탐색 창이 열립니다. bag 폴더 안의 `metadata.yaml` 또는 `.db3`·`.mcap` 파일을 선택하세요. 분할 파일을 골라도 같은 폴더의 기록 전체를 엽니다. 탐색 창을 취소해도 뷰어는 계속 열려 있습니다. bag을 열기 전에는 재생·프레임 이동·타임라인이 비활성화됩니다.
+입력 경로를 생략하면 **빈 뷰어가 먼저 열립니다.** 상단 **Open → Open file...**을 누르면 시스템 파일 탐색 창이 열립니다. bag 폴더 안의 `metadata.yaml` 또는 `.db3`·`.mcap` 파일을 선택하세요. 분할 파일을 골라도 같은 폴더의 기록 전체를 엽니다. 탐색 창을 취소해도 뷰어는 계속 열려 있습니다. 재생 컨트롤은 입력을 연 뒤 표시됩니다.
 
 ```bash
 source /opt/ros/jazzy/setup.bash
@@ -133,7 +133,7 @@ source /opt/ros/jazzy/setup.bash
 
 - Ubuntu에서 ROS 없이 사용하려면 `sudo apt install ./lidar_studio-*-standalone.deb`를 실행합니다. ROS가 필요한 경우 Jazzy 저장소를 설정하고 `-standalone`이 없는 `.deb` 파일을 설치합니다. 앱 메뉴의 **LiDAR Studio** 또는 `lidar_studio`로 실행합니다.
 - 저장소·실행 파일·배포 파일 이름은 `lidar_studio`입니다. Ubuntu 패키지 ID는 Debian 명명 규칙에 맞춘 `lidar-studio`이며, 이전 `lidar-viewer` 실행 명령도 지원합니다. 설정·모델 저장 위치와 desktop ID는 기존 값을 유지해 ROI와 설치한 모델, 독 아이콘 연결을 이어 씁니다.
-- Windows: ZIP을 풀고 `lidar_studio.exe`를 실행합니다. **Open... → Open file...**에서 `.bin`도 선택할 수 있습니다.
+- Windows: ZIP을 풀고 `lidar_studio.exe`를 실행합니다. **Open → Open file...**에서 `.bin`도 선택할 수 있습니다.
 - macOS: DMG의 `LiDAR Studio.app`을 Applications에 복사하거나 ZIP의 앱을 실행합니다.
 - 패키지 빌드는 `-DLIDAR_VIEWER_USER_SETTINGS=ON`을 사용해 사용자 설정을 Windows `%APPDATA%/LiDARViewer`, macOS `~/Library/Application Support/LiDARViewer`, Ubuntu `~/.config/lidar_viewer`에 저장합니다. 기본 설정은 배포 리소스에서 읽고 사용자 설정으로 덮어씁니다. 업데이트해도 사용자 ROI를 패키지 설정으로 덮어쓰지 않습니다. `XDG_CONFIG_HOME`도 지원합니다.
 - 소스 빌드는 기존처럼 프로젝트 `config/profiles`에 저장합니다. 사용자 경로를 쓰려면 위 CMake 옵션을 켭니다.
@@ -165,7 +165,7 @@ GitHub Actions의 **Build and release**는 PR·main push·수동 실행에서 �
 
 ## 수집한 ROS 2 bag 열기
 
-실행 중에는 상단 **Open... → Open file...** 또는 **Ctrl+O**로 시스템 파일 선택 창을 열 수 있습니다. 선택하면 해당 bag을 열고 첫 프레임에서 정지합니다. 취소하거나 열기에 실패하면 현재 점군을 유지하며, 재생 중이었다면 재생도 복원합니다. 로딩 카드에는 파일명·색인한 LiDAR 프레임/전체 수·IMU 표본 수·남은 시간(ETA)·선택 메시지의 스캔 진행률을 표시합니다. 전체 수를 아직 모르는 단계는 활동 표시줄로 구분합니다. **Cancel opening / Esc**로 취소할 수 있으며, 명령행에서 bag을 열어도 창이 먼저 표시됩니다. 단일 bag을 고르는 동작은 상위 폴더 전체를 등록하지 않습니다.
+실행 중에는 상단 **Open → Open file...** 또는 **Ctrl+O**로 시스템 파일 선택 창을 열 수 있습니다. 선택하면 해당 bag을 열고 첫 프레임에서 정지합니다. 취소하거나 열기에 실패하면 현재 점군을 유지하며, 재생 중이었다면 재생도 복원합니다. 로딩 카드에는 파일명·색인한 LiDAR 프레임/전체 수·IMU 표본 수·남은 시간(ETA)·선택 메시지의 스캔 진행률을 표시합니다. 전체 수를 아직 모르는 단계는 활동 표시줄로 구분합니다. **Cancel opening / Esc**로 취소할 수 있으며, 명령행에서 bag을 열어도 창이 먼저 표시됩니다. 단일 bag을 고르는 동작은 상위 폴더 전체를 등록하지 않습니다.
 
 ```bash
 git clone --recursive https://github.com/YooJuno/lidar_studio.git
@@ -178,15 +178,15 @@ source /opt/ros/jazzy/setup.bash
 
 ### 폴더를 등록해서 선택하기
 
-1. 상단 **Open... → Add recordings folder...**를 누릅니다.
+1. 상단 **Open → Add recordings folder...**를 누릅니다.
 2. 경로에 `~/shalom_ws/data/bags`를 입력하거나 폴더를 찾아 **Add this folder**를 누릅니다.
 3. 하단 데이터 목록에서 날짜를 선택하거나 이름을 검색한 뒤 bag을 고릅니다.
 
-각 행 오른쪽 휴지통은 **목록에서만 제거**합니다. 원본 파일과 현재 재생은 유지되며, 제외 상태는 재실행·폴더 재검색 후에도 유지됩니다. **Restore removed**로 복원하거나 **Open... → Open file...**로 해당 기록을 다시 열 수 있습니다. 실제 경로가 없는 항목은 `[Unavailable]`로 구분합니다. `Unknown date`는 파일명에서 날짜를 인식하지 못했다는 뜻입니다.
+각 행 오른쪽 휴지통은 **목록에서만 제거**합니다. 원본 파일과 현재 재생은 유지되며, 제외 상태는 재실행·폴더 재검색 후에도 유지됩니다. **Restore removed**로 복원하거나 **Open → Open file...**로 해당 기록을 다시 열 수 있습니다. 실제 경로가 없는 항목은 `[Unavailable]`로 구분합니다. `Unknown date`는 파일명에서 날짜를 인식하지 못했다는 뜻입니다.
 
 폴더는 하위 폴더까지 검색하며, 같은 bag의 분할 파일이나 중복 등록은 하나로 표시합니다. 날짜는 수집 파일명 기준이며, 날짜를 알 수 없는 이름은 `Unknown date`로 표시합니다. 등록할 때 현재 데이터는 유지하고, 다른 bag을 선택하면 해당 bag만 색인한 뒤 첫 프레임에서 정지합니다. 열기에 실패하면 이전 데이터를 유지합니다.
 
-등록 경로는 `~/.config/lidar_viewer/data_folders.cfg`에 저장합니다. `XDG_CONFIG_HOME`을 지정하면 해당 경로 아래에 저장합니다. 다음 실행 때 목록을 복원하지만 bag은 자동으로 열지 않습니다. **Open... → Open file...**을 누르면 등록 폴더에서 탐색을 시작합니다. 새로운 bag을 같은 폴더에 넣었다면 폴더를 다시 추가하거나 앱을 재실행하면 목록을 갱신합니다. `--inspect`만 지정한 창 없는 실행은 등록 폴더의 최신 bag을 확인합니다.
+등록 경로는 `~/.config/lidar_viewer/data_folders.cfg`에 저장합니다. `XDG_CONFIG_HOME`을 지정하면 해당 경로 아래에 저장합니다. 다음 실행 때 목록을 복원하지만 bag은 자동으로 열지 않습니다. **Open → Open file...**을 누르면 등록 폴더에서 탐색을 시작합니다. 새로운 bag을 같은 폴더에 넣었다면 폴더를 다시 추가하거나 앱을 재실행하면 목록을 갱신합니다. `--inspect`만 지정한 창 없는 실행은 등록 폴더의 최신 bag을 확인합니다.
 
 폴더를 명령행에서 일회성으로 열 수도 있습니다.
 
@@ -319,7 +319,7 @@ NPY는 [NumPy 표준 형식](https://numpy.org/doc/2.0/reference/generated/numpy
 
 ## 데이터셋 열람과 학습
 
-상단 **Point clouds**를 누르면 같은 앱 안에서 포인트 확인 화면으로 전환합니다. **Viewer** 버튼으로 기존 재생 상태와 시점을 유지한 채 돌아갑니다. 같은 입력란에 **파일 또는 폴더 경로**를 넣고 Enter/Open을 누릅니다. 파일이면 한 샘플, 폴더이면 내부 샘플 목록을 표시합니다. ROI 내보내기 폴더·그 안의 points 폴더·일반 NPY/PCD/XYZI BIN 폴더·coord.npy 샘플 폴더를 지원합니다. **Open points** 또는 Ctrl+O로 경로를 다시 선택합니다. **Browse…**의 **Choose folder… / Choose file…**에서 탐색기로 폴더나 파일을 고릅니다. **Data**의 Previous/Next, 목록, **←/→**로 하나씩 확인합니다. 폴더의 파일·샘플 폴더는 숫자 순서로 정렬하며, 프레임을 넘겨도 시점과 줌을 유지합니다. **Fit [F]**를 눌렀을 때만 현재 샘플에 화면을 맞춥니다. 경로를 다시 입력해 열면 외부에서 수정한 라벨도 다시 읽습니다.
+상단 **Point clouds**를 누르면 같은 앱 안에서 포인트 확인 화면으로 전환합니다. **Viewer** 버튼으로 기존 재생 상태와 시점을 유지한 채 돌아갑니다. 같은 입력란에 **파일 또는 폴더 경로**를 넣고 Enter/Open을 누릅니다. 파일이면 한 샘플, 폴더이면 내부 샘플 목록을 표시합니다. ROI 내보내기 폴더·그 안의 points 폴더·일반 NPY/PCD/XYZI BIN 폴더·coord.npy 샘플 폴더를 지원합니다. Point clouds 화면에서 **Open** 또는 Ctrl+O로 경로를 다시 선택합니다. **Browse…**의 **Choose folder… / Choose file…**에서 탐색기로 폴더나 파일을 고릅니다. **Data**의 Previous/Next, 목록, **←/→**로 하나씩 확인합니다. 폴더의 파일·샘플 폴더는 숫자 순서로 정렬하며, 프레임을 넘겨도 시점과 줌을 유지합니다. **Fit [F]**를 눌렀을 때만 현재 샘플에 화면을 맞춥니다. 경로를 다시 입력해 열면 외부에서 수정한 라벨도 다시 읽습니다.
 
 **샘플 정리:** 이전/다음 옆 휴지통 버튼 또는 **Delete**로 현재 샘플을 삭제합니다. 목록 항목을 우클릭해 해당 샘플만 삭제할 수도 있습니다. 삭제 후 다음 샘플을 표시하며 시점은 유지합니다. 연결된 점군 형식·전용 라벨·메타데이터도 함께 정리하고 데이터셋 목록을 갱신합니다. **Ctrl+Z** 또는 되돌리기 아이콘으로 최근 삭제를 복구합니다(현재 데이터에서 최대 32건). 파일은 데이터 폴더의 `.lidar_studio_trash`에 이동하며 열람·학습에서 제외합니다. 원본 bag은 수정하지 않습니다.
 

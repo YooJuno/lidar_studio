@@ -18,11 +18,11 @@ inline ImVec4 WarningColor() {return Tone({1,.74f,.4f,1},{.58f,.32f,.04f,1});}
 inline ImVec4 SuccessColor() {return Tone({.42f,.85f,.65f,1},{.08f,.44f,.28f,1});}
 inline ImVec4 InfoColor() {return Tone({.44f,.76f,1,1},{.08f,.36f,.59f,1});}
 inline ImVec4 SelectionColor() {return Tone({.13f,.32f,.40f,1},{.80f,.89f,.95f,1});}
-inline ImVec4 OverlayBackground() {return Tone({.047f,.067f,.09f,.9f},{.97f,.98f,1,.94f});}
+inline ImVec4 OverlayBackground() {return Tone({.08f,.09f,.11f,.96f},{.97f,.98f,1,.96f});}
 inline ImVec4 DetectionLabelBackground() {return Tone({.035f,.05f,.07f,1},{1,1,1,1});}
 inline ImVec4 DetectionLabelText() {return Tone({.96f,.98f,1,1},{.08f,.12f,.17f,1});}
-inline ImVec4 AppBackground() {return Tone({.045f,.058f,.079f,1},{.93f,.95f,.97f,1});}
-inline ImVec4 CanvasBackground() {return Tone({.035f,.045f,.063f,1},{1,1,1,1});}
+inline ImVec4 AppBackground() {return Tone({.061f,.066f,.079f,1},{.94f,.95f,.97f,1});}
+inline ImVec4 CanvasBackground() {return Tone({.042f,.047f,.059f,1},{1,1,1,1});}
 inline ImVec4 GridColor() {return Tone({.42f,.48f,.56f,.38f},{.48f,.54f,.62f,.22f});}
 inline ImVec4 PlainPointColor() {return Tone({.82f,.88f,.94f,1},{.22f,.27f,.34f,1});}
 inline ImVec4 BackgroundPointColor() {return Tone({.68f,.72f,.78f,1},{.52f,.56f,.62f,1});}
@@ -47,11 +47,12 @@ inline void ApplyThemeColors(ImGuiStyle & style)
     style.Colors[ImGuiCol_TextDisabled]={.38f,.43f,.50f,1};
     style.Colors[ImGuiCol_WindowBg]={.98f,.985f,.995f,1};
     style.Colors[ImGuiCol_PopupBg]={1,1,1,.99f};
-    style.Colors[ImGuiCol_Border]={.76f,.81f,.87f,1};
-    style.Colors[ImGuiCol_FrameBg]={.90f,.93f,.96f,1};
+    style.Colors[ImGuiCol_Border]={.82f,.85f,.89f,1};
+    style.Colors[ImGuiCol_Separator]=style.Colors[ImGuiCol_Border];
+    style.Colors[ImGuiCol_FrameBg]={.92f,.94f,.97f,1};
     style.Colors[ImGuiCol_FrameBgHovered]={.83f,.89f,.94f,1};
     style.Colors[ImGuiCol_FrameBgActive]={.75f,.85f,.93f,1};
-    style.Colors[ImGuiCol_Button]={.86f,.91f,.95f,1};
+    style.Colors[ImGuiCol_Button]={.90f,.92f,.95f,1};
     style.Colors[ImGuiCol_ButtonHovered]={.75f,.85f,.92f,1};
     style.Colors[ImGuiCol_ButtonActive]={.64f,.77f,.87f,1};
     style.Colors[ImGuiCol_CheckMark]={.05f,.37f,.56f,1};
@@ -64,28 +65,32 @@ inline void ApplyThemeColors(ImGuiStyle & style)
     style.Colors[ImGuiCol_TabHovered]={.74f,.85f,.93f,1};
     style.Colors[ImGuiCol_TabSelected]={.80f,.89f,.95f,1};
     style.Colors[ImGuiCol_TabSelectedOverline]={.08f,.38f,.57f,1};
+    style.Colors[ImGuiCol_NavCursor]=style.Colors[ImGuiCol_CheckMark];
   } else {
     ImGui::StyleColorsDark(&style);
     style.Colors[ImGuiCol_Text]={.90f,.93f,.97f,1};
-    style.Colors[ImGuiCol_TextDisabled]={.58f,.65f,.74f,1};
-    style.Colors[ImGuiCol_WindowBg]={.075f,.092f,.12f,1};
-    style.Colors[ImGuiCol_PopupBg]={.09f,.11f,.145f,1};
-    style.Colors[ImGuiCol_Border]={.16f,.20f,.26f,1};
-    style.Colors[ImGuiCol_FrameBg]={.12f,.15f,.195f,1};
-    style.Colors[ImGuiCol_FrameBgHovered]={.17f,.22f,.285f,1};
-    style.Colors[ImGuiCol_FrameBgActive]={.19f,.27f,.35f,1};
-    style.Colors[ImGuiCol_Button]={.13f,.18f,.24f,1};
-    style.Colors[ImGuiCol_ButtonHovered]={.19f,.29f,.39f,1};
-    style.Colors[ImGuiCol_ButtonActive]={.23f,.37f,.49f,1};
+    style.Colors[ImGuiCol_TextDisabled]={.62f,.66f,.73f,1};
+    style.Colors[ImGuiCol_WindowBg]={.086f,.094f,.114f,1};
+    style.Colors[ImGuiCol_PopupBg]={.107f,.117f,.142f,1};
+    style.Colors[ImGuiCol_ModalWindowDimBg]={.025f,.028f,.036f,.55f};
+    style.Colors[ImGuiCol_Border]={.174f,.188f,.222f,1};
+    style.Colors[ImGuiCol_Separator]=style.Colors[ImGuiCol_Border];
+    style.Colors[ImGuiCol_FrameBg]={.123f,.137f,.165f,1};
+    style.Colors[ImGuiCol_FrameBgHovered]={.169f,.20f,.245f,1};
+    style.Colors[ImGuiCol_FrameBgActive]={.182f,.252f,.321f,1};
+    style.Colors[ImGuiCol_Button]={.139f,.154f,.184f,1};
+    style.Colors[ImGuiCol_ButtonHovered]={.19f,.23f,.288f,1};
+    style.Colors[ImGuiCol_ButtonActive]={.21f,.31f,.40f,1};
     style.Colors[ImGuiCol_CheckMark]={.31f,.77f,.91f,1};
     style.Colors[ImGuiCol_SliderGrab]={.31f,.77f,.91f,1};
     style.Colors[ImGuiCol_SliderGrabActive]={.49f,.88f,1,1};
-    style.Colors[ImGuiCol_Header]={.12f,.16f,.21f,1};
-    style.Colors[ImGuiCol_HeaderHovered]={.18f,.35f,.46f,1};
-    style.Colors[ImGuiCol_Tab]={.10f,.135f,.18f,1};
-    style.Colors[ImGuiCol_TabHovered]={.19f,.31f,.41f,1};
+    style.Colors[ImGuiCol_Header]={.144f,.161f,.19f,1};
+    style.Colors[ImGuiCol_HeaderHovered]={.19f,.26f,.334f,1};
+    style.Colors[ImGuiCol_Tab]={.105f,.116f,.14f,1};
+    style.Colors[ImGuiCol_TabHovered]={.167f,.228f,.29f,1};
     style.Colors[ImGuiCol_TabSelected]={.13f,.32f,.40f,1};
     style.Colors[ImGuiCol_TabSelectedOverline]={.31f,.77f,.91f,1};
+    style.Colors[ImGuiCol_NavCursor]=style.Colors[ImGuiCol_CheckMark];
   }
 }
 }  // namespace lidar_viewer::ui

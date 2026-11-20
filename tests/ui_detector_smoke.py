@@ -67,14 +67,15 @@ while True:
         with log_path.open('wb') as log:
             process=subprocess.Popen([str(viewer),str(bag),'--2d','--play','--detect'],env=env,stdout=log,stderr=subprocess.STDOUT)
             wait(lambda:x11.viewer_window() is not None);window=x11.viewer_window();x11.focus(window);x11.resize(window,1600,960)
+            controls=Controls(x11,window,log_path)
             icon=subprocess.check_output(['xprop','-id',str(window),'_NET_WM_ICON'],text=True,env=dict(env,LC_ALL='C'))
             check('native_window_has_multi_resolution_app_icon','32 x 32' in icon and '128 x 128' in icon)
             wait(lambda:len(rows())>=5);initial=rows()[-1]
-            for point in [(280,140),(50,140),(155,140),(205,140),(280,140)]:x11.click(window,*point)
+            for tab in ['Objects','View','Ground','ROI','Objects']:controls.click('tab_'+tab)
             wait(lambda:rows()[-1][0]>initial[0]+3)
             check('tabs_do_not_pause_detected_playback',True)
             capture(x11,window,out/'01_playing_objects.png')
-            x11.click(window,410,837);time.sleep(.5);paused=rows();time.sleep(.5)
+            controls.click('playback_toggle');time.sleep(.5);paused=rows();time.sleep(.5)
             check('explicit_pause_holds_frame_and_reuses_result',rows()==paused)
             time.sleep(1.1);sample=averages()[-1]
             check('separate_stage_averages_exclude_disabled_ground',sample[0]==0 and sample[1]==-1 and sample[2]>0)
@@ -84,7 +85,6 @@ while True:
             ticks=[float(t)for t in re.findall(r'Status sample ([-.\d]+)',log_path.read_text())]
             check('runtime_labels_refresh_at_most_once_per_second',all(b-a>=.99 for a,b in zip(ticks,ticks[1:])))
             before_score=capture(x11,window,out/'score_before.png')
-            controls=Controls(x11,window,log_path)
             controls.enter('object_score',.95);controls.chord('s')
             profile=out/'settings/lidar_viewer/profiles/rosbag.cfg'
             def score():return float(re.search(r'^detection_min_score=(.*)$',(profile if profile.exists() else private/'config/profiles/rosbag.cfg').read_text(),re.M)[1])
@@ -122,13 +122,13 @@ while True:
             controls.click('object_enable');time.sleep(.2);controls.click('object_enable');time.sleep(.3)
             check('disable_enable_reuses_model_and_current_result',rows()==paused and len((private/'python/starts.txt').read_text().splitlines())==1)
             time.sleep(.2);settled=len(rows());x11.key(window,'r')
-            controls=Controls(x11,window,log_path);controls.drag((800,300),(1100,570));controls.click('roi_apply');time.sleep(.4)
+            controls.drag((800,300),(1100,570));controls.click('roi_apply');time.sleep(.4)
             check('roi_edit_reuses_full_scene_neural_result',len(rows())==settled)
-            x11.click(window,410,837);wait(lambda:len(rows())>settled+3)
+            controls.click('playback_toggle');wait(lambda:len(rows())>settled+3)
             check('resume_continues_current_revision_detection',True)
             capture(x11,window,out/'02_resumed_roi.png')
             # A different neural model requires a fresh session, then keeps it.
-            x11.click(window,410,837);time.sleep(.4);x11.click(window,280,140)
+            controls.click('playback_toggle');time.sleep(.4);controls.click('tab_Objects')
             old_count=len(rows());method(3);wait(lambda:len(rows())>old_count)
             check('quality_model_starts_its_own_worker',len((private/'python/starts.txt').read_text().splitlines())==2)
             capture(x11,window,out/'03_quality_model.png')

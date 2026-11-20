@@ -561,7 +561,6 @@ struct ViewerState
   lidar_viewer::ProcessingAverage ground_average,object_average,clustering_average;
   double status_ground_average_ms{-1},status_object_average_ms{-1};
   double status_sample_time{0},status_processing_ms{0},status_roi_ms{0},status_fps{0};
-  std::string status_source;
   std::size_t status_points{0};
   std::uint64_t status_live_display{0},status_live_received{0};
   std::size_t status_ground{0};
@@ -2150,7 +2149,7 @@ void ClearDeletedExampleInput(ViewerState & state,const fs::path & directory)
     state.ground_average.Reset();state.object_average.Reset();state.clustering_average.Reset();
     state.clusters.clear();state.detections.clear();state.full_detections.clear();state.detector_input.reset();++state.detector_revision;
     ResetTracking(state);RebuildClusterBoxes(state);state.roi_renderer.vertices.clear();state.roi_renderer.dirty=true;
-    state.status_source.clear();state.status_points=0;state.status_ground=0;
+    state.status_points=0;state.status_ground=0;
     state.status_ground_average_ms=-1;state.status_object_average_ms=-1;state.status_processing_ms=0;state.status_roi_ms=0;
     state.processing_ms=0;state.roi_ms=0;state.input_fps_estimate.reset();state.current_bag_source.reset();
     std::cout<<"Example unloaded | "<<directory.filename().u8string()<<std::endl;
@@ -3465,20 +3464,19 @@ void ConfigureInterface(GLFWwindow * window, ViewerState & state)
   }
 }
 
-void BeginPanel(const char * name, const lidar_viewer::UiRect & rect, bool scroll = true)
+void BeginPanel(const char * name, const lidar_viewer::UiRect & rect, bool scroll = true, ImGuiWindowFlags flags = 0)
 {
   ImGui::SetNextWindowPos({rect.x, rect.y});
   ImGui::SetNextWindowSize({rect.w, rect.h});
   ImGui::Begin(name, nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
     ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoCollapse |
-    (scroll ? 0 : ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse));
+    (scroll ? 0 : ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse) | flags);
 }
 
 void SectionTitle(const char * title)
 {
   ImGui::Spacing();
-  ImGui::TextColored(ui::InfoColor(), "%s", title);
-  ImGui::Separator();
+  ImGui::TextUnformatted(title);
 }
 
 void Metric(const char * label, const std::string & value)
@@ -3520,21 +3518,29 @@ void BuildSourceSelector(ViewerState & state, float width)
   const bool dataset=!state.frames.empty() && state.frames.front().dataset_sample!=nullptr;
   const auto preview = dataset ? std::string("Dataset | ")+std::to_string(state.frames.size())+" samples | "+
       (state.current_bag_source ? state.bag_sources[*state.current_bag_source].path.filename().u8string() : (group ? group->display_name : "")) :
-    state.current_bag_source ? BagLabel(state,state.bag_sources[*state.current_bag_source]) :
-    (group ? group->display_name : state.live_mode ? "Browse recordings" : "No input loaded");
+    state.current_bag_source ? state.bag_sources[*state.current_bag_source].display_name :
+    (group ? group->display_name : "Browse recordings");
+  const char * title = preview.c_str();
+  if (state.current_bag_source) {
+    for (const auto & example : lidar_viewer::DrivingExamples()) {
+      if (state.bag_sources[*state.current_bag_source].path.filename() == example.id) {
+        title = example.title;
+        break;
+      }
+    }
+  }
   ImGui::SetNextItemWidth(width);
   const float popup_width = std::min(720.f * state.ui_layout.scale, ImGui::GetIO().DisplaySize.x - 32.f);
   ImGui::SetNextWindowSizeConstraints({popup_width, 0}, {popup_width, 600.f * state.ui_layout.scale});
   ImGui::BeginDisabled((state.example_dataset && state.example_dataset->Progress().Active()) || state.loading_bag_source.has_value() || state.folder_scan_future.valid() ||
     state.bag_picker.Active() || state.live.Active() || (!group && state.bag_sources.empty() && state.hidden_sources.empty()));
   std::optional<fs::path> remove_source;
-  const bool sources_open = ImGui::BeginCombo("##Source", preview.c_str(), ImGuiComboFlags_HeightLarge);
+  const bool sources_open = ImGui::BeginCombo("##Source", title, ImGuiComboFlags_HeightLarge);
   if (!sources_open) TraceUi("source_selector");
   if (sources_open) {
     if (ImGui::IsWindowAppearing()) state.check_source_availability=true;
     if (!state.bag_sources.empty()) {
-      ImGui::TextUnformatted("Data sources");
-      ImGui::TextDisabled("%zu sources  |  Dates from recording names", state.bag_sources.size());
+      ImGui::TextUnformatted("Recordings");
       std::vector<std::string> dates;
       for (const auto & source : state.bag_sources) {
         const auto date = source.recording_date.empty() ? "Unknown date" : source.recording_date;
@@ -3549,7 +3555,8 @@ void BuildSourceSelector(ViewerState & state, float width)
       }
       ImGui::SameLine();
       ImGui::SetNextItemWidth(-1);
-      ImGui::InputTextWithHint("##BagSearch", "Find bag name...", state.bag_search.data(), state.bag_search.size());
+      ImGui::InputTextWithHint("##BagSearch", "Search recordings", state.bag_search.data(), state.bag_search.size());
+      TraceUi("bag_search");
       ImGui::Separator();
       std::string needle = state.bag_search.data();
       auto lower = [](unsigned char c) { return static_cast<char>(std::tolower(c)); };
@@ -3609,7 +3616,7 @@ void BuildSourceSelector(ViewerState & state, float width)
         }
         ImGui::EndTable();
       }
-      if (!shown) ImGui::TextDisabled("No bags match this date or name.");
+      if (!shown) ImGui::TextDisabled("No matching recordings.");
     }
     if (!state.current_bag_source && !state.frames.empty() && state.frames.front().format != InputFormat::Ros2Bag &&
         state.frames.front().format != InputFormat::LidarPcap) {
@@ -3625,8 +3632,8 @@ void BuildSourceSelector(ViewerState & state, float width)
         }
       }
     }
-    ImGui::Separator();
     if (!state.hidden_sources.empty()) {
+      ImGui::Separator();
       if (ImGui::SmallButton(("Restore removed ("+std::to_string(state.hidden_sources.size())+")").c_str())) {
         try {RestoreBagSources(state);state.ui_error.clear();}
         catch (const std::exception & error) {state.ui_error=error.what();}
@@ -3637,7 +3644,6 @@ void BuildSourceSelector(ViewerState & state, float width)
       }
       Tip("Restore recordings removed from this list. You can also open a removed recording explicitly with Open... > Open file... .");
     }
-    ImGui::TextDisabled("Open...: load a file or add a folder of recordings.");
     ImGui::EndCombo();
   }
   ImGui::EndDisabled();
@@ -3717,7 +3723,9 @@ void BuildFolderPicker(ViewerState & state)
   if (!state.folder_error.empty()) ImGui::TextColored(ui::ErrorColor(), "%s", state.folder_error.c_str());
   if (scanning) ImGui::TextUnformatted("Searching for recordings...");
   ImGui::BeginDisabled(scanning);
-  if (ImGui::Button("Add this folder")) {
+  const bool add_folder = ImGui::Button("Add this folder");
+  TraceUi("folder_add");
+  if (add_folder) {
     try {
       const auto folder = fs::canonical(ExpandFolderPath(state.folder_path_input.data()));
       if (!fs::is_directory(folder)) throw std::runtime_error("Choose an existing directory");
@@ -3886,7 +3894,8 @@ void BuildLiveTransport(ViewerState & state, bool input_busy)
   ImGui::TextColored(color, "%s", status);
   if (!stats.error.empty() && state.live_has_frame) Tip(stats.error.c_str());
   ImGui::SameLine();
-  ImGui::TextDisabled("%s", state.live_source.c_str());
+  ImGui::TextDisabled("%s%s", !state.live_using_ros && stats.sensor_model != LidarModel::Auto ? "Ethernet | " : "",
+    state.live_source.c_str());
   Tip(state.live_route.c_str());
 
   const bool show_live_controls = stats.connected || stats.record_busy;
@@ -4839,6 +4848,250 @@ void BuildExampleDownload(ViewerState & state,float scale)
   ImGui::End();
 }
 
+void BeginChromeStrip(const char * name, const lidar_viewer::UiRect & rect, bool rule_above = false)
+{
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.f);
+  BeginPanel(name, rect, false);
+  ImGui::PopStyleVar(2);
+  const float y = rule_above ? rect.y : rect.y + rect.h - 1.f;
+  ImGui::GetWindowDrawList()->AddLine({rect.x, y}, {rect.x + rect.w, y}, ImGui::GetColorU32(ImGuiCol_Border));
+}
+
+void BuildViewerHeader(ViewerState & state, ViewerState & training_owner, bool dataset_input, bool example_busy)
+{
+  using lidar_viewer::UiIcon;
+  const auto & header = state.ui_layout.header;
+  const float scale = state.ui_layout.scale;
+  const float gap = 8.f * scale;
+  const auto action_width = [scale](const char * label) {return ImGui::CalcTextSize(label).x + 40.f * scale;};
+  const auto action = [&](const char * id, UiIcon icon, const char * label, bool selected = false, bool quiet = false) {
+    if (selected || quiet) ImGui::PushStyleColor(ImGuiCol_Button, selected ? ui::SelectionColor() : ImVec4{0,0,0,0});
+    const bool clicked = lidar_viewer::ActionButton(id, icon, label, {action_width(label), 0}, scale);
+    if (selected || quiet) ImGui::PopStyleColor();
+    return clicked;
+  };
+  BeginChromeStrip("Header", header);
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {gap, gap});
+  ImGui::SetCursorPosY((header.h - ImGui::GetFrameHeight()) * .5f);
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted("LiDAR Studio");
+  ImGui::SameLine(0, 20.f * scale);
+
+  ImGui::BeginDisabled(example_busy || state.dataset_edit_future.valid() || state.live.Active() ||
+    state.loading_bag_source || state.folder_scan_future.valid() || state.bag_picker.Active() || state.dataset_picker.Active());
+  if (action("##OpenInput", UiIcon::Folder, "Open")) {
+    if (state.review_window) state.open_dataset_review = true;
+    else ImGui::OpenPopup("Open data");
+  }
+  TraceUi("open_input");
+  ImGui::EndDisabled();
+  Tip(state.review_window ? "Open a point cloud file or folder. Ctrl+O." : "Open a recording or add a folder of recordings. Ctrl+O opens the file picker.");
+  if (ImGui::BeginPopup("Open data")) {
+    if (ImGui::MenuItem("Open file...", "Ctrl+O")) StartBagPicker(state);
+    TraceUi("open_input_file");
+    if (ImGui::MenuItem("Add recordings folder...")) state.open_folder_picker = true;
+    TraceUi("open_input_folder");
+    Tip("Add the recordings from a folder and its subfolders to the playback source list.");
+    ImGui::Separator();
+    if (ImGui::MenuItem("Driving examples...", nullptr, false, !example_busy && !state.live.Active())) state.example_panel = true;
+    TraceUi("open_example");
+    ImGui::EndPopup();
+  }
+  ImGui::SameLine();
+  ImGui::BeginDisabled(example_busy || state.review_window || state.loading_bag_source || state.folder_scan_future.valid() || state.bag_picker.Active());
+  if (action("##Live", UiIcon::Live, "Live", state.live.Active())) state.open_live_dialog = true;
+  TraceUi("open_live");
+  ImGui::EndDisabled();
+  Tip("Open live sensor settings.");
+
+  ImGui::SameLine(0, 2.f * gap);
+  ImGui::BeginDisabled(state.review_window && !state.studio_parent);
+  if (action("##ViewerWorkspace", UiIcon::Cloud, "Viewer", !state.review_window, true) && state.studio_parent)
+    state.studio_parent->review_active = false;
+  TraceUi("review_back");Tip("Recordings and live data. Return with playback and camera preserved.");
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (action("##PointsWorkspace", UiIcon::Eye, "Point clouds", state.review_window, true) && !state.review_window)
+    state.open_point_review = true;
+  TraceUi("open_dataset");Tip("Browse point cloud files and labels in the same window.");
+  ImGui::SameLine();
+  if (action("##Training", UiIcon::Play, "Train", training_owner.open_training, true))
+    training_owner.open_training = true;
+  TraceUi("open_training");Tip("Configure and run model training.");
+
+  const float help_width = ImGui::CalcTextSize("Help").x + 2.f * ImGui::GetStyle().FramePadding.x;
+  ImGui::SameLine(header.w - ImGui::GetStyle().WindowPadding.x - action_width("Settings") - help_width - gap);
+  ImGui::PushStyleColor(ImGuiCol_Button, {0,0,0,0});
+  if (ImGui::Button("Help", {help_width, 0})) ImGui::OpenPopup("Help menu");
+  TraceUi("open_help");
+  ImGui::PopStyleColor();
+  if (ImGui::BeginPopup("Help menu")) {
+    if (ImGui::BeginMenu("Keyboard & mouse")) {
+      if (ImGui::BeginTable("##Shortcuts", 2, ImGuiTableFlags_SizingFixedFit)) {
+        const auto shortcut = [](const char * key, const char * description) {
+          ImGui::TableNextRow();
+          ImGui::TableSetColumnIndex(0);
+          ImGui::TextDisabled("%s", key);
+          ImGui::TableSetColumnIndex(1);
+          ImGui::TextUnformatted(description);
+        };
+        shortcut("Ctrl+O", dataset_input ? "Open point file or folder" : "Open file");
+        shortcut("Space", state.live_mode ? "Freeze or resume" : "Play or pause");
+        if (!state.live_mode) shortcut("Left / Right", dataset_input ? "Previous / next sample" : "Previous / next frame");
+        if (dataset_input) {
+          shortcut("Delete", "Delete sample");
+          shortcut("Ctrl+Z", "Restore sample");
+          shortcut("Escape", "Return to viewer");
+        } else {
+          shortcut("Ctrl+S", "Save profile");
+          shortcut("Ctrl+E", "Export ROI points");
+          shortcut("R", "Draw ROI in 2D");
+          shortcut("Ctrl+Z / Y", "Undo / redo ROI");
+          shortcut("Ctrl+D", "Duplicate selected ROI");
+          shortcut("Delete", "Delete selected ROI");
+          shortcut("Escape", "Cancel tool or close viewer");
+          shortcut("C", "Cycle point colors");
+          shortcut("[ / ]", "Change point size");
+        }
+        shortcut("F", "Fit current points");
+        shortcut("Q / E", "Rotate 2D view");
+        shortcut("Left drag", "Orbit in 3D, pan in 2D");
+        shortcut("Right drag", "Pan in 3D, rotate in 2D");
+        shortcut("Wheel", "Zoom");
+        ImGui::EndTable();
+      }
+      ImGui::EndMenu();
+    }
+    if (ImGui::MenuItem("About LiDAR Studio")) state.open_about = true;
+    TraceUi("open_about");
+    ImGui::EndPopup();
+  }
+  ImGui::SameLine();
+  if (action("##ApplicationSettings", UiIcon::Settings, "Settings", state.open_app_settings, true))
+    state.open_app_settings = !state.open_app_settings;
+  TraceUi("app_settings");
+  ImGui::PopStyleVar();
+  ImGui::End();
+}
+
+void BuildPlaybackTransport(ViewerState & state, const ViewerState::FileGroup * group)
+{
+  const float scale = state.ui_layout.scale;
+  if (!group) {
+    if (!state.review_window && (!state.bag_sources.empty() || !state.hidden_sources.empty())) {
+      ImGui::SetCursorPosY((state.ui_layout.transport.h - ImGui::GetFrameHeight()) * .5f);
+      BuildSourceSelector(state, ImGui::GetContentRegionAvail().x);
+    }
+    return;
+  }
+
+  const auto first_index = group->first_index;
+  const auto frame_count = group->last_index - first_index + 1;
+  const auto & first = state.frames[first_index];
+  const bool recorded = first.format == InputFormat::Ros2Bag || first.format == InputFormat::LidarPcap;
+  const auto seconds = [&](std::size_t index) {
+    return recorded ? static_cast<double>((static_cast<long double>(state.frames[index].bag_timestamp_ns) -
+        first.bag_timestamp_ns) * 1e-9L) :
+      static_cast<double>(index - first_index) / state.input_fps_estimate.value_or(10.);
+  };
+  const auto format_time = [](double value) {
+    value = std::max(0., value);
+    char label[48];
+    std::snprintf(label, sizeof(label), "%02lld:%04.1f", static_cast<long long>(value / 60), std::fmod(value, 60.));
+    return std::string(label);
+  };
+  const std::string duration = format_time(seconds(group->last_index));
+  const std::string time = format_time(seconds(state.current_index)) + " / " + duration;
+  const float time_width = ImGui::CalcTextSize(duration.c_str()).x * 2 + ImGui::CalcTextSize(" / ").x;
+  const float time_x = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - time_width;
+  const float source_width = std::max(1.f, ImGui::GetContentRegionAvail().x - time_width - 12.f * scale);
+  if (!state.review_window) BuildSourceSelector(state, source_width);
+  else {
+    ImGui::AlignTextToFramePadding();
+    const auto cursor = ImGui::GetCursorScreenPos();
+    ImGui::PushClipRect(cursor, {cursor.x + source_width, cursor.y + ImGui::GetFrameHeight()}, true);
+    ImGui::TextUnformatted(state.frames[state.current_index].label.c_str());
+    ImGui::PopClipRect();
+    Tip(state.frames[state.current_index].label.c_str());
+  }
+  ImGui::SameLine(time_x);
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextDisabled("%s", time.c_str());
+  Tip(recorded ? "Position in recorded time" : "Estimated time at the input scan rate");
+
+  if (!state.timeline_dragging) state.seek_draft = static_cast<int>(state.current_index - first_index);
+  const bool multiple = frame_count > 1;
+  ImGui::BeginDisabled(state.dataset_edit_future.valid() || state.loading_bag_source.has_value());
+  ImGui::BeginDisabled(!multiple);
+  ImGui::SetNextItemWidth(-1);
+  double seek_position = state.seek_draft;
+  const double beginning = 0., end = static_cast<double>(frame_count - 1);
+  if (ImGui::SliderScalar("##Timeline", ImGuiDataType_Double, &seek_position, &beginning, &end,
+      "", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_NoInput)) {
+    state.seek_draft = static_cast<int>(std::lround(seek_position));
+  }
+  TraceUi("timeline");
+  Tip("Drag to seek. Left / Right step a frame.");
+  if (ImGui::IsItemActivated()) {
+    state.timeline_dragging = true;
+    state.requested_frame.reset();
+  }
+  if (ImGui::IsItemDeactivated()) {
+    if (ImGui::IsItemDeactivatedAfterEdit())
+      TryLoadFrame(state, first_index + static_cast<std::size_t>(state.seek_draft));
+    state.timeline_dragging = false;
+    state.last_frame_advance_time = glfwGetTime();
+  }
+  ImGui::EndDisabled();
+
+  using lidar_viewer::UiIcon;
+  const bool playing = state.is_playing;
+  ImGui::PushStyleColor(ImGuiCol_Button, ui::SelectionColor());
+  if (lidar_viewer::ActionButton("##PlayPause", playing ? UiIcon::Pause : UiIcon::Play,
+      playing ? "Pause" : "Play", {88.f * scale, 0}, scale)) TogglePlayback(state);
+  ImGui::PopStyleColor();
+  TraceUi("playback_toggle");
+  TraceUi(playing ? "playback_playing" : "playback_paused");
+  Tip("Play or pause [Space]");
+
+  ImGui::BeginDisabled(!multiple);
+  ImGui::SameLine();
+  if (lidar_viewer::ActionButton("##Previous", UiIcon::Previous, nullptr, {30.f * scale, 0}, scale))
+    AdvanceFrame(state, -1);
+  TraceUi("playback_previous");
+  Tip("Previous frame [Left]");
+  ImGui::SameLine();
+  if (lidar_viewer::ActionButton("##Next", UiIcon::Next, nullptr, {30.f * scale, 0}, scale))
+    AdvanceFrame(state, 1);
+  TraceUi("playback_next");
+  Tip("Next frame [Right]");
+  ImGui::EndDisabled();
+
+  ImGui::SameLine();
+  ImGui::Checkbox("Loop", &state.loop_playback);
+  TraceUi("playback_loop");
+  TraceUi(state.loop_playback ? "playback_loop_on" : "playback_loop_off");
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(76.f * scale);
+  ImGui::DragScalar("##Speed", ImGuiDataType_Double, &state.playback_fps, .1f, nullptr, nullptr, "%.1f fps");
+  TraceUi("playback_speed");
+  Tip("Playback speed. Ctrl+click to type a value.");
+  state.playback_fps = std::isfinite(state.playback_fps) ? std::clamp(state.playback_fps, .1, 120.) : 10.;
+  ImGui::EndDisabled();
+
+  const std::string frame = "Frame " + CountText(static_cast<std::size_t>(state.seek_draft) + 1) + " / " + CountText(frame_count);
+  const float frame_x = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize(frame.c_str()).x;
+  const float controls_right = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x;
+  if (frame_x > controls_right + 8.f * scale) {
+    ImGui::SameLine(frame_x);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("%s", frame.c_str());
+  } else {
+    Tip(frame.c_str());
+  }
+}
+
 void BuildViewerInterface(ViewerState & state, GLFWwindow *)
 {
   const auto layout = state.ui_layout;
@@ -4847,107 +5100,40 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   const bool has_input = state.live_mode ? state.live_has_frame : !state.frames.empty();
   const bool example_busy=state.example_removing || (state.example_dataset && state.example_dataset->Progress().Active());
   const bool dataset_input=state.review_window || state.dataset_profile=="dataset" || (!state.live_mode && !state.frames.empty() && state.frames.front().dataset_sample!=nullptr);
-  BeginPanel("Header", layout.header, false);
-  ImGui::SetCursorPosY(15.f * s);
-  ImGui::TextColored(ui::InfoColor(), "LiDAR");
-  ImGui::SameLine();
-  ImGui::TextUnformatted("Studio");
-  ImGui::SameLine(190.f*s);
-  ImGui::BeginDisabled(example_busy || state.dataset_edit_future.valid() || state.live.Active() || state.loading_bag_source.has_value() || state.folder_scan_future.valid() || state.bag_picker.Active() || state.dataset_picker.Active());
-  if (lidar_viewer::ActionButton("##OpenInput",lidar_viewer::UiIcon::Folder,state.review_window ? "Open points" : "Open...",{120*s,0},s)) {
-    if(state.review_window) state.open_dataset_review=true;else ImGui::OpenPopup("Open data");
-  }
-  TraceUi("open_input");
-  ImGui::EndDisabled();Tip(state.review_window ? "Open a point cloud file or folder. Ctrl+O." : "Open a recording or add a folder of recordings. Ctrl+O opens a file directly.");
-  if(ImGui::BeginPopup("Open data")) {
-    if(ImGui::MenuItem("Open file...","Ctrl+O")) StartBagPicker(state);
-    TraceUi("open_input_file");
-    if(ImGui::MenuItem("Add recordings folder...")) state.open_folder_picker=true;
-    TraceUi("open_input_folder");
-    Tip("Choose a folder once to list all its recordings in the playback source selector.");
-    ImGui::Separator();
-    if(ImGui::MenuItem("Driving examples...",nullptr,false,!example_busy && !state.live.Active())) state.example_panel=true;
-    TraceUi("open_example");Tip("Compare 32- and 128-channel driving scans: choose a sensor and 30 seconds or 1 minute. No account needed. Download size is shown before starting.");
-    ImGui::EndPopup();
-  }
-  ImGui::SameLine();
-  ImGui::BeginDisabled(example_busy || state.review_window || state.loading_bag_source.has_value() || state.folder_scan_future.valid() || state.bag_picker.Active());
-  if (lidar_viewer::ActionButton("##Live",lidar_viewer::UiIcon::Live,"Live",{85*s,0},s)) state.open_live_dialog=true;
-  TraceUi("open_live");Tip("Open live sensor settings.");
-  ImGui::EndDisabled();ImGui::SameLine(425*s);
-  const bool wide_header=layout.header.w>=1050*s;
-  const auto workspace_button=[&](const char * id,lidar_viewer::UiIcon icon,const char * label,float width,bool selected) {
-    ImGui::PushStyleColor(ImGuiCol_Button,selected ? ui::SelectionColor() : ImVec4(0,0,0,0));
-    const bool clicked=lidar_viewer::ActionButton(id,icon,label,{width*s,0},s);
-    ImGui::PopStyleColor();
-    if(selected) {
-      const auto a=ImGui::GetItemRectMin(),b=ImGui::GetItemRectMax();
-      ImGui::GetWindowDrawList()->AddLine({a.x+8*s,b.y},{b.x-8*s,b.y},ImGui::GetColorU32(ImGuiCol_CheckMark),2*s);
-    }
-    return clicked;
-  };
-  ImGui::BeginDisabled(state.review_window && !state.studio_parent);
-  if(workspace_button("##ViewerWorkspace",lidar_viewer::UiIcon::Cloud,wide_header ? "Viewer" : nullptr,wide_header ? 100.f : 32.f,!state.review_window) && state.studio_parent)
-    state.studio_parent->review_active=false;
-  TraceUi("review_back");Tip("Recordings and live data. Return with playback and camera preserved.");
-  ImGui::EndDisabled();ImGui::SameLine();
-  if(workspace_button("##PointsWorkspace",lidar_viewer::UiIcon::Eye,wide_header ? "Point clouds" : nullptr,wide_header ? 142.f : 32.f,state.review_window) && !state.review_window)
-    state.open_point_review=true;
-  TraceUi("open_dataset");Tip("Browse point cloud files and labels in the same window. Viewer state is preserved.");
-  ImGui::SameLine();
-  auto & training_owner=state.studio_parent ? *state.studio_parent : state;
-  if(workspace_button("##Training",lidar_viewer::UiIcon::Play,wide_header ? "Train" : nullptr,wide_header ? 86.f : 32.f,training_owner.open_training)) training_owner.open_training=true;
-  TraceUi("open_training");Tip("Configure, validate and run model training with the current dataset.");
-  if (!state.live_mode || !state.ui_error.empty() || state.loading_bag_source) {
-    const float header_right = std::max(ImGui::GetItemRectMax().x+16*s, layout.header.w - 360.f * s);
-    ImGui::SameLine(header_right);
-    ImGui::TextColored(!state.ui_error.empty() ? ui::ErrorColor() :
-      (state.loading_bag_source ? ui::InfoColor() :
-        (state.is_playing ? ui::SuccessColor() : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled))),
-      "%s", !state.ui_error.empty() ? "ERROR" : (state.loading_bag_source ? "OPENING INPUT" :
-        (has_input ? (state.review_window ? "REVIEW" : state.is_playing ? "PLAYING" : "PAUSED") : "READY")));
-  }
-  ImGui::SameLine(layout.header.w-176*s);
-  if(ImGui::SmallButton("About")) state.open_about=true;
-  TraceUi("open_about");
-  ImGui::SameLine(layout.header.w-115*s);
-  if (ImGui::SmallButton("Help")) ImGui::OpenPopup("Shortcuts");
-  if (ImGui::BeginPopup("Shortcuts")) {
-    ImGui::TextUnformatted("Keyboard & mouse");
-    ImGui::Separator();
-    if(dataset_input) ImGui::TextUnformatted("Ctrl+O       Open point file / folder\nDelete       Delete current sample\nCtrl+Z       Restore last deletion\nLeft / Right Previous / next sample\nF            Fit current sample\nSpace        Play / pause samples\nEsc          Return to bag\nQ / E        Rotate 2D view\nLeft drag    Orbit (3D) / pan (2D)\nRight drag   Pan (3D) / rotate (2D)\nWheel        Zoom");
-    else ImGui::Text("Ctrl+O       Open file chooser\nCtrl+S       Save profile\nCtrl+E       Export current ROI frame\nR            Draw ROI in top view\nCtrl+Z / Y   Undo / redo ROI\nCtrl+D       Duplicate ROI (ROI tab)\nDelete       Delete ROI (ROI tab)\nEsc          Cancel ROI tool / quit\n%s\nF            Fit all points\nC            Cycle point colors\n[ / ]        Point size\nQ / E        Rotate 2D view\nLeft drag    Orbit (3D) / pan (2D)\nRight drag   Pan (3D) / rotate (2D)\nWheel        Zoom",
-      state.live_mode ? "Space        Freeze / resume live display" : "Space        Play / pause\nN / P        Next / previous frame");
-    ImGui::EndPopup();
-  }
-  ImGui::SameLine(layout.header.w-48*s);
-  if (lidar_viewer::IconButton("##ApplicationSettings",lidar_viewer::UiIcon::Settings,"Application settings",s,state.open_app_settings))
-    state.open_app_settings=!state.open_app_settings;
-  TraceUi("app_settings");
-  ImGui::End();
+  auto & training_owner = state.studio_parent ? *state.studio_parent : state;
+  BuildViewerHeader(state, training_owner, dataset_input, example_busy);
 
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {14*s, 10*s});
   BeginPanel("Inspector", layout.sidebar, false);
-  ImGui::TextUnformatted("Controls");
-  ImGui::SameLine();
-  ImGui::TextDisabled("  %s", state.live_mode ? (state.live_using_ros ? "LIVE ROS 2" : "LIVE ETHERNET") : has_input ?
-    (dataset_input ? "DATASET" : state.frames.front().format == InputFormat::Ros2Bag ? "ROS 2 BAG" :
-      state.frames.front().format == InputFormat::LidarPcap ? "PCAP" : "BIN") : "NO DATA");
-  ImGui::Spacing();
-  ImGui::BeginChild("InspectorBody", {0, std::max(1.f, ImGui::GetContentRegionAvail().y - (state.review_window ? 0.f : 84.f * s))},
+  ImGui::PopStyleVar();
+  const float inspector_footer = state.review_window ? 0.f : ImGui::GetFrameHeight() + 22*s;
+  ImGui::BeginChild("InspectorBody", {0, std::max(1.f, ImGui::GetContentRegionAvail().y - inspector_footer)},
     ImGuiChildFlags_None,ImGuiWindowFlags_NoScrollbar|ImGuiWindowFlags_NoScrollWithMouse);
-  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {1.f * s, 6.f * s});
-  const bool tabs_open = ImGui::BeginTabBar(state.review_window ? "PointReviewTabs" : "InspectorTabs",ImGuiTabBarFlags_DrawSelectedOverline);
+  const float tab_gap = 4*s;
+  const float labels_width = dataset_input ? ImGui::CalcTextSize("View").x + ImGui::CalcTextSize("Data").x :
+    ImGui::CalcTextSize("View").x + ImGui::CalcTextSize("Align").x + ImGui::CalcTextSize("Ground").x +
+      ImGui::CalcTextSize("ROI").x + ImGui::CalcTextSize("Objects").x;
+  const int tab_count = dataset_input ? 2 : 5;
+  // A tab adds a pixel beyond its label and frame padding. Leave room for
+  // that pixel and for rounding at fractional desktop scale factors.
+  const float tab_overhead = tab_gap * (tab_count - 1) + 2.f * tab_count;
+  const float tab_padding = std::clamp(std::floor((ImGui::GetContentRegionAvail().x - labels_width - tab_overhead) /
+    (2.f * tab_count)), .5f*s, 7*s);
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemInnerSpacing, {tab_gap, ImGui::GetStyle().ItemInnerSpacing.y});
+  ImGui::PushStyleColor(ImGuiCol_Tab, {0,0,0,0});
+  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {tab_padding, 7*s});
+  const bool tabs_open = ImGui::BeginTabBar(state.review_window ? "PointReviewTabs" : "InspectorTabs");
   ImGui::PopStyleVar();
   state.roi_tab_active=false;
-  const auto begin_tab = [s,&state](const char * label) {
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {1.f * s, 6.f * s});
-    const bool is_roi=std::string(label)=="ROI";
-    const bool is_data=std::string(label)=="Data";
+  const auto begin_tab = [s,tab_padding,&state](const char * label) {
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {tab_padding, 7*s});
+    const bool is_roi=std::strcmp(label, "ROI")==0;
+    const bool is_data=std::strcmp(label, "Data")==0;
     const bool open=ImGui::BeginTabItem(label,nullptr,(is_roi && state.roi_tab_requested) || (is_data && state.dataset_tab_requested) ? ImGuiTabItemFlags_SetSelected : 0);
     TraceUi((std::string("tab_")+label).c_str());
     ImGui::PopStyleVar();
     if (open) {
-      ImGui::BeginChild(label,{0,std::max(1.f,ImGui::GetContentRegionAvail().y-(state.ui_error.empty() ? 0 : 90*s))});
+      ImGui::BeginChild(label,{0,std::max(1.f,ImGui::GetContentRegionAvail().y)});
       if (is_roi) {if (state.roi_tab_requested) ImGui::SetScrollY(0);state.roi_tab_requested=false;state.roi_tab_active=true;}
       if(is_data) state.dataset_tab_requested=false;
     }
@@ -4975,6 +5161,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         ImGui::Combo("##Color", &state.color_mode, "Intensity\0Height\0Uniform\0");
       ImGui::TextDisabled("Point size");ImGui::SetNextItemWidth(-1);
       ImGui::SliderFloat("##PointSize", &state.camera.point_size, 1, 8, "%.1f px", ImGuiSliderFlags_AlwaysClamp);
+      TraceUi("view_point_size");
       if (state.color_mode==1 && (!panorama || state.camera.panorama.color_mode==1)) {
         ImGui::TextDisabled("Height range (m)");ImGui::SetNextItemWidth(-1);
         ImGui::DragFloatRange2("##HeightRange",&state.height_color_min,&state.height_color_max,.05f,-100,100,"%.2f","%.2f");
@@ -5135,6 +5322,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         reprocess=true;
         if (!state.ground_removal_enabled) state.ground_view=ViewerState::GroundView::All;
       }
+      TraceUi("ground_enabled");
       ImGui::TextDisabled("Show");ImGui::SetNextItemWidth(-1);
       int ground_view=static_cast<int>(state.ground_view);
       if (ImGui::Combo("##GroundView",&ground_view,"All points\0Ground only\0Obstacles only\0")) {
@@ -5143,6 +5331,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
           state.ground_removal_enabled=true;reprocess=true;
         }
       }
+      TraceUi("ground_display");
       Tip("Display classified points only. ROI remains active. Switching views reuses the existing result and keeps playback running.");
       ImGui::TextDisabled("Method");
       const char * modes[] = {"fast_grid", "gseg3d", "patchworkpp", "fugseg", "grid", "ransac"};
@@ -5155,6 +5344,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         state.ground_removal_enabled=true;
         reprocess = true;
       }
+      TraceUi("ground_method");
       ImGui::TextDisabled("%s",ground.mode=="gseg3d" ? "Connected planes / CPU" :
         ground.mode=="patchworkpp" ? "Adaptive local planes / CPU" : ground.mode=="fugseg" ? "Uncertainty-aware terrain / CPU" :
         ground.mode=="fast_grid" ? "Local terrain grid" : ground.mode=="ransac" ? "Global plane + local check" : "Connected height cells");
@@ -5231,8 +5421,10 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         }
       }
 #ifdef LIDAR_VIEWER_HAS_CUDA
-      if (ground.mode!="gseg3d" && ground.mode!="patchworkpp" && ground.mode!="fugseg")
+      if (ground.mode!="gseg3d" && ground.mode!="patchworkpp" && ground.mode!="fugseg") {
         reprocess |= ImGui::Checkbox("Use CUDA", &ground.use_cuda);
+        TraceUi("ground_cuda");
+      }
 #else
       if (ground.mode!="gseg3d" && ground.mode!="patchworkpp" && ground.mode!="fugseg") ImGui::TextDisabled("CPU backend");
 #endif
@@ -5455,38 +5647,40 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     ImGui::EndTabBar();
   }
   ImGui::EndDisabled();
+  ImGui::PopStyleColor();
+  ImGui::PopStyleVar();
   if (!state.roi_tab_active && !state.roi_tab_requested && !state.roi_gesture.active) state.roi_tool=ViewerState::RoiTool::Navigate;
-  if (!state.ui_error.empty()) {
-    ImGui::PushStyleColor(ImGuiCol_Text, ui::ErrorColor());
-    ImGui::TextWrapped("%s", state.ui_error.c_str());
-    ImGui::PopStyleColor();
-    if (ImGui::SmallButton("Dismiss error")) state.ui_error.clear();
-  }
   ImGui::EndChild();
-  if(!state.review_window) {
-  ImGui::Separator();
-  const bool pending_exclusions=state.applying_exclusions ||
-    !lidar_viewer::SameRoiExclusions(state.roi,state.applied_exclusions);
-  if (state.save_requested && pending_exclusions) {
-    state.save_requested=false;SetTransientStatus(state,"Apply the edited ROI before saving");
-  }
-  ImGui::BeginDisabled(pending_exclusions);
-  if ((ImGui::Button("Save profile", {-1, 0}) || state.save_requested) && !state.roi_gesture.active) {
-    state.save_requested=false;
-    try {
-      SaveSettings(state);
-      SetTransientStatus(state, "Profile saved");
-      state.ui_error.clear();
-    } catch (const std::exception & error) {
-      state.ui_error = std::string("Profile was not saved: ") + error.what();
+  if (!state.review_window) {
+    ImGui::Separator();
+    const bool pending_exclusions = state.applying_exclusions ||
+      !lidar_viewer::SameRoiExclusions(state.roi, state.applied_exclusions);
+    if (state.save_requested && pending_exclusions) {
+      state.save_requested = false;
+      SetTransientStatus(state, "Apply the edited ROI before saving");
     }
-  }
-  ImGui::EndDisabled();
-  Tip(pending_exclusions ? "Apply the edited ROI before saving this profile." : "Save the current settings for the next session. Ctrl+S.");
-  const bool unsaved=!lidar_viewer::SameRoi(state.roi,state.saved_roi) ||
-    !lidar_viewer::SameRoi(state.display_roi,state.saved_display_roi);
-  ImGui::TextColored(unsaved ? ui::WarningColor() : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled),
-    "%s",pending_exclusions ? "Apply ROI before saving" : unsaved ? "ROI changes not saved  /  Ctrl+S" : "Ctrl+S saves this profile");
+    ImGui::BeginDisabled(pending_exclusions);
+    const bool save = ImGui::Button("Save profile");
+    TraceUi("save_profile");
+    ImGui::EndDisabled();
+    Tip(pending_exclusions ? "Apply the edited ROI before saving this profile." : "Save the current settings for the next session. Ctrl+S.");
+    if ((save || state.save_requested) && !state.roi_gesture.active) {
+      state.save_requested = false;
+      try {
+        SaveSettings(state);
+        SetTransientStatus(state, "Profile saved");
+        state.ui_error.clear();
+      } catch (const std::exception & error) {
+        state.ui_error = std::string("Profile was not saved: ") + error.what();
+      }
+    }
+    const bool unsaved = !lidar_viewer::SameRoi(state.roi, state.saved_roi) ||
+      !lidar_viewer::SameRoi(state.display_roi, state.saved_display_roi);
+    if (pending_exclusions || unsaved) {
+      ImGui::SameLine();
+      ImGui::AlignTextToFramePadding();
+      ImGui::TextColored(ui::WarningColor(), "%s", pending_exclusions ? "Apply ROI first" : "Unsaved ROI");
+    }
   }
   ImGui::End();
 
@@ -5511,80 +5705,23 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   if (!resizing && state.inspector_resizing && state.app_settings_dirty) SaveAppSettings(state);
   state.inspector_resizing=resizing;ImGui::End();ImGui::PopStyleVar();
 
-  if (state.live_mode) ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {16*s, 12*s});
-  BeginPanel("Transport", layout.transport, false);
   const auto * group = !state.live_mode && has_input ? &state.file_groups[state.current_file_group] : nullptr;
+  const bool hide_transport = layout.transport.h == 0;
+  auto transport = layout.transport;
+  transport.h = std::max(1.f, transport.h);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {12*s, 8*s});
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, hide_transport ? 0.f : 1.f);
+  BeginPanel("Transport", transport, false, hide_transport ? ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoInputs : 0);
+  ImGui::PopStyleVar(2);
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {8*s, 5*s});
+  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {8*s, 4*s});
   if (state.live_mode) {
-    ImGui::PopStyleVar();
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {10*s, 6*s});
     BuildLiveTransport(state, example_busy || state.loading_bag_source || state.folder_scan_future.valid() ||
       state.bag_picker.Active() || state.dataset_edit_future.valid());
-    ImGui::PopStyleVar();
   } else {
-    const std::size_t first_index = group ? group->first_index : 0;
-    const std::size_t frame_count = group ? group->last_index - group->first_index + 1 : 0;
-    const bool multiple = frame_count > 1;
-    ImGui::BeginDisabled(state.dataset_edit_future.valid() || !has_input || state.loading_bag_source.has_value());
-    ImGui::PushStyleColor(ImGuiCol_Button, ui::SelectionColor());
-    if (lidar_viewer::ActionButton("##PlayPause",state.is_playing ? lidar_viewer::UiIcon::Pause : lidar_viewer::UiIcon::Play,
-        state.is_playing ? "Pause" : "Play",{88*s,0},s)) {
-      TogglePlayback(state);
-    }
-    ImGui::PopStyleColor();
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!multiple);
-    if (lidar_viewer::ActionButton("##Previous",lidar_viewer::UiIcon::Previous,nullptr,{32*s,0},s)) AdvanceFrame(state, -1);
-    Tip("Previous frame  [P]");
-    ImGui::SameLine();
-    if (lidar_viewer::ActionButton("##Next",lidar_viewer::UiIcon::Next,nullptr,{32*s,0},s)) AdvanceFrame(state, 1);
-    Tip("Next frame  [N]");
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::Checkbox("Loop", &state.loop_playback);
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(92.f * s);
-    ImGui::DragScalar("##Speed", ImGuiDataType_Double, &state.playback_fps, .1f, nullptr, nullptr, "%.1f fps");
-    state.playback_fps = std::isfinite(state.playback_fps) ? std::clamp(state.playback_fps, .1, 120.) : 10.;
-    if (layout.transport.w > 800.f * s && group) {
-      ImGui::SameLine();
-      const auto & first=state.frames[first_index];
-      const bool recorded=first.format==InputFormat::Ros2Bag || first.format==InputFormat::LidarPcap;
-      const auto seconds=[&](std::size_t i) {
-        return recorded ? static_cast<double>((static_cast<long double>(state.frames[i].bag_timestamp_ns)-first.bag_timestamp_ns)*1e-9L) :
-          static_cast<double>(i-first_index)/state.input_fps_estimate.value_or(10.);
-      };
-      const auto clock=[](double value) {
-        value=std::max(0.,value);char label[48];std::snprintf(label,sizeof(label),"%02lld:%04.1f",
-          static_cast<long long>(value/60),std::fmod(value,60.));return std::string(label);
-      };
-      ImGui::TextDisabled("%s / %s",clock(seconds(state.current_index)).c_str(),clock(seconds(group->last_index)).c_str());
-      Tip(recorded ? "Position in recorded time. Frame numbers are on the timeline below." :
-        "Estimated time at the input scan rate. Frame numbers are on the timeline below.");
-    }
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    if(!state.review_window) BuildSourceSelector(state, std::max(80.f * s, ImGui::GetContentRegionAvail().x));
-    else if(has_input) ImGui::TextUnformatted(state.frames[state.current_index].label.c_str());
-    if (!state.timeline_dragging) state.seek_draft = static_cast<int>(state.current_index - first_index);
-    ImGui::SetNextItemWidth(-1);
-    ImGui::BeginDisabled(state.dataset_edit_future.valid() || !multiple || state.loading_bag_source.has_value());
-    const std::string timeline_label = "Frame " + std::to_string(has_input ? state.seek_draft + 1 : 0) + " / " +
-      std::to_string(frame_count);
-    ImGui::SliderInt("##Timeline", &state.seek_draft, 0, frame_count ? static_cast<int>(frame_count - 1) : 0,
-      timeline_label.c_str(), ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_NoInput);
-    TraceUi("timeline");
-    if (ImGui::IsItemActivated()) {
-      state.timeline_dragging = true;
-      state.requested_frame.reset();
-    }
-    if (ImGui::IsItemDeactivated()) {
-      if (ImGui::IsItemDeactivatedAfterEdit())
-        TryLoadFrame(state, first_index + static_cast<std::size_t>(state.seek_draft));
-      state.timeline_dragging = false;
-      state.last_frame_advance_time = glfwGetTime();
-    }
-    ImGui::EndDisabled();
+    BuildPlaybackTransport(state, group);
   }
+  ImGui::PopStyleVar(2);
   BuildFolderPicker(state);
   if (state.open_live_dialog) {ImGui::OpenPopup("Live sensors");state.open_live_dialog=false;}
   BuildLiveDialog(state);
@@ -5602,8 +5739,6 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     const auto & objects=state.algorithm_config.detection.enabled ? state.object_average : state.clustering_average;
     state.status_object_average_ms=objects.Count() ? objects.MeanMs() : -1.;
     state.status_live_received=state.live_stats.clouds;
-    state.status_source=group ? group->path.filename().u8string() :
-      state.current_index<state.frames.size() ? state.frames[state.current_index].path.filename().u8string() : std::string{};
     if (std::getenv("LIDAR_VIEWER_UI_TRACE")) {
       std::cout<<"Status sample "<<state.status_sample_time<<std::endl;
       std::cout<<"Stage averages: ground "<<state.ground_average.Count()<<' '<<state.status_ground_average_ms
@@ -5614,13 +5749,25 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   if (status_busy && !state.pending_read_started) state.pending_read_started=status_now;
   if (!status_busy) state.pending_read_started.reset();
   const bool long_wait=state.pending_read_started && status_now-*state.pending_read_started>.75;
-  BeginPanel("Status", layout.status, false);
+  BeginChromeStrip("Status", layout.status, true);
   const bool stage_metrics=!dataset_input && layout.status.w>850.f*s;
-  const float metrics_width=(stage_metrics ? 455.f : 95.f)*s;
+  const float ground_metric_width = ImGui::CalcTextSize("Ground avg 00.000 s").x + 12*s;
+  const float object_metric_width = ImGui::CalcTextSize("Clusters avg 00.000 s").x + 12*s;
+  const float fps_metric_width = ImGui::CalcTextSize("UI 000 fps").x + 12*s;
+  const float metrics_width = fps_metric_width + 8*s + (stage_metrics ? ground_metric_width + object_metric_width : 0.f);
   ImGui::PushClipRect(
     {layout.status.x, layout.status.y},
     {layout.status.w - metrics_width - 12*s, layout.status.y + layout.status.h}, true);
-  if (!state.ui_error.empty()) ImGui::TextColored(ui::ErrorColor(), "%s", state.ui_error.c_str());
+  if (!state.ui_error.empty()) {
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {4*s, 0});
+    const bool dismiss = ImGui::SmallButton("x##Dismiss error");
+    ImGui::PopStyleVar();
+    Tip("Dismiss error");
+    ImGui::SameLine();
+    ImGui::TextColored(ui::ErrorColor(), "%s", state.ui_error.c_str());
+    Tip(state.ui_error.c_str());
+    if (dismiss) state.ui_error.clear();
+  }
   else if (state.loading_bag_source && state.input_load) {
     const auto progress=state.input_load->Snapshot();
     ImGui::TextColored(ui::InfoColor(),"%s | %s frames | %s",
@@ -5634,17 +5781,17 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       static_cast<unsigned long long>(state.status_live_display), static_cast<unsigned long long>(state.status_live_received));
     else ImGui::Dummy({0, ImGui::GetTextLineHeight()});
   }
-  else if (!has_input) ImGui::TextDisabled("Open a file or choose Open... > Driving examples.");
-  else ImGui::TextDisabled("%zu points   |   %s",state.status_points,state.status_source.c_str());
+  else if (has_input) ImGui::TextDisabled("%s points", CountText(state.status_points).c_str());
+  else ImGui::Dummy({0, ImGui::GetTextLineHeight()});
   ImGui::PopClipRect();
   ImGui::SameLine(layout.status.w-metrics_width);
   ImGui::PushStyleVar(ImGuiStyleVar_CellPadding,{0,0});
   if (ImGui::BeginTable("##StatusMetrics",stage_metrics ? 3 : 1,ImGuiTableFlags_SizingFixedFit)) {
     if(stage_metrics) {
-      ImGui::TableSetupColumn("Ground",ImGuiTableColumnFlags_WidthFixed,180*s);
-      ImGui::TableSetupColumn("Objects",ImGuiTableColumnFlags_WidthFixed,180*s);
+      ImGui::TableSetupColumn("Ground",ImGuiTableColumnFlags_WidthFixed,ground_metric_width);
+      ImGui::TableSetupColumn("Objects",ImGuiTableColumnFlags_WidthFixed,object_metric_width);
     }
-    ImGui::TableSetupColumn("FPS",ImGuiTableColumnFlags_WidthFixed,90*s);
+    ImGui::TableSetupColumn("FPS",ImGuiTableColumnFlags_WidthFixed,fps_metric_width);
     ImGui::TableNextRow();
     if(stage_metrics) {
       ImGui::TableSetColumnIndex(0);
@@ -5683,10 +5830,10 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     const bool top=state.camera.projection_mode==CameraState::ProjectionMode::View2D;
     const bool panorama=state.camera.projection_mode==CameraState::ProjectionMode::Panorama;
     const auto mode_button=[&](const char * label,bool selected) {
-      if (selected) ImGui::PushStyleColor(ImGuiCol_Button,ui::SelectionColor());
+      ImGui::PushStyleColor(ImGuiCol_Button,selected ? ui::SelectionColor() : ImVec4{0,0,0,0});
       const bool clicked=ImGui::Button(label,{std::string(label)=="Panorama" ? 86*s : 32*s,30*s});
       TraceUi((std::string("camera_")+label).c_str());
-      if (selected) ImGui::PopStyleColor();
+      ImGui::PopStyleColor();
       return clicked;
     };
     if (mode_button("3D",!top && !panorama)) {SelectRoiTool(state,ViewerState::RoiTool::Navigate);SetProjectionMode(state,CameraState::ProjectionMode::View3D);}
@@ -5698,6 +5845,18 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   }
   auto * draw=ImGui::GetBackgroundDrawList();
   const ImU32 muted = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+  if (!has_input && !state.live_mode && !state.loading_bag_source && !state.open_dataset_review &&
+      !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup) && view.w > 330*s && view.h > 140*s) {
+    const char * hint = state.review_window ? "Open or drop point cloud files" : "Open or drop a point cloud or recording";
+    const auto size = ImGui::CalcTextSize(hint);
+    const float center = view.x + view.w * .5f;
+    const float y = view.y + view.h * .5f;
+    draw->AddRectFilled({center - size.x*.5f - 18*s, y - 38*s}, {center + size.x*.5f + 18*s, y + size.y + 12*s},
+      ImGui::ColorConvertFloat4ToU32(ui::OverlayBackground()), 8*s);
+    lidar_viewer::DrawUiIcon(draw, lidar_viewer::UiIcon::Cloud, {center - 12*s, y - 28*s}, 24*s,
+      ImGui::ColorConvertFloat4ToU32(ui::InfoColor()));
+    draw->AddText({center - size.x*.5f, y}, muted, hint);
+  }
   if(state.camera.projection_mode==CameraState::ProjectionMode::Panorama && view.w>300*s && view.h>150*s) {
     const auto & p=state.camera.panorama;
     draw->PushClipRect({view.x,view.y},{view.x+view.w,view.y+view.h},true);
@@ -6576,10 +6735,13 @@ int RunViewer(int argc, char ** argv)
         glfwWaitEventsTimeout(.05);
         continue;
       }
+      const bool show_transport = state.live_mode || !state.frames.empty() ||
+        (!state.review_window && (!state.bag_sources.empty() || !state.hidden_sources.empty()));
       state.ui_layout = lidar_viewer::ComputeUiLayout(
         static_cast<float>(window_width), static_cast<float>(window_height),
         state.ui_scale * state.font_raster_scale / std::max(
-          static_cast<float>(fb_width) / window_width, static_cast<float>(fb_height) / window_height),state.inspector_width);
+          static_cast<float>(fb_width) / window_width, static_cast<float>(fb_height) / window_height),
+        state.inspector_width, show_transport);
       ImGui::GetStyle() = base_ui_style;
       ui::ApplyThemeColors(ImGui::GetStyle());
       ImGui::GetStyle().ScaleAllSizes(state.ui_layout.scale);

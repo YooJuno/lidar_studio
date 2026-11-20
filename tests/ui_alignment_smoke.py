@@ -61,18 +61,6 @@ def main():
             if time.monotonic()>deadline: raise TimeoutError('Alignment GUI check timed out')
             time.sleep(.1)
 
-    def event(key,down):
-        code=x11.x.XKeysymToKeycode(x11.display,x11.x.XStringToKeysym(key.encode()))
-        x11.xt.XTestFakeKeyEvent(x11.display,code,down,0)
-
-    def enter(y,value):
-        x11.click(window,180,y)
-        event('Control_L',True);event('a',True);event('a',False);event('Control_L',False)
-        for char in str(value):
-            key={'-':'minus','.':'period'}.get(char,char)
-            event(key,True);event(key,False)
-        event('Return',True);event('Return',False);x11.x.XSync(x11.display,False);time.sleep(.2)
-
     def values(profile,env):
         c.chord('s')
         user=Path(env['XDG_CONFIG_HOME'])/'lidar_viewer/profiles'/profile.name
@@ -117,10 +105,10 @@ def main():
                 x11.focus(window);x11.resize(window,1600,960)
                 c=Controls(x11,window,log_path)
                 if raw:wait_for(lambda: "Opened bag:" in log_path.read_text(errors="replace"))
-                x11.click(window,100,141)
+                c.click('tab_Align')
                 if stage=='no_imu':
                     initial=capture(x11,window,folder/'01_fallback.png')
-                    enter(464,-4);enter(499,8)
+                    c.enter('##Pitch',-4);c.enter('##Roll',8)
                     data=values(profile,env)
                     check('auto_requested_without_imu_keeps_manual_inputs_editable',
                         data['imu_level_enabled']=='1' and float(data['calibration_pitch_deg'])==-4 and float(data['calibration_roll_deg'])==8)
@@ -129,7 +117,7 @@ def main():
                 else:
                     wait_for(lambda:'IMU leveling active:' in log_path.read_text(errors='replace'))
                     before_fix=capture(x11,window,folder/'01_bad_axes.png')
-                    enter(464,-30)
+                    c.enter('##Pitch',-30)
                     data=values(profile,env)
                     check(stage+'_active_imu_preserves_manual_fallback',float(data['calibration_pitch_deg'])==-7)
                     c.click('align_mounting');x11.wheel(window,200,700,-5);c.click('align_axes')
@@ -148,16 +136,16 @@ def main():
                     c.click('align_auto');c.enter('##Pitch',-4)
                     data=values(profile,env)
                     check(stage+'_disabling_imu_restores_manual_input',data['imu_level_enabled']=='0' and float(data['calibration_pitch_deg'])==-4)
-                x11.click(window,100,577)
+                c.click('align_reset_rotation')
                 data=values(profile,env)
                 check(stage+'_rotation_reset_disables_auto_and_keeps_height',data['imu_level_enabled']=='0' and
                     all(float(data['calibration_'+axis+'_deg'])==0 for axis in ('yaw','pitch','roll')) and
                     abs(float(data['calibration_z_m'])-.57)<1e-6)
-                x11.click(window,250,577)
+                c.click('align_reset_all')
                 data=values(profile,env)
                 check(stage+'_full_reset_clears_height',float(data['calibration_z_m'])==0)
                 if stage=='no_imu':
-                    enter(429,372);enter(534,99)
+                    c.enter('##Yaw',372);c.enter('##Z',99)
                     data=values(profile,env)
                     check('direct_angles_wrap_and_height_stays_bounded',
                         float(data['calibration_yaw_deg'])==12 and float(data['calibration_z_m'])==5)

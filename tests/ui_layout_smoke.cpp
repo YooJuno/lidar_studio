@@ -92,6 +92,14 @@ int main()
       "Normal desktop dimensions changed unexpectedly");
     Check(!normal.compact && ComputeUiLayout(1024, 640).compact,
       "Compact mode must reflect available logical space");
+    for (const auto & size : {std::pair{800.f, 600.f}, std::pair{1600.f, 960.f}}) {
+      const auto with_transport = ComputeUiLayout(size.first, size.second);
+      const auto empty = ComputeUiLayout(size.first, size.second, 1.f, 320.f, false);
+      Check(empty.transport.h == 0 && empty.viewport.h > with_transport.viewport.h,
+        "Empty layout should reclaim the transport area");
+      Check(std::abs(empty.viewport.y + empty.viewport.h - empty.sidebar.y - empty.sidebar.h) < .01f &&
+        !Overlaps(empty.viewport, empty.status), "Empty canvas must stay inside the workspace");
+    }
     std::cout << "ui_layout_smoke: responsive layout checks passed\n";
     return 0;
   } catch (const std::exception & error) {

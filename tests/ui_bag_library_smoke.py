@@ -10,11 +10,13 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import time
 import traceback
 
+from ui_controls import Controls
 from ui_gl_smoke import X11, capture, changed_pixels, settings_inventory
 
 
@@ -43,6 +45,7 @@ def main():
     output = Path(tempfile.mkdtemp(prefix="bag-library-", dir=args.output.resolve()))
     env = os.environ.copy()
     env["XDG_CONFIG_HOME"] = str(output / "isolated_config")
+    env["LIDAR_VIEWER_UI_TRACE"] = env["LIDAR_VIEWER_CATALOG_TRACE"] = "1"
     library = Path(env["XDG_CONFIG_HOME"]) / "lidar_viewer/data_folders.cfg"
     before_settings = settings_inventory(repo)
     process = x11 = window = None
@@ -90,26 +93,33 @@ def main():
             if "Bag list: 1 recordings" not in initial_log:
                 raise AssertionError("An explicit bag unexpectedly discovered sibling data")
             result["checks"]["explicit_bag_starts_with_one_source"] = True
-            x11.click(window, 420, 878)
+            controls = Controls(x11, window, log_path)
+            controls.click('open_input')
+            controls.click('open_input_folder')
             shot("02_add_folder_picker")
-            # The picker initially browses the current recording's parent.
-            # 700x560 centered modal at (450,200), with its footer below the
-            # directory child. Click the explicit Add this folder action.
-            x11.click(window, 535, 678)
+            controls.click('folder_add')
             wait_until(library.is_file, "folder_library_saved")
             if str(folder) not in library.read_text():
                 raise AssertionError("Folder library did not persist the chosen source")
             time.sleep(.3)
             shot("03_registered_folder")
-            x11.click(window, 1120, 837)
+            controls.click('source_selector')
             shot("04_bag_list")
             # Source popup contains a date selector followed by a name search.
             # Click the name field and type target's numeric acquisition time.
-            x11.click(window, 1210, 474)
+            controls.click('bag_search')
             for digit in search:
                 x11.key(window, digit)
+            search_log = len(log_path.read_text(errors='replace'))
+            row = re.compile(r'^Source row: "' + re.escape(str(target)) +
+                             r'" \| select ([\d.-]+) ([\d.-]+) .* \| available 1$', re.M)
+
+            def matching_row():
+                return row.search(log_path.read_text(errors='replace')[search_log:])
+
+            wait_until(matching_row, 'filtered_recording_available')
             shot("05_filtered_bag_list")
-            x11.click(window, 1120, 761)
+            x11.click(window, *map(lambda value: round(float(value)), matching_row().groups()))
             wait_until(lambda: f"Opened bag: \"{target}\"" in log_path.read_text(errors="replace") or
                        f"Opened bag: {target}" in log_path.read_text(errors="replace"),
                        "other_bag_opened")

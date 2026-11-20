@@ -81,9 +81,9 @@ def main():
             moving_b = shot("02_live_motion")
             result["checks"]["live_cloud_moves"] = changed_pixels(moving_a, moving_b, crop) > 80
             # Tabs, edit-tool activation and common settings must leave the stream running.
-            for x in [50,100,155,255]: x11.click(window,x,140)
-            x11.click(window,205,140);x11.click(window,65,290)
-            x11.click(window,1567,30);x11.key(window,"Escape")
+            for tab in ["Align", "Ground", "Objects", "View"]: controls.click('tab_'+tab)
+            controls.click('view_point_size');controls.click('tab_ROI');controls.click('roi_add')
+            controls.click('app_settings');x11.key(window,"Escape")
             active_a=shot("02a_after_controls");time.sleep(.35);active_b=shot("02b_controls_still_live")
             result["checks"]["ordinary_controls_do_not_pause_live"]=changed_pixels(active_a,active_b,crop)>80 and "Live display paused" not in log_path.read_text(errors="replace")
             controls.click('live_freeze')

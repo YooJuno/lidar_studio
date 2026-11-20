@@ -90,7 +90,7 @@ A six-scan **Quick preview** (12 MB) is also available. The default is the small
 
 | Workspace | What to do |
 | --- | --- |
-| **Open… / Viewer** | Open or drop a recording. Add a recordings folder to the source list, then play, pause or seek. |
+| **Open / Viewer** | Open or drop a recording. Add a recordings folder to the source list, then play, pause or seek. |
 | **Align / Ground** | Set sensor height and orientation, choose a ground method and inspect its classification. |
 | **Objects** | Select learned detection or geometric clustering; adjust targets, confidence or cluster settings. |
 | **ROI** | Draw in 2D and edit directly on the canvas. Right-click a region for details, rename, duplicate or delete. |
