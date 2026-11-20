@@ -80,7 +80,8 @@ Viewer·Point clouds·Train 간 이동에도 유지됩니다. 데이터별 프�
 
 1. 센서 전원과 Ethernet을 연결합니다. PC 유선 어댑터를 센서와 같은 IPv4 서브넷으로 설정하고, 센서의 UDP 목적지를 PC 주소 또는 해당 네트워크의 브로드캐스트 주소로 지정합니다.
 2. **Live → Direct Ethernet**에서 **Auto** 또는 모델을 선택한 뒤 **Connect**를 누릅니다. 단독 설치에서는 **Live**를 열면 직접 연결 설정이 바로 표시됩니다. 기본 포트는 아래 표에서 확인할 수 있습니다. 변경한 포트, 센서 주소, 멀티캐스트 그룹, 보정 파일은 **Network and calibration**에서 설정합니다.
-3. 화면 아래 **Record**를 누르면 수신 중인 스트림을 저장합니다. **Pause** 또는 **Space**를 눌러도 수신과 녹화가 이어집니다. **Stop REC** 후 **Live → Open saved PCAP**으로 열거나 파일 선택 창에서 `lidar.pcap`을 선택합니다.
+3. 첫 스캔을 기다리는 동안 수신 포트와 센서 주소 설정이 화면에 표시됩니다. **Live settings**에서 연결 설정을 다시 열 수 있습니다.
+4. 화면 아래 **Record**를 누르면 수신 중인 스트림을 저장합니다. **Freeze** 또는 **Space**로 화면을 고정해도 수신과 녹화가 이어집니다. **Stop recording**으로 저장을 마친 뒤 같은 위치의 **Open PCAP**을 누르면 실시간 연결을 종료하고 녹화 파일을 엽니다.
 
 | 센서 | 포인트 UDP | 보정·보조 스트림 |
 | --- | ---: | --- |
@@ -110,11 +111,11 @@ source /opt/ros/jazzy/setup.bash
   --imu-topic /vn100/imu/data_ned --sensor-height 0.57 --imu-level --2d
 ```
 
-- **Pause / Space**: 표시 중인 프레임을 정지합니다. 센서 구독은 유지하며, 수신 횟수는 계속 증가합니다. 정지한 점군을 회전·확대하고 ROI를 수정할 수 있습니다.
-- **Play / Space**: 쌓인 과거 프레임을 재생하는 대신 최신 프레임으로 복귀합니다. 화면용 최신 프레임은 하나만 보관해 정지 중 메모리가 계속 늘지 않습니다. 이전 시점의 재생이 필요하면 녹화한 bag을 엽니다.
-- **Record / Stop REC**: 원본 LiDAR·IMU·`/tf`·`/tf_static`을 MCAP으로 저장하고 중지 시 `metadata.yaml`을 완성합니다. 화면 정지·ROI·지면분리·표시 좌표 보정은 원본 녹화 내용에 영향을 주지 않습니다. 녹화는 버튼을 눌렀을 때만 시작합니다.
-- 저장 상위 폴더는 **Live...**에서 설정합니다. 기본 저장 위치는 `~/Documents/LiDARViewer/recordings`이며, `--record-folder /path/to/bags`로도 지정할 수 있습니다. 각 녹화는 한국 시간의 `sensors_YYYYMMDD_HHMMSS_microseconds` 폴더를 새로 만듭니다. 기존 폴더는 덮어쓰지 않습니다.
-- **Live... → Disconnect**: 수신을 종료하고 진행 중인 녹화를 마무리합니다. 마지막 화면은 유지합니다. 파일을 열려면 먼저 연결을 해제합니다.
+- **Freeze / Space**로 화면을 고정한 채 센서 구독을 유지합니다. 고정한 점군을 회전·확대하고 ROI를 수정할 수 있습니다.
+- **Resume / Space**를 누르면 수신한 최신 프레임으로 돌아갑니다. 이전 구간을 재생하려면 녹화한 bag을 엽니다.
+- **Record / Stop recording**으로 원본 LiDAR·IMU·`/tf`·`/tf_static`을 MCAP으로 저장합니다. 저장을 마치면 `metadata.yaml`이 생성됩니다.
+- 저장 상위 폴더는 **Live**에서 설정합니다. 기본 저장 위치는 `~/Documents/LiDARViewer/recordings`이며, `--record-folder /path/to/bags`로도 지정할 수 있습니다. 각 녹화는 한국 시간의 `sensors_YYYYMMDD_HHMMSS_microseconds` 폴더에 저장됩니다.
+- **Live → Disconnect**는 수신을 종료하고 진행 중인 녹화를 마무리합니다. 연결을 끊은 뒤 **Browse recordings**에서 등록한 녹화 파일을 열 수 있습니다.
 - 센서 QoS는 Best Effort/Volatile이며, 라이다 대기열은 두 프레임입니다. 표시가 늦어지면 과거 화면을 누적하지 않습니다. 녹화 큐는 별도 스레드에서 최대 256 MiB까지 보관하며, 디스크가 따라가지 못해 누락되면 횟수와 오류를 표시합니다. 센서·네트워크 단계의 무손실을 보장하는 기능은 아닙니다.
 - 실시간 IMU도 수신 시각 차이 50ms 이내에서 중력을 대응합니다. 정지한 프레임에는 해당 프레임의 IMU 대응 결과가 고정됩니다. 실제 장착 회전과 센서 시간 동기화는 별도로 맞춰야 합니다.
 - 같은 ROS domain/RMW 환경에서 실행해야 합니다. 예: 센서 실행 터미널과 뷰어 터미널의 `ROS_DOMAIN_ID`, 네트워크 검색 설정을 동일하게 사용합니다.

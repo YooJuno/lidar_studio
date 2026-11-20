@@ -114,7 +114,7 @@ Exports contain **NPY** (`float32`, `N × 4`: `x, y, z, intensity`), matching **
 
 ## Live sensors
 
-Put the computer on the sensor's Ethernet subnet and set the sensor to send UDP data to the computer. In **Live**, choose **Auto** or select the model, then **Connect**. **Record** saves raw point and available auxiliary packets to `lidar.pcap`. Pause freezes the display while recording continues. Use **Open saved PCAP** to replay the recording.
+Put the computer on the sensor's Ethernet subnet and set the sensor to send UDP data to the computer. In **Live**, choose **Auto** or select the model, then **Connect**. The viewer shows the UDP route while waiting. Use **Record** to save raw point and available auxiliary packets to `lidar.pcap`. **Freeze** holds the displayed scan while recording continues. After **Stop recording**, use **Open PCAP** below the viewer to replay the capture.
 
 Supported models include **Hesai XT32, XT16, XT32M2X, AT128 / AT128P; Velodyne VLP‑16, Puck Hi‑Res, HDL‑32E, VLP‑32C; Livox Mid‑360; Ouster OS0 / OS1 / OS2; and RoboSense M1 / M2 / M3**. The guide lists ports, per-sensor calibration files and the optional ROS 2 source. [Sensor setup and recording](docs/guide.md#실시간-lidar--imu).
 

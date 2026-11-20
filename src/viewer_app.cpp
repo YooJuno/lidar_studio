@@ -522,6 +522,8 @@ struct ViewerState
   lidar_viewer::LiveStats live_stats;
   bool live_mode{false}, live_paused{false}, live_has_frame{false}, open_live_dialog{false};
   bool live_select_ros{false}, live_using_ros{false};
+  std::string live_source, live_route;
+  fs::path live_saved_pcap;
   LidarModel live_sensor_model{LidarModel::Auto};
   int live_udp_port{0};
   int live_auxiliary_port{0};
@@ -1533,7 +1535,7 @@ void ApplyCalibration(ViewerState & state, const FrameData * source = nullptr,
   ApplyRoiResult(state,frame,obstacles,coordinates);
   state.processed_frame=std::move(frame); state.processed_obstacles=obstacles;
   if (state.imu_level_enabled && leveling.applied!=state.imu_level_result.applied)
-    std::cout << "IMU leveling " << (leveling.applied ? "active: " : "unavailable: ") << leveling.status << std::endl;
+    std::cout << ((leveling.applied ? "IMU leveling active: " : "IMU leveling unavailable: ") + leveling.status + '\n') << std::flush;
   state.imu_level_result=std::move(leveling);
   state.processing_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
 }
@@ -2369,11 +2371,33 @@ void SetLivePaused(ViewerState & state, bool paused)
             << state.live_display_sequence << " | receiver remains active" << std::endl;
 }
 
+void RefreshLiveStats(ViewerState & state)
+{
+  auto stats = state.live.Stats();
+  if (!state.live_using_ros && state.live_stats.sensor_model == LidarModel::Auto && stats.sensor_model != LidarModel::Auto) {
+    std::cout << "Direct LiDAR detected: " << lidar_viewer::DirectLidarModelName(stats.sensor_model)
+              << " | " << stats.sensor_address << std::endl;
+    state.live_source = std::string(lidar_viewer::DirectLidarModelName(stats.sensor_model)) + " | " + stats.sensor_address;
+  }
+  if (!state.live_using_ros && !stats.record_busy && stats.recorded_messages &&
+      (state.live_stats.record_busy || state.live_stats.recording_path != stats.recording_path)) {
+    // The native writer publishes the final filename on successful close, even after a queue drop.
+    std::error_code error;
+    if (fs::is_regular_file(stats.recording_path, error)) {
+      state.live_saved_pcap = stats.recording_path;
+      std::cout << "Saved LiDAR capture: " << stats.recording_path << std::endl;
+    }
+  }
+  state.live_stats = std::move(stats);
+}
+
 void ConnectLive(ViewerState & state)
 {
   if (state.live.Active() || state.loading_bag_source || state.bag_picker.Active() || state.folder_scan_future.valid()) return;
   if (state.live_select_ros) {
     state.live.Connect({state.live_points_topic.data(), state.live_imu_topic.data()});
+    state.live_source = std::string("ROS 2 | ") + state.live_points_topic.data();
+    state.live_route = std::string("PointCloud2 topic ") + state.live_points_topic.data();
   } else {
     if (state.live_udp_port < 0 || state.live_udp_port > 65535 || state.live_auxiliary_port < 0 || state.live_auxiliary_port > 65535)
       throw std::runtime_error("UDP ports must be 1 to 65535, or 0 for the model default");
@@ -2385,8 +2409,19 @@ void ConnectLive(ViewerState & state)
     options.multicast_ipv4 = state.live_multicast_ipv4.data();
     options.calibration_file = ExpandFolderPath(state.live_calibration.data());
     state.live.ConnectDirect(options);
+    state.live_source = std::string("Ethernet | ") + (options.model == LidarModel::Auto ? "Auto-detect" :
+      lidar_viewer::DirectLidarModelName(options.model));
+    if (options.udp_port) state.live_route = "UDP " + std::to_string(options.udp_port);
+    else if (options.model == LidarModel::OusterOs) state.live_route = "UDP port from Ouster metadata";
+    else if (options.model != LidarModel::Auto)
+      state.live_route = "UDP " + std::to_string(lidar_viewer::DirectLidarDefaultPort(options.model));
+    else if (!options.calibration_file.empty()) state.live_route = "UDP ports selected from calibration and model";
+    else state.live_route = "UDP 2368, 7502, 6699, 56301";
+    if (!options.sensor_ipv4.empty()) state.live_route += " from " + options.sensor_ipv4;
+    if (!options.multicast_ipv4.empty()) state.live_route += " via multicast " + options.multicast_ipv4;
   }
   state.live_using_ros = state.live_select_ros;
+  state.live_saved_pcap.clear();
   const std::string profile = state.live_using_ros ? "rosbag" : "direct-lidar";
   if (state.dataset_profile != profile) {
     state.dataset_profile = profile;
@@ -2419,7 +2454,9 @@ void ConnectLive(ViewerState & state)
   state.current_index = 0; state.current_file_group = 0; state.seek_draft = 0;
   state.is_playing = false; state.timeline_dragging = false; state.ground_removed_count = 0;
   state.live_mode = true; state.live_paused = false; state.live_has_frame = false; state.live_display_sequence = 0;
-  state.live_stats = state.live.Stats(); state.frame_dirty = true;
+  state.live_stats = {};
+  RefreshLiveStats(state);
+  state.frame_dirty = true;
   state.ui_error.clear();
   if (state.live_using_ros) {
     std::cout << "Live connected: " << state.live_points_topic.data() << " | IMU " << state.live_imu_topic.data() << std::endl;
@@ -2431,17 +2468,7 @@ void ConnectLive(ViewerState & state)
 void UpdateLiveFrame(ViewerState & state)
 {
   if (!state.live_mode) return;
-  auto stats = state.live.Stats();
-  if (!state.live_using_ros && state.live_stats.sensor_model == LidarModel::Auto && stats.sensor_model != LidarModel::Auto) {
-    std::cout << "Direct LiDAR detected: " << lidar_viewer::DirectLidarModelName(stats.sensor_model)
-              << " | " << stats.sensor_address << std::endl;
-  }
-  if (!state.live_using_ros && state.live_stats.record_busy && !stats.record_busy &&
-      !stats.recording_path.empty() && fs::is_regular_file(stats.recording_path)) {
-    SetTransientStatus(state,"LiDAR capture saved");
-    std::cout << "Saved LiDAR capture: " << stats.recording_path << std::endl;
-  }
-  state.live_stats = std::move(stats);
+  RefreshLiveStats(state);
   if (!state.live_stats.connected || state.live_paused || state.geometry_future.valid() || DetectorFramePending(state)) return;
   auto next = state.live.TakeLatest();
   if (!next) return;
@@ -2482,9 +2509,10 @@ void ToggleLiveRecording(ViewerState & state)
   } else {
     const auto destination = NewLiveRecordingPath(state);
     state.live.StartRecording(destination);
+    state.live_saved_pcap.clear();
     std::cout << "Live recording: " << destination << std::endl;
   }
-  state.live_stats = state.live.Stats();
+  RefreshLiveStats(state);
 }
 
 void BrowseFolder(ViewerState & state, const fs::path & folder)
@@ -3484,24 +3512,25 @@ std::string BagLabel(const ViewerState & state,const BagSource & source)
     source.recording_date + "  " + source.recording_time) + "  |  " + SourceDuration(state,source) + "  |  " + source.display_name;
 }
 
+void TraceUi(const char * id);
+
 void BuildSourceSelector(ViewerState & state, float width)
 {
   const auto * group = state.file_groups.empty() ? nullptr : &state.file_groups[state.current_file_group];
-  const bool dataset=!state.live_mode && !state.frames.empty() && state.frames.front().dataset_sample!=nullptr;
-  const auto preview = state.live_mode ? std::string("LIVE | ") + (state.live_using_ros ? state.live_points_topic.data() :
-      state.live_stats.sensor_model == LidarModel::Auto ? "Waiting for UDP" :
-      lidar_viewer::DirectLidarModelName(state.live_stats.sensor_model)) :
-    dataset ? std::string("Dataset | ")+std::to_string(state.frames.size())+" samples | "+
+  const bool dataset=!state.frames.empty() && state.frames.front().dataset_sample!=nullptr;
+  const auto preview = dataset ? std::string("Dataset | ")+std::to_string(state.frames.size())+" samples | "+
       (state.current_bag_source ? state.bag_sources[*state.current_bag_source].path.filename().u8string() : (group ? group->display_name : "")) :
     state.current_bag_source ? BagLabel(state,state.bag_sources[*state.current_bag_source]) :
-    (group ? group->display_name : "No input loaded");
+    (group ? group->display_name : state.live_mode ? "Browse recordings" : "No input loaded");
   ImGui::SetNextItemWidth(width);
   const float popup_width = std::min(720.f * state.ui_layout.scale, ImGui::GetIO().DisplaySize.x - 32.f);
   ImGui::SetNextWindowSizeConstraints({popup_width, 0}, {popup_width, 600.f * state.ui_layout.scale});
   ImGui::BeginDisabled((state.example_dataset && state.example_dataset->Progress().Active()) || state.loading_bag_source.has_value() || state.folder_scan_future.valid() ||
     state.bag_picker.Active() || state.live.Active() || (!group && state.bag_sources.empty() && state.hidden_sources.empty()));
   std::optional<fs::path> remove_source;
-  if (ImGui::BeginCombo("##Source", preview.c_str(), ImGuiComboFlags_HeightLarge)) {
+  const bool sources_open = ImGui::BeginCombo("##Source", preview.c_str(), ImGuiComboFlags_HeightLarge);
+  if (!sources_open) TraceUi("source_selector");
+  if (sources_open) {
     if (ImGui::IsWindowAppearing()) state.check_source_availability=true;
     if (!state.bag_sources.empty()) {
       ImGui::TextUnformatted("Data sources");
@@ -3704,8 +3733,6 @@ void BuildFolderPicker(ViewerState & state)
   ImGui::EndPopup();
 }
 
-void TraceUi(const char * id);
-
 void BuildLiveDialog(ViewerState & state)
 {
   const auto display = ImGui::GetIO().DisplaySize;
@@ -3806,17 +3833,9 @@ void BuildLiveDialog(ViewerState & state)
         static_cast<unsigned long long>(state.live_stats.sequence_gaps));
       if (state.live_stats.auxiliary_port) ImGui::TextDisabled("Auxiliary UDP port %u", static_cast<unsigned>(state.live_stats.auxiliary_port));
       if (!state.live_stats.auxiliary_error.empty()) ImGui::TextWrapped("Auxiliary packets: %s", state.live_stats.auxiliary_error.c_str());
-    } else if (connected) {
-      ImGui::TextWrapped("Waiting for LiDAR. Check Ethernet and the sensor's UDP destination.");
     }
     if (state.live_stats.clouds) ImGui::Text("LiDAR: %.1f Hz  |  %.0f ms since last scan", state.live_stats.cloud_hz, state.live_stats.cloud_age_ms);
     if (!state.live_stats.error.empty()) ImGui::TextWrapped("%s", state.live_stats.error.c_str());
-    if (!state.live_stats.recording_path.empty()) {
-      ImGui::TextWrapped("%s", state.live_stats.recording_path.u8string().c_str());
-      ImGui::Text("Recorded: %.1f MiB  |  %llu dropped", state.live_stats.recorded_bytes / 1048576.,
-        static_cast<unsigned long long>(state.live_stats.record_dropped));
-    }
-    if (!state.live_stats.record_error.empty()) ImGui::TextColored(ui::ErrorColor(), "%s", state.live_stats.record_error.c_str());
   }
   ImGui::Separator();
   ImGui::BeginDisabled(state.live_calibration_picker.Active());
@@ -3825,7 +3844,8 @@ void BuildLiveDialog(ViewerState & state)
   if (connect_clicked) {
     try {
       if (connected) {
-        state.live.Disconnect(); state.live_stats=state.live.Stats();
+        state.live.Disconnect();
+        RefreshLiveStats(state);
         std::cout << "Live disconnected" << std::endl;
       } else ConnectLive(state);
       state.ui_error.clear();
@@ -3835,23 +3855,147 @@ void BuildLiveDialog(ViewerState & state)
   ImGui::EndDisabled();
   ImGui::SameLine();
   if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
-  if (!state.live_using_ros && !state.live_stats.record_busy && state.live_stats.recorded_messages &&
-      fs::is_regular_file(state.live_stats.recording_path)) {
+  if (!state.ui_error.empty()) ImGui::TextWrapped("%s", state.ui_error.c_str());
+  ImGui::EndPopup();
+}
+
+void BuildLiveTransport(ViewerState & state, bool input_busy)
+{
+  const float s = state.ui_layout.scale;
+  const auto & stats = state.live_stats;
+  const char * status = "Live";
+  ImVec4 color = ui::SuccessColor();
+  if (!stats.connected) {
+    status = "Disconnected";
+    color = ui::WarningColor();
+  } else if (state.live_paused && state.live_has_frame) {
+    status = "Frozen";
+    color = ui::InfoColor();
+  } else if (!state.live_has_frame) {
+    color = ui::InfoColor();
+    if (state.live_paused || !stats.error.empty()) {
+      status = "Input issue";
+      color = ui::WarningColor();
+    } else if (stats.clouds) status = "Displaying first scan";
+    else if (!state.live_using_ros && !stats.packets) status = "Waiting for packets";
+    else status = "Waiting for first scan";
+  } else if (stats.cloud_age_ms > 1000) {
+    status = "No recent scans";
+    color = ui::WarningColor();
+  }
+  ImGui::TextColored(color, "%s", status);
+  if (!stats.error.empty() && state.live_has_frame) Tip(stats.error.c_str());
+  ImGui::SameLine();
+  ImGui::TextDisabled("%s", state.live_source.c_str());
+  Tip(state.live_route.c_str());
+
+  const bool show_live_controls = stats.connected || stats.record_busy;
+  if (show_live_controls) {
+    ImGui::BeginDisabled(!stats.connected || (!state.live_has_frame && !state.live_paused));
+    ImGui::PushStyleColor(ImGuiCol_Button, ui::SelectionColor());
+    if (lidar_viewer::ActionButton("##FreezeLive", state.live_paused ? lidar_viewer::UiIcon::Play : lidar_viewer::UiIcon::Pause,
+        state.live_paused ? "Resume" : "Freeze", {100*s, 0}, s)) TogglePlayback(state);
+    TraceUi("live_freeze");
+    ImGui::PopStyleColor();
+    ImGui::EndDisabled();
+    Tip("Freeze or resume the displayed scan [Space]. The receiver and recorder keep running.");
+
     ImGui::SameLine();
-    const bool open = ImGui::Button("Open saved PCAP");
-    TraceUi("live_open_capture");
+    ImGui::BeginDisabled(stats.record_stopping || (!stats.record_busy &&
+      (!stats.connected || (!state.live_using_ros && !stats.packets))));
+    ImGui::PushStyleColor(ImGuiCol_Button, stats.record_busy && !stats.record_stopping ?
+      ui::Tone({.55f,.19f,.19f,1}, {.97f,.82f,.81f,1}) : ImGui::GetStyleColorVec4(ImGuiCol_Button));
+    const char * record_label = stats.record_stopping ? "Saving...###LiveRecord" :
+      stats.record_busy ? "Stop recording###LiveRecord" : "Record###LiveRecord";
+    const float record_width = ImGui::CalcTextSize("Stop recording").x + 2*ImGui::GetStyle().FramePadding.x;
+    const bool record = ImGui::Button(record_label, {record_width, 0});
+    TraceUi("live_record");
+    ImGui::PopStyleColor();
+    ImGui::EndDisabled();
+    if (stats.connected && !state.live_using_ros && !stats.packets) Tip("Wait for LiDAR packets before recording.");
+    if (record) {
+      try {ToggleLiveRecording(state); state.ui_error.clear();}
+      catch (const std::exception & error) {state.ui_error = error.what();}
+    }
+  }
+
+  const bool saved_pcap = !state.live_using_ros && !stats.record_busy && !state.live_saved_pcap.empty();
+  if (saved_pcap) {
+    if (show_live_controls) ImGui::SameLine();
+    ImGui::BeginDisabled(input_busy);
+    const bool open = lidar_viewer::ActionButton("##OpenLivePcap", lidar_viewer::UiIcon::Folder, "Open PCAP", {125*s, 0}, s);
+    TraceUi("live_open_recording");
+    ImGui::EndDisabled();
+    Tip(stats.connected ? "Switch from live input to the saved capture." : "Open the saved capture in the viewer.");
     if (open) {
       try {
-        const auto path = state.live_stats.recording_path;
+        std::error_code error;
+        if (!fs::is_regular_file(state.live_saved_pcap, error)) {
+          state.live_saved_pcap.clear();
+          throw std::runtime_error("The saved PCAP is no longer available. Check the recording folder.");
+        }
         state.live.Disconnect();
-        state.live_stats = state.live.Stats();
-        OpenInputPath(state,path);
-        ImGui::CloseCurrentPopup();
+        RefreshLiveStats(state);
+        OpenInputPath(state, state.live_saved_pcap);
       } catch (const std::exception & error) {state.ui_error = error.what();}
     }
   }
-  if (!state.ui_error.empty()) ImGui::TextWrapped("%s", state.ui_error.c_str());
-  ImGui::EndPopup();
+  if (!show_live_controls && (!state.bag_sources.empty() || !state.hidden_sources.empty())) {
+    if (saved_pcap) ImGui::SameLine();
+    ImGui::BeginDisabled(input_busy);
+    BuildSourceSelector(state, ImGui::GetContentRegionAvail().x);
+    ImGui::EndDisabled();
+  }
+
+  if (stats.record_dropped) {
+    ImGui::TextColored(ui::ErrorColor(), "Recording issue | %llu %s dropped", static_cast<unsigned long long>(stats.record_dropped),
+      state.live_using_ros ? "messages" : "packets");
+    Tip(stats.record_error.c_str());
+  } else if (!stats.record_error.empty()) {
+    ImGui::TextColored(ui::ErrorColor(), "%s", stats.record_error.c_str());
+    Tip(stats.record_error.c_str());
+  } else if (!stats.recording_path.empty() && (stats.record_busy || saved_pcap || (state.live_using_ros && stats.recorded_messages))) {
+    const auto name = state.live_using_ros ? stats.recording_path.filename() :
+      stats.recording_path.parent_path().filename() / stats.recording_path.filename();
+    if (stats.record_busy) ImGui::TextDisabled("%s", name.u8string().c_str());
+    else ImGui::TextDisabled("Saved %s | %.1f MiB", name.u8string().c_str(), stats.recorded_bytes / 1048576.);
+    Tip(stats.recording_path.u8string().c_str());
+  }
+}
+
+void BuildLiveWaitingPanel(ViewerState & state)
+{
+  if (!state.live_mode || state.live_has_frame || state.loading_bag_source ||
+      ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup)) return;
+  const auto & view = state.ui_layout.viewport;
+  const float s = state.ui_layout.scale;
+  const auto & stats = state.live_stats;
+  const bool issue = !stats.connected || state.live_paused || !stats.error.empty();
+  const char * title = !stats.connected ? "Live connection ended" : issue ? "Live input needs attention" : "Waiting for the first LiDAR scan";
+  const auto & detail = !stats.error.empty() ? stats.error :
+    (state.live_paused && !state.ui_error.empty() ? state.ui_error : state.live_route);
+  const float width = std::min(450*s, view.w - 24*s);
+  const auto & style = ImGui::GetStyle();
+  const float text_width = width - 2*style.WindowPadding.x;
+  if (text_width < 150*s) return;
+  const float line = ImGui::GetTextLineHeight();
+  const float detail_height = std::clamp(ImGui::CalcTextSize(detail.c_str(), nullptr, false, text_width).y, line, 3*line);
+  const float height = 2*style.WindowPadding.y + line + detail_height + ImGui::GetFrameHeight() + 2*style.ItemSpacing.y;
+  if (view.h < height + 24*s) return;
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, ui::OverlayBackground());
+  BeginPanel("Live connection", {view.x + (view.w-width)*.5f, view.y + (view.h-height)*.5f, width, height}, false);
+  ImGui::TextColored(issue ? ui::WarningColor() : ui::InfoColor(), "%s", title);
+  ImGui::BeginChild("##LiveRoute", {0, detail_height}, ImGuiChildFlags_None,
+    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+  ImGui::TextWrapped("%s", detail.c_str());
+  Tip(detail.c_str());
+  ImGui::EndChild();
+  if (lidar_viewer::ActionButton("##LiveWaitingSettings", lidar_viewer::UiIcon::Settings, "Live settings", {145*s, 0}, s)) {
+    state.open_live_dialog = true;
+  }
+  TraceUi("live_waiting_settings");
+  ImGui::End();
+  ImGui::PopStyleColor();
 }
 
 void FocusSelectedRoi(ViewerState & state)
@@ -4729,7 +4873,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   ImGui::SameLine();
   ImGui::BeginDisabled(example_busy || state.review_window || state.loading_bag_source.has_value() || state.folder_scan_future.valid() || state.bag_picker.Active());
   if (lidar_viewer::ActionButton("##Live",lidar_viewer::UiIcon::Live,"Live",{85*s,0},s)) state.open_live_dialog=true;
-  TraceUi("open_live");Tip("Connect an Ethernet LiDAR, inspect the live scan and record packets.");
+  TraceUi("open_live");Tip("Open live sensor settings.");
   ImGui::EndDisabled();ImGui::SameLine(425*s);
   const bool wide_header=layout.header.w>=1050*s;
   const auto workspace_button=[&](const char * id,lidar_viewer::UiIcon icon,const char * label,float width,bool selected) {
@@ -4754,16 +4898,15 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   auto & training_owner=state.studio_parent ? *state.studio_parent : state;
   if(workspace_button("##Training",lidar_viewer::UiIcon::Play,wide_header ? "Train" : nullptr,wide_header ? 86.f : 32.f,training_owner.open_training)) training_owner.open_training=true;
   TraceUi("open_training");Tip("Configure, validate and run model training with the current dataset.");
-  const float header_right = std::max(ImGui::GetItemRectMax().x+16*s, layout.header.w - 360.f * s);
-  ImGui::SameLine(header_right);
-  ImGui::TextColored(!state.ui_error.empty() ? ui::ErrorColor() :
-    (state.loading_bag_source ? ui::InfoColor() :
-      (state.is_playing ? ui::SuccessColor() : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled))),
-    "%s", !state.ui_error.empty() ? "ERROR" :
-      (state.live_mode ? (state.live_stats.connected ? (state.live_paused ? "FROZEN" :
-        (state.live_stats.clouds==0 ? "WAITING" : (state.live_stats.cloud_age_ms>1000 ? "STALE" : "LIVE"))) : "DISCONNECTED") :
-      (state.loading_bag_source ? "OPENING INPUT" :
-        (has_input ? (state.review_window ? "REVIEW" : state.is_playing ? "PLAYING" : "PAUSED") : "READY"))));
+  if (!state.live_mode || !state.ui_error.empty() || state.loading_bag_source) {
+    const float header_right = std::max(ImGui::GetItemRectMax().x+16*s, layout.header.w - 360.f * s);
+    ImGui::SameLine(header_right);
+    ImGui::TextColored(!state.ui_error.empty() ? ui::ErrorColor() :
+      (state.loading_bag_source ? ui::InfoColor() :
+        (state.is_playing ? ui::SuccessColor() : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled))),
+      "%s", !state.ui_error.empty() ? "ERROR" : (state.loading_bag_source ? "OPENING INPUT" :
+        (has_input ? (state.review_window ? "REVIEW" : state.is_playing ? "PLAYING" : "PAUSED") : "READY")));
+  }
   ImGui::SameLine(layout.header.w-176*s);
   if(ImGui::SmallButton("About")) state.open_about=true;
   TraceUi("open_about");
@@ -4773,7 +4916,8 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     ImGui::TextUnformatted("Keyboard & mouse");
     ImGui::Separator();
     if(dataset_input) ImGui::TextUnformatted("Ctrl+O       Open point file / folder\nDelete       Delete current sample\nCtrl+Z       Restore last deletion\nLeft / Right Previous / next sample\nF            Fit current sample\nSpace        Play / pause samples\nEsc          Return to bag\nQ / E        Rotate 2D view\nLeft drag    Orbit (3D) / pan (2D)\nRight drag   Pan (3D) / rotate (2D)\nWheel        Zoom");
-    else ImGui::TextUnformatted("Ctrl+O       Open file chooser\nCtrl+S       Save profile\nCtrl+E       Export current ROI frame\nR            Draw ROI in top view\nCtrl+Z / Y   Undo / redo ROI\nCtrl+D       Duplicate ROI (ROI tab)\nDelete       Delete ROI (ROI tab)\nEsc          Cancel ROI tool / quit\nSpace        Play / pause\nN / P        Next / previous frame\nF            Fit all points\nC            Cycle point colors\n[ / ]        Point size\nQ / E        Rotate 2D view\nLeft drag    Orbit (3D) / pan (2D)\nRight drag   Pan (3D) / rotate (2D)\nWheel        Zoom");
+    else ImGui::Text("Ctrl+O       Open file chooser\nCtrl+S       Save profile\nCtrl+E       Export current ROI frame\nR            Draw ROI in top view\nCtrl+Z / Y   Undo / redo ROI\nCtrl+D       Duplicate ROI (ROI tab)\nDelete       Delete ROI (ROI tab)\nEsc          Cancel ROI tool / quit\n%s\nF            Fit all points\nC            Cycle point colors\n[ / ]        Point size\nQ / E        Rotate 2D view\nLeft drag    Orbit (3D) / pan (2D)\nRight drag   Pan (3D) / rotate (2D)\nWheel        Zoom",
+      state.live_mode ? "Space        Freeze / resume live display" : "Space        Play / pause\nN / P        Next / previous frame");
     ImGui::EndPopup();
   }
   ImGui::SameLine(layout.header.w-48*s);
@@ -4785,7 +4929,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   BeginPanel("Inspector", layout.sidebar, false);
   ImGui::TextUnformatted("Controls");
   ImGui::SameLine();
-  ImGui::TextDisabled("  %s", state.live_mode ? "LIVE ROS 2" : has_input ?
+  ImGui::TextDisabled("  %s", state.live_mode ? (state.live_using_ros ? "LIVE ROS 2" : "LIVE ETHERNET") : has_input ?
     (dataset_input ? "DATASET" : state.frames.front().format == InputFormat::Ros2Bag ? "ROS 2 BAG" :
       state.frames.front().format == InputFormat::LidarPcap ? "PCAP" : "BIN") : "NO DATA");
   ImGui::Spacing();
@@ -5367,39 +5511,42 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   if (!resizing && state.inspector_resizing && state.app_settings_dirty) SaveAppSettings(state);
   state.inspector_resizing=resizing;ImGui::End();ImGui::PopStyleVar();
 
+  if (state.live_mode) ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {16*s, 12*s});
   BeginPanel("Transport", layout.transport, false);
   const auto * group = !state.live_mode && has_input ? &state.file_groups[state.current_file_group] : nullptr;
-  const std::size_t first_index = group ? group->first_index : 0;
-  const std::size_t frame_count = group ? group->last_index - group->first_index + 1 : 0;
-  const bool multiple = frame_count > 1;
-  ImGui::BeginDisabled(state.dataset_edit_future.valid() || !has_input || state.loading_bag_source.has_value() || (state.live_mode && !state.live_stats.connected));
-  ImGui::PushStyleColor(ImGuiCol_Button, ui::SelectionColor());
-  const bool showing_motion = state.live_mode ? !state.live_paused : state.is_playing;
-  if (lidar_viewer::ActionButton("##PlayPause",showing_motion ? lidar_viewer::UiIcon::Pause : lidar_viewer::UiIcon::Play,
-      showing_motion ? "Pause" : "Play",{88*s,0},s)) {
-    TogglePlayback(state);
-  }
-  ImGui::PopStyleColor();
-  ImGui::SameLine();
-  ImGui::BeginDisabled(!multiple);
-  if (lidar_viewer::ActionButton("##Previous",lidar_viewer::UiIcon::Previous,nullptr,{32*s,0},s)) AdvanceFrame(state, -1);
-  Tip("Previous frame  [P]");
-  ImGui::SameLine();
-  if (lidar_viewer::ActionButton("##Next",lidar_viewer::UiIcon::Next,nullptr,{32*s,0},s)) AdvanceFrame(state, 1);
-  Tip("Next frame  [N]");
-  ImGui::EndDisabled();
-  ImGui::SameLine();
-  ImGui::BeginDisabled(state.live_mode);
-  ImGui::Checkbox("Loop", &state.loop_playback);
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(92.f * s);
-  ImGui::DragScalar("##Speed", ImGuiDataType_Double, &state.playback_fps, .1f, nullptr, nullptr, "%.1f fps");
-  state.playback_fps = std::isfinite(state.playback_fps) ? std::clamp(state.playback_fps, .1, 120.) : 10.;
-  if (layout.transport.w > 800.f * s) {
+  if (state.live_mode) {
+    ImGui::PopStyleVar();
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {10*s, 6*s});
+    BuildLiveTransport(state, example_busy || state.loading_bag_source || state.folder_scan_future.valid() ||
+      state.bag_picker.Active() || state.dataset_edit_future.valid());
+    ImGui::PopStyleVar();
+  } else {
+    const std::size_t first_index = group ? group->first_index : 0;
+    const std::size_t frame_count = group ? group->last_index - group->first_index + 1 : 0;
+    const bool multiple = frame_count > 1;
+    ImGui::BeginDisabled(state.dataset_edit_future.valid() || !has_input || state.loading_bag_source.has_value());
+    ImGui::PushStyleColor(ImGuiCol_Button, ui::SelectionColor());
+    if (lidar_viewer::ActionButton("##PlayPause",state.is_playing ? lidar_viewer::UiIcon::Pause : lidar_viewer::UiIcon::Play,
+        state.is_playing ? "Pause" : "Play",{88*s,0},s)) {
+      TogglePlayback(state);
+    }
+    ImGui::PopStyleColor();
     ImGui::SameLine();
-    if (state.live_mode && state.live_display_sequence) ImGui::TextDisabled("Live frame %llu", static_cast<unsigned long long>(state.live_display_sequence));
-    else if (state.live_mode) ImGui::TextDisabled("Waiting for LiDAR");
-    else if (group) {
+    ImGui::BeginDisabled(!multiple);
+    if (lidar_viewer::ActionButton("##Previous",lidar_viewer::UiIcon::Previous,nullptr,{32*s,0},s)) AdvanceFrame(state, -1);
+    Tip("Previous frame  [P]");
+    ImGui::SameLine();
+    if (lidar_viewer::ActionButton("##Next",lidar_viewer::UiIcon::Next,nullptr,{32*s,0},s)) AdvanceFrame(state, 1);
+    Tip("Next frame  [N]");
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::Checkbox("Loop", &state.loop_playback);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(92.f * s);
+    ImGui::DragScalar("##Speed", ImGuiDataType_Double, &state.playback_fps, .1f, nullptr, nullptr, "%.1f fps");
+    state.playback_fps = std::isfinite(state.playback_fps) ? std::clamp(state.playback_fps, .1, 120.) : 10.;
+    if (layout.transport.w > 800.f * s && group) {
+      ImGui::SameLine();
       const auto & first=state.frames[first_index];
       const bool recorded=first.format==InputFormat::Ros2Bag || first.format==InputFormat::LidarPcap;
       const auto seconds=[&](std::size_t i) {
@@ -5414,55 +5561,29 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       Tip(recorded ? "Position in recorded time. Frame numbers are on the timeline below." :
         "Estimated time at the input scan rate. Frame numbers are on the timeline below.");
     }
-  }
-  ImGui::EndDisabled();
-  ImGui::EndDisabled();
-  ImGui::SameLine();
-  if(!state.review_window) BuildSourceSelector(state, std::max(80.f * s, ImGui::GetContentRegionAvail().x));
-  else if(has_input) ImGui::TextUnformatted(state.frames[state.current_index].label.c_str());
-  if (state.live_mode) {
-    ImGui::BeginDisabled(!state.live_stats.connected || state.live_stats.record_stopping ||
-      (!state.live_using_ros && !state.live_stats.packets));
-    ImGui::PushStyleColor(ImGuiCol_Button, state.live_stats.record_busy ? ImVec4(.6f,.16f,.16f,1) : ImVec4(.32f,.18f,.2f,1));
-    const char * label = state.live_stats.record_stopping ? "Saving..." : (state.live_stats.record_busy ? "Stop REC" : "Record");
-    if (ImGui::Button(label, {110.f * s, 0})) {
-      try {ToggleLiveRecording(state); state.ui_error.clear();}
-      catch (const std::exception & error) {state.ui_error=error.what();}
-    }
-    TraceUi("live_record");
-    ImGui::PopStyleColor(); ImGui::EndDisabled();
+    ImGui::EndDisabled();
     ImGui::SameLine();
-    if (state.live_using_ros) {
-      ImGui::TextDisabled("Rx %llu | IMU %llu | %.1f Hz", static_cast<unsigned long long>(state.live_stats.clouds),
-        static_cast<unsigned long long>(state.live_stats.imu_samples), state.live_stats.cloud_hz);
-    } else {
-      ImGui::TextDisabled("%llu scans  |  %.1f Hz", static_cast<unsigned long long>(state.live_stats.clouds), state.live_stats.cloud_hz);
-      if (!state.live_stats.error.empty()) {
-        ImGui::SameLine();
-        ImGui::TextColored(ui::WarningColor(),"Live input details");
-        Tip(state.live_stats.error.c_str());
-      }
+    if(!state.review_window) BuildSourceSelector(state, std::max(80.f * s, ImGui::GetContentRegionAvail().x));
+    else if(has_input) ImGui::TextUnformatted(state.frames[state.current_index].label.c_str());
+    if (!state.timeline_dragging) state.seek_draft = static_cast<int>(state.current_index - first_index);
+    ImGui::SetNextItemWidth(-1);
+    ImGui::BeginDisabled(state.dataset_edit_future.valid() || !multiple || state.loading_bag_source.has_value());
+    const std::string timeline_label = "Frame " + std::to_string(has_input ? state.seek_draft + 1 : 0) + " / " +
+      std::to_string(frame_count);
+    ImGui::SliderInt("##Timeline", &state.seek_draft, 0, frame_count ? static_cast<int>(frame_count - 1) : 0,
+      timeline_label.c_str(), ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_NoInput);
+    TraceUi("timeline");
+    if (ImGui::IsItemActivated()) {
+      state.timeline_dragging = true;
+      state.requested_frame.reset();
     }
-  } else {
-  if (!state.timeline_dragging) state.seek_draft = static_cast<int>(state.current_index - first_index);
-  ImGui::SetNextItemWidth(-1);
-  ImGui::BeginDisabled(state.dataset_edit_future.valid() || !multiple || state.loading_bag_source.has_value());
-  const std::string timeline_label = "Frame " + std::to_string(has_input ? state.seek_draft + 1 : 0) + " / " +
-    std::to_string(frame_count);
-  ImGui::SliderInt("##Timeline", &state.seek_draft, 0, frame_count ? static_cast<int>(frame_count - 1) : 0,
-    timeline_label.c_str(), ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_NoInput);
-  TraceUi("timeline");
-  if (ImGui::IsItemActivated()) {
-    state.timeline_dragging = true;
-    state.requested_frame.reset();
-  }
-  if (ImGui::IsItemDeactivated()) {
-    if (ImGui::IsItemDeactivatedAfterEdit())
-      TryLoadFrame(state, first_index + static_cast<std::size_t>(state.seek_draft));
-    state.timeline_dragging = false;
-    state.last_frame_advance_time = glfwGetTime();
-  }
-  ImGui::EndDisabled();
+    if (ImGui::IsItemDeactivated()) {
+      if (ImGui::IsItemDeactivatedAfterEdit())
+        TryLoadFrame(state, first_index + static_cast<std::size_t>(state.seek_draft));
+      state.timeline_dragging = false;
+      state.last_frame_advance_time = glfwGetTime();
+    }
+    ImGui::EndDisabled();
   }
   BuildFolderPicker(state);
   if (state.open_live_dialog) {ImGui::OpenPopup("Live sensors");state.open_live_dialog=false;}
@@ -5508,9 +5629,11 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   }
   else if (!state.transient_status.empty()) ImGui::TextColored(ui::SuccessColor(), "%s", state.transient_status.c_str());
   else if (long_wait) ImGui::TextDisabled("%s",state.requested_frame ? "Reading selected frame..." : "Processing selected frame...");
-  else if (state.live_mode) ImGui::TextDisabled("%zu points | display %llu / received %llu | %s", state.status_points,
-    static_cast<unsigned long long>(state.status_live_display), static_cast<unsigned long long>(state.status_live_received),
-    !state.live_stats.connected ? "disconnected" : (state.live_paused ? "frozen" : (state.live_stats.cloud_age_ms > 1000 ? "stream stale" : "live")));
+  else if (state.live_mode) {
+    if (state.live_has_frame) ImGui::TextDisabled("%zu points | Displayed %llu / received %llu", state.status_points,
+      static_cast<unsigned long long>(state.status_live_display), static_cast<unsigned long long>(state.status_live_received));
+    else ImGui::Dummy({0, ImGui::GetTextLineHeight()});
+  }
   else if (!has_input) ImGui::TextDisabled("Open a file or choose Open... > Driving examples.");
   else ImGui::TextDisabled("%zu points   |   %s",state.status_points,state.status_source.c_str());
   ImGui::PopClipRect();
@@ -5647,6 +5770,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     }
     ImGui::End();
   }
+  BuildLiveWaitingPanel(state);
   BuildInputLoading(state);
   BuildExampleDownload(state.studio_parent ? *state.studio_parent : state,s);
   BuildAppSettings(state);
@@ -5662,12 +5786,6 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       applied ? ImGui::ColorConvertFloat4ToU32(ui::SuccessColor()) : ImGui::ColorConvertFloat4ToU32(ui::WarningColor()),
       applied ? (estimated ? "IMU level: estimated" : "IMU level: active") : "IMU level: unavailable");
   }
-  if (state.live_mode && state.live_stats.record_busy) {
-    draw->AddText({view.x + view.w - 160.f*s, view.y + 12.f*s}, ImGui::ColorConvertFloat4ToU32(ui::ErrorColor()),
-      state.live_stats.record_stopping ? "Saving bag..." : "REC  raw sensors");
-  }
-  if (state.live_mode && (!state.live_stats.record_error.empty() || state.live_stats.record_dropped))
-    draw->AddText({view.x + 14.f*s, view.y + view.h - 48.f*s}, ImGui::ColorConvertFloat4ToU32(ui::ErrorColor()), "Recording error - open Live for details");
   if (has_input && state.ground_removal_enabled && state.ground_view!=ViewerState::GroundView::Obstacles) {
     draw->AddCircleFilled({view.x + 18.f * s, view.y + view.h - 18.f * s}, 4.f * s, IM_COL32(255, 75, 65, 255));
     draw->AddText({view.x + 30.f * s, view.y + view.h - 26.f * s}, muted, "Ground");
