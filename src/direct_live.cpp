@@ -414,9 +414,10 @@ struct DirectLiveSession::Impl
       stats.record_error = "Recording storage is too slow. The write queue dropped packets.";
       return;
     }
+    const bool wake_recorder = queue.empty();
     queue.push_back({{data, data + size}, from, received_ns});
     queued_bytes += size + sizeof(LidarDatagram);
-    ready.notify_one();
+    if (wake_recorder) ready.notify_one();
   }
 
   void ReceiveLoop(const std::optional<in_addr> & group)
@@ -570,13 +571,13 @@ struct DirectLiveSession::Impl
       lock.unlock();
       try {
         UdpPcapWriter writer(path, calibration);
+        std::deque<LidarDatagram> batch;
         lock.lock();
         stats.recording = true;
         for (;;) {
           ready.wait(lock, [&] {return stop_requested || !queue.empty();});
           if (queue.empty()) break;
-          auto batch = std::move(queue);
-          queue.clear();
+          batch.swap(queue);
           queued_bytes = 0;
           lock.unlock();
           std::uint64_t bytes = 0;

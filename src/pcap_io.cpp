@@ -22,6 +22,8 @@ namespace
 {
 constexpr std::uint32_t kRawIpv4 = 101;
 constexpr std::size_t kPcapHeader = 24, kPcapRecord = 16, kIpHeader = 20, kUdpHeader = 8;
+constexpr std::size_t kMaxPcapPayload = 65536 + 32;
+constexpr std::size_t kPcapWindow = 256 * 1024;
 
 std::uint16_t Be16(const std::uint8_t * bytes)
 {
@@ -99,7 +101,9 @@ std::optional<CapturedUdp> ExtractUdp(const std::uint8_t * data, std::size_t siz
 class PcapReader
 {
 public:
-  explicit PcapReader(const fs::path & path) : file_(path, std::ios::binary), size_(fs::file_size(path))
+  explicit PcapReader(const fs::path & path,
+    std::uint64_t read_ahead_end = std::numeric_limits<std::uint64_t>::max())
+  : file_(path, std::ios::binary), size_(fs::file_size(path)), read_ahead_end_(std::min(size_, read_ahead_end))
   {
     std::array<std::uint8_t, kPcapHeader> header{};
     if (!file_.read(reinterpret_cast<char *>(header.data()), header.size())) {
@@ -119,7 +123,7 @@ public:
     }
   }
 
-  std::uint64_t Position() const {return position_;}
+  std::uint64_t Position() const {return window_offset_ + next_;}
   std::uint64_t Size() const {return size_;}
 
   void Seek(std::uint64_t offset)
@@ -128,37 +132,69 @@ public:
         offset > static_cast<std::uint64_t>(std::numeric_limits<std::streamoff>::max())) {
       throw std::runtime_error("Invalid PCAP frame offset");
     }
+    if (offset >= window_offset_ && offset - window_offset_ <= end_) {
+      next_ = static_cast<std::size_t>(offset - window_offset_);
+      return;
+    }
     file_.seekg(static_cast<std::streamoff>(offset));
     if (!file_) throw std::runtime_error("Could not seek to the PCAP frame");
-    position_ = offset;
+    window_offset_ = offset;
+    next_ = end_ = 0;
   }
 
   std::optional<CapturedUdp> Read()
   {
-    std::array<std::uint8_t, kPcapRecord> header{};
-    if (!file_.read(reinterpret_cast<char *>(header.data()), header.size())) {
+    if (!Ensure(kPcapRecord)) {
       throw std::runtime_error("Truncated PCAP record header");
     }
-    position_ += header.size();
-    const auto captured = Read32(header.data() + 8);
-    if (captured > size_ - position_ || captured > Read32(header.data() + 12)) {
+    const auto * header = window_->data() + next_;
+    next_ += kPcapRecord;
+    const auto captured = Read32(header + 8);
+    if (captured > size_ - Position() || captured > Read32(header + 12)) {
       throw std::runtime_error("Truncated or invalid PCAP record");
     }
-    if (captured > payload_.size()) {
-      Seek(position_ + captured);
+    if (captured > kMaxPcapPayload) {
+      Seek(Position() + captured);
       return {};
     }
-    if (!file_.read(reinterpret_cast<char *>(payload_.data()), captured)) {
+    const auto seconds = Read32(header);
+    const auto fraction = Read32(header + 4);
+    if (!Ensure(captured)) {
       throw std::runtime_error("Could not read the PCAP payload");
     }
-    position_ += captured;
-    const auto fraction = Read32(header.data() + 4);
+    const auto * payload = window_->data() + next_;
+    next_ += captured;
     if (fraction >= (nanos_ ? 1000000000u : 1000000u)) return {};
-    const auto stamp = Read32(header.data()) * 1000000000ll + fraction * (nanos_ ? 1ll : 1000ll);
-    return ExtractUdp(payload_.data(), captured, link_, stamp);
+    const auto stamp = seconds * 1000000000ll + fraction * (nanos_ ? 1ll : 1000ll);
+    // The UDP view is valid until the next read or seek.
+    return ExtractUdp(payload, captured, link_, stamp);
   }
 
 private:
+  bool Ensure(std::size_t bytes)
+  {
+    const auto available = end_ - next_;
+    if (available >= bytes) return true;
+    const auto position = Position();
+    const auto remaining = size_ - position;
+    if (remaining < bytes) return false;
+    // The stream is at the end of the window. Keep only the unread tail.
+    auto * data = window_->data();
+    if (available) std::memmove(data, data + next_, available);
+    window_offset_ = position;
+    next_ = 0;
+    const auto ahead = position < read_ahead_end_ ? read_ahead_end_ - position : 0;
+    // A frame may also need the packet that starts at its indexed end.
+    const auto fill = std::max<std::uint64_t>(bytes, std::min<std::uint64_t>(ahead, window_->size()));
+    const auto count = fill - available;
+    file_.read(reinterpret_cast<char *>(data + available), static_cast<std::streamsize>(count));
+    end_ = available + static_cast<std::size_t>(file_.gcount());
+    // A concurrent truncation can cause a short read. Complete records already
+    // in the window can still be used, and subsequent seeks can still succeed.
+    if (file_.eof()) file_.clear(file_.rdstate() & std::ios::badbit);
+    return end_ >= bytes;
+  }
+
   std::uint16_t Read16(const std::uint8_t * bytes) const
   {
     return little_ ? static_cast<std::uint16_t>(bytes[0] | bytes[1] << 8) : Be16(bytes);
@@ -171,8 +207,10 @@ private:
   }
 
   std::ifstream file_;
-  std::array<std::uint8_t, 65536 + 32> payload_;
-  std::uint64_t size_, position_{kPcapHeader};
+  using Window = std::array<std::uint8_t, kPcapWindow>;
+  std::unique_ptr<Window> window_{new Window};
+  std::uint64_t size_, read_ahead_end_, window_offset_{kPcapHeader};
+  std::size_t next_{0}, end_{0};
   std::uint32_t link_{0};
   bool little_{false}, nanos_{false};
 };
@@ -269,7 +307,7 @@ std::vector<FrameHandle> IndexLidarPcap(const fs::path & path, InputLoadState * 
 FrameData ReadLidarPcapFrame(const FrameHandle & handle)
 {
   if (!handle.pcap_source) throw std::runtime_error("Missing PCAP frame source");
-  PcapReader reader(handle.path);
+  PcapReader reader(handle.path, handle.pcap_end_offset);
   reader.Seek(handle.payload_offset);
   const auto & source = *handle.pcap_source;
   LidarPacketDecoder decoder(source.model, source.calibration, source.ouster.get(), source.hesai_at.get());

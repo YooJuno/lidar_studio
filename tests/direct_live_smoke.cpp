@@ -257,8 +257,12 @@ int main()
     const auto send=[&](unsigned first,unsigned last) {
       for(unsigned i=first;i<last;++i) sender.Send(XtPacket(i),port);
     };
-    send(0,16);
-    WaitFor([&]{return live.Stats().clouds>=2;},"No complete scan over native UDP");
+    constexpr unsigned capture_first=16, capture_end=capture_first+256, burst_size=64;
+    send(0,capture_first);
+    WaitFor([&]{
+      const auto stats=live.Stats();
+      return stats.packets==capture_first && stats.clouds>=2;
+    },"No complete warmup over native UDP");
     Check(live.Stats().sensor_model==Model::HesaiXt32,"Automatic selection missed XT32");
     Check(live.Stats().auxiliary_port==auxiliary,"Auxiliary port was not opened");
     const auto displayed=live.TakeLatest();
@@ -270,8 +274,12 @@ int main()
     const std::vector<std::uint8_t> raw_unknown{0x72,0x19,0x23,0x45,0x67,0x89,0xcd,0xef};
     sender.Send(raw_aux,auxiliary);
     other_sensor_port.Send(raw_unknown,port);
-    send(16,35);
-    WaitFor([&]{return live.Stats().recorded_messages==21;},"Recorder missed raw point or auxiliary UDP while the display stopped consuming");
+    for (unsigned start=capture_first;start<capture_end;start+=burst_size) {
+      const auto end=std::min(start+burst_size,capture_end);
+      send(start,end);
+      WaitFor([&]{return live.Stats().recorded_messages==end-capture_first+2;},
+        "Recorder missed raw point or auxiliary UDP while the display stopped consuming");
+    }
     Check(!fs::exists(folder/kLivePcapFilename) && live.Stats().replaced_frames>0,
       "Recorder exposed an unfinished capture or retained a playback queue");
     live.StopRecording();
@@ -287,6 +295,13 @@ int main()
       Check(record!=bytes.end(),"PCAP did not preserve the full UDP payload");
       Check(record-bytes.begin()>28 && record[-12]==127 && record[-9]==1,"PCAP lost the destination IPv4 address");
     }
+    auto next=bytes.cbegin();
+    for (unsigned i=capture_first;i<capture_end;++i) {
+      const auto payload=XtPacket(i);
+      const auto record=std::search(next,bytes.cend(),payload.begin(),payload.end());
+      Check(record!=bytes.cend(),"PCAP lost or reordered a point packet during a burst");
+      next=record+payload.size();
+    }
     const auto frames=IndexLidarPcap(path);
     Check(frames.size()>2,"PCAP did not retain full sweeps");
     Check(frames[2].bag_timestamp_ns-frames[1].bag_timestamp_ns>=40000000,
@@ -297,10 +312,10 @@ int main()
       Check(!points.points.empty() && points.points.front().intensity==173,"PCAP scan did not decode raw intensity");
       count+=points.points.size();
     }
-    Check(count==19*8*32,"Playback lost or duplicated returns at a cut inside a packet");
+    Check(count==(capture_end-capture_first)*8*32,"Playback lost or duplicated returns at a cut inside a packet");
     live.StartRecording(temporary/"disconnect");
-    send(35,41);
-    WaitFor([&]{return live.Stats().packets>=41;},"Receiver stopped after finalizing");
+    send(capture_end,capture_end+6);
+    WaitFor([&]{return live.Stats().packets>=capture_end+6;},"Receiver stopped after finalizing");
     live.Disconnect();
     Check(!FindLidarPcap(temporary/"disconnect").empty(),"Disconnect did not finish the capture");
     live.ConnectDirect(options);
