@@ -1,7 +1,13 @@
 # Keep the pinned upstream checkout untouched. Initialize its cell state in a
 # generated header: sparse cells have no estimated normal, and the virtual
 # seed must have a defined centroid before neighbor/floating-cell checks.
+find_package(nanoflann REQUIRED)
 set(gseg_root "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ground_segmentation/include")
+if(NOT EXISTS "${gseg_root}/ground_detection.hpp")
+  message(FATAL_ERROR "Missing GSeg3D submodule. Run: git submodule update --init --recursive")
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${gseg_root}/ground_detection.hpp" "${gseg_root}/ground_detection_types.hpp")
 file(READ "${gseg_root}/ground_detection_types.hpp" gseg_types)
 file(READ "${gseg_root}/ground_detection.hpp" gseg_core)
 set(gseg_init_anchor "    explored = false;")

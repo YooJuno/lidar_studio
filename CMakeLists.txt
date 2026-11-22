@@ -78,7 +78,6 @@ target_include_directories(lidar_viewer_imgui PUBLIC
 target_link_libraries(lidar_viewer_imgui PUBLIC glfw ${CMAKE_DL_LIBS})
 find_package(PCL REQUIRED COMPONENTS common filters kdtree segmentation)
 find_package(Boost REQUIRED)
-find_package(nanoflann REQUIRED)
 
 # Optional offline bag reader; no ROS node, DDS connection or sensor driver.
 # Source /opt/ros/jazzy/setup.bash before configuring to enable this backend.
@@ -112,30 +111,9 @@ else()
   message(STATUS "ROS 2 bag input disabled; direct Ethernet, PCAP and point cloud files remain available")
 endif()
 
-# GSeg3D is a header-only core library.  We intentionally include the pinned
-# core source only; its ROS 2 wrapper (TF, IMU, PointCloud2) is not part of
-# this viewer.
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ground_segmentation/include/ground_detection.hpp")
-  message(FATAL_ERROR "Missing GSeg3D submodule. Run: git submodule update --init --recursive")
-endif()
-include(cmake/GSeg3D.cmake)
-
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/patchwork_plusplus/cpp/patchworkpp/src/patchworkpp.cpp")
-  message(FATAL_ERROR "Missing Patchwork++ submodule. Run: git submodule update --init --recursive")
-endif()
 # PCL may provide Eigen 3 or Eigen 5 under the same Eigen3 package/target.
 # A requested 3.x version rejects compatible Eigen 5 installations.
 find_package(Eigen3 REQUIRED NO_MODULE)
-include(cmake/FugSeg.cmake)
-add_library(lidar_viewer_patchworkpp STATIC
-  third_party/patchwork_plusplus/cpp/patchworkpp/src/patchworkpp.cpp
-  third_party/patchwork_plusplus/cpp/patchwork/src/patchwork.cpp
-  third_party/patchwork_plusplus/cpp/common/src/plane_fit.cpp)
-target_include_directories(lidar_viewer_patchworkpp SYSTEM PUBLIC
-  third_party/patchwork_plusplus/cpp/patchworkpp/include
-  third_party/patchwork_plusplus/cpp/patchwork/include
-  third_party/patchwork_plusplus/cpp/common/include)
-target_link_libraries(lidar_viewer_patchworkpp PUBLIC Eigen3::Eigen)
 
 add_library(lidar_viewer_roi STATIC src/roi.cpp)
 target_include_directories(lidar_viewer_roi PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -185,19 +163,7 @@ target_include_directories(lidar_viewer_tracking PUBLIC ${CMAKE_CURRENT_SOURCE_D
 target_link_libraries(lidar_viewer_tracking PRIVATE Eigen3::Eigen)
 lidar_warnings(lidar_viewer_tracking)
 
-add_library(lidar_viewer_geometry STATIC
-  src/algorithms/ground_removal.cpp
-  src/algorithms/ground_removal_gseg3d.cpp
-  src/algorithms/ground_removal_fugseg.cpp
-  src/algorithms/ground_removal_patchworkpp.cpp
-  src/algorithms/ground_removal_fast.cpp
-  src/algorithms/clustering.cpp
-  ${LIDAR_VIEWER_CUDA_SOURCES}
-)
-target_include_directories(lidar_viewer_geometry PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(lidar_viewer_geometry PRIVATE
-  lidar_viewer_gseg3d lidar_viewer_patchworkpp lidar_viewer_fugseg)
-lidar_warnings(lidar_viewer_geometry)
+include(cmake/GroundAlgorithms.cmake)
 
 add_library(lidar_viewer_benchmark STATIC src/perception_benchmark.cpp)
 target_compile_definitions(lidar_viewer_benchmark PRIVATE LIDAR_VIEWER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")

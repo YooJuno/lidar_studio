@@ -578,7 +578,7 @@ python3 tools/install_linux_desktop.py --binary /absolute/path/to/lidar_studio
 
 **Ground → Method → FugSeg**에서 [FugSeg 원본 구현](https://github.com/Leo-YuLi/FugSeg)을 선택할 수 있습니다. [IEEE TITS 2026 논문](https://doi.org/10.1109/TITS.2026.3682176)의 불확실성 기반 극좌표 격자 방식으로, 반사 잡음·가림 구간을 고려해 지면 높이를 전파한 뒤 점 단위로 분리합니다. CPU에서 실행하며 별도 학습 모델이나 GPU는 필요 없습니다.
 
-원본 commit `623f860cce70ffe0e3f673cd246254938ce8babe`의 코어를 고정하고, ROS 1·데이터셋 파일 I/O를 빌드에서 제외했습니다. 센서 연동은 `cmake/FugSeg.cmake`의 작은 생성 헤더 API로 처리합니다. 원본 분할 소스는 수정하지 않으며 다음을 보완합니다.
+원본 commit `623f860cce70ffe0e3f673cd246254938ce8babe`의 코어를 고정하고, ROS 1·데이터셋 파일 I/O를 빌드에서 제외했습니다. 센서 연동은 `cmake/third_party/FugSeg.cmake`의 작은 생성 헤더 API로 처리합니다. 원본 분할 소스는 수정하지 않으며 다음을 보완합니다.
 
 - Align에서 계산한 실제 센서 높이와 Ground reference를 사용하고, KITTI 차량에 고정된 차체 제외 영역을 해제합니다.
 - 원본의 134,400점 고정 버퍼를 입력 크기에 맞춰 확장합니다. NaN/Inf·범위 밖 점도 장애물 쪽에 보존합니다.
