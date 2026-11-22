@@ -181,6 +181,27 @@ target_include_directories(lidar_viewer_tracking PUBLIC ${CMAKE_CURRENT_SOURCE_D
 target_link_libraries(lidar_viewer_tracking PRIVATE Eigen3::Eigen)
 lidar_warnings(lidar_viewer_tracking)
 
+add_library(lidar_viewer_geometry STATIC
+  src/algorithms/ground_removal.cpp
+  src/algorithms/ground_removal_gseg3d.cpp
+  src/algorithms/ground_removal_fugseg.cpp
+  src/algorithms/ground_removal_patchworkpp.cpp
+  src/algorithms/ground_removal_fast.cpp
+  src/algorithms/clustering.cpp
+  ${LIDAR_VIEWER_CUDA_SOURCES}
+)
+target_include_directories(lidar_viewer_geometry PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(lidar_viewer_geometry PRIVATE
+  lidar_viewer_gseg3d lidar_viewer_patchworkpp lidar_viewer_fugseg)
+lidar_warnings(lidar_viewer_geometry)
+
+add_executable(lidar_studio_benchmark src/perception_benchmark.cpp)
+target_compile_definitions(lidar_studio_benchmark PRIVATE LIDAR_VIEWER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(lidar_studio_benchmark PRIVATE
+  lidar_viewer_geometry lidar_viewer_detector lidar_viewer_tracking)
+add_dependencies(lidar_studio_benchmark lidar_viewer_native)
+lidar_warnings(lidar_studio_benchmark)
+
 add_library(lidar_viewer_export STATIC src/roi_export.cpp src/data_io.cpp src/dataset.cpp src/dataset_curation.cpp src/training_job.cpp)
 target_include_directories(lidar_viewer_export PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(lidar_viewer_export SYSTEM PRIVATE ${PCL_INCLUDE_DIRS})
@@ -194,13 +215,6 @@ add_executable(lidar_studio
   src/about_ui.cpp
   src/training_ui.cpp
   src/config.cpp
-  src/algorithms/ground_removal.cpp
-  src/algorithms/ground_removal_gseg3d.cpp
-  src/algorithms/ground_removal_fugseg.cpp
-  src/algorithms/ground_removal_patchworkpp.cpp
-  src/algorithms/ground_removal_fast.cpp
-  src/algorithms/clustering.cpp
-  ${LIDAR_VIEWER_CUDA_SOURCES}
   src/algorithms/pipeline.cpp
 )
 
@@ -230,9 +244,7 @@ target_link_libraries(lidar_studio PRIVATE
   glfw
   GLEW::GLEW
   OpenGL::GL
-  lidar_viewer_gseg3d
-  lidar_viewer_patchworkpp
-  lidar_viewer_fugseg
+  lidar_viewer_geometry
   lidar_viewer_bag
   lidar_viewer_imgui
   lidar_viewer_roi
@@ -348,17 +360,10 @@ if(BUILD_TESTING)
   add_executable(algorithm_smoke_test
     tests/algorithm_smoke.cpp
     tests/algorithm_regression.cpp
-    src/algorithms/ground_removal.cpp
-    src/algorithms/ground_removal_gseg3d.cpp
-    src/algorithms/ground_removal_fugseg.cpp
-    src/algorithms/ground_removal_patchworkpp.cpp
-    src/algorithms/ground_removal_fast.cpp
-    src/algorithms/clustering.cpp
-    ${LIDAR_VIEWER_CUDA_SOURCES}
   )
   lidar_warnings(algorithm_smoke_test)
   target_include_directories(algorithm_smoke_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  target_link_libraries(algorithm_smoke_test PRIVATE lidar_viewer_gseg3d lidar_viewer_patchworkpp lidar_viewer_fugseg lidar_viewer_bag)
+  target_link_libraries(algorithm_smoke_test PRIVATE lidar_viewer_geometry lidar_viewer_bag)
   add_test(NAME algorithm_smoke_test COMMAND algorithm_smoke_test)
   include(cmake/StudioWorkspaceTests.cmake)
 endif()
