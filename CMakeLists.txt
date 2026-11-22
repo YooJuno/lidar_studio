@@ -187,6 +187,7 @@ lidar_warnings(lidar_viewer_export)
 add_executable(lidar_studio
   src/main.cpp
   src/viewer_app.cpp
+  src/viewer/frame_processing.cpp
   src/about_ui.cpp
   src/benchmark_ui.cpp
   src/training_ui.cpp

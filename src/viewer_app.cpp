@@ -40,6 +40,7 @@
 #include "lidar_viewer/training_ui.hpp"
 #include "lidar_viewer/benchmark_ui.hpp"
 #include "panorama_render_cache.hpp"
+#include "viewer/frame_processing.hpp"
 
 #include <algorithm>
 #include <array>
@@ -74,6 +75,7 @@
 namespace
 {
 namespace ui=lidar_viewer::ui;
+namespace frames = lidar_viewer::frame_processing;
 constexpr int kWindowWidth = 1600;
 constexpr int kWindowHeight = 960;
 constexpr float kOrbitSensitivity = 0.0045f;
@@ -516,6 +518,13 @@ struct CameraState
   double last_y{0.0};
 };
 
+struct GeometryWork
+{
+  FrameData base_frame;
+  frames::GeometryResult result;
+  lidar_viewer::RoiSettings applied_exclusions;
+};
+
 struct ViewerState
 {
   enum class GroundView {All, Ground, Obstacles};
@@ -538,7 +547,7 @@ struct ViewerState
   };
   struct PendingDetectionFrame
   {
-    std::unique_ptr<ViewerState> geometry;
+    GeometryWork geometry;
     DetectorSubmission submission;
   };
 
@@ -614,7 +623,7 @@ struct ViewerState
   std::size_t current_file_group{0};
   FrameData base_frame;
   FrameData frame;
-  FrameData processed_frame;
+  std::shared_ptr<const FrameData> processed_frame;
   std::size_t processed_obstacles{0};
   double processing_ms{0}, roi_ms{0};
   std::optional<double> ground_stage_ms,clustering_stage_ms;
@@ -802,7 +811,7 @@ struct ViewerState
   std::optional<std::size_t> requested_frame;
   std::optional<std::size_t> prefetched_index;
   std::unique_ptr<lidar_viewer::BackgroundWorker> geometry_worker;
-  std::future<std::unique_ptr<ViewerState>> geometry_future;
+  std::future<GeometryWork> geometry_future;
   std::optional<PendingDetectionFrame> pending_detection_frame;
   bool async_geometry{false}, geometry_updates_detector{true}, geometry_roi_only{false};
   std::optional<std::size_t> geometry_index;
@@ -1492,97 +1501,10 @@ void UpdateCurrentFileGroup(ViewerState & state)
   state.current_file_group = 0;
 }
 
-void RecomputeFrameBounds(FrameData & frame)
+const FrameData & ProcessedFrame(const std::shared_ptr<const FrameData> & frame)
 {
-  if (frame.points.empty()) {
-    frame.center = {0.0f, 0.0f, 0.0f};
-    frame.radius = 10.0f;
-    frame.min_z = 0.0f;
-    frame.max_z = 0.0f;
-    return;
-  }
-
-  Vec3 min_corner{
-    std::numeric_limits<float>::max(),
-    std::numeric_limits<float>::max(),
-    std::numeric_limits<float>::max()
-  };
-  Vec3 max_corner{
-    std::numeric_limits<float>::lowest(),
-    std::numeric_limits<float>::lowest(),
-    std::numeric_limits<float>::lowest()
-  };
-
-  for (const auto & p : frame.points) {
-    min_corner.x = std::min(min_corner.x, p.x);
-    min_corner.y = std::min(min_corner.y, p.y);
-    min_corner.z = std::min(min_corner.z, p.z);
-    max_corner.x = std::max(max_corner.x, p.x);
-    max_corner.y = std::max(max_corner.y, p.y);
-    max_corner.z = std::max(max_corner.z, p.z);
-  }
-
-  frame.center = {
-    0.5f * (min_corner.x + max_corner.x),
-    0.5f * (min_corner.y + max_corner.y),
-    0.5f * (min_corner.z + max_corner.z)
-  };
-  const Vec3 extent = max_corner - min_corner;
-  frame.radius = std::max({extent.x, extent.y, extent.z}) * 0.7f;
-  frame.radius = std::max(frame.radius, 10.0f);
-  frame.min_z = min_corner.z;
-  frame.max_z = max_corner.z;
-}
-
-struct CalibrationTransform
-{
-  std::array<float, 9> rotation{};
-  float z_offset{0.0f};
-};
-
-CalibrationTransform BuildCalibrationTransform(const CalibrationSettings & calibration)
-{
-  const float yaw = calibration.yaw_deg * kPi / 180.0f;
-  const float pitch = calibration.pitch_deg * kPi / 180.0f;
-  const float roll = calibration.roll_deg * kPi / 180.0f;
-
-  const float cy = std::cos(yaw);
-  const float sy = std::sin(yaw);
-  const float cp = std::cos(pitch);
-  const float sp = std::sin(pitch);
-  const float cr = std::cos(roll);
-  const float sr = std::sin(roll);
-
-  return {{
-    cp * cy, (sr * sp * cy - cr * sy), (cr * sp * cy + sr * sy),
-    cp * sy, (sr * sp * sy + cr * cy), (cr * sp * sy - sr * cy),
-    -sp,     sr * cp,                  cr * cp
-  }, calibration.z_m};
-}
-
-Vec3 ApplyCalibrationTransform(const Vec3 & v, const CalibrationTransform & transform)
-{
-  return {
-    transform.rotation[0] * v.x + transform.rotation[1] * v.y + transform.rotation[2] * v.z,
-    transform.rotation[3] * v.x + transform.rotation[4] * v.y + transform.rotation[5] * v.z,
-    transform.rotation[6] * v.x + transform.rotation[7] * v.y + transform.rotation[8] * v.z +
-      transform.z_offset
-  };
-}
-
-void ApplyGlobalAlignment(FrameData & frame, float ground_offset)
-{
-  if (frame.points.empty() || ground_offset == 0.0f) {
-    return;
-  }
-  for (auto & p : frame.points) {
-    p.z -= ground_offset;
-  }
-  // Translation changes neither XY bounds nor extents/radius.
-  frame.center.z -= ground_offset;
-  frame.min_z -= ground_offset;
-  frame.max_z -= ground_offset;
-  frame.ground_z -= ground_offset;
+  static const FrameData empty;
+  return frame ? *frame : empty;
 }
 
 void RebuildRoiGeometry(ViewerState & state)
@@ -1599,165 +1521,124 @@ void RebuildRoiGeometry(ViewerState & state)
   state.roi_renderer.dirty=true;
 }
 
-void ApplyRoiResult(ViewerState & state, const FrameData & processed, std::size_t obstacles,
-  const lidar_viewer::RoiCoordinateFrame & coordinates)
+void StoreDisplayResult(ViewerState & state, frames::DisplayFrame result)
 {
-  const auto started=std::chrono::steady_clock::now();
-  FrameData frame;
-  frame.frame_id=processed.frame_id; frame.imu=processed.imu; frame.ground_z=processed.ground_z;
-  frame.timestamp_ns=processed.timestamp_ns;frame.acquisition_timestamp_ns=processed.acquisition_timestamp_ns;
-  frame.receipt_timestamp_ns=processed.receipt_timestamp_ns;
-  std::vector<lidar_viewer::algorithms::Cluster> clusters;
-  state.clustering_stage_ms.reset();
-  if(state.ground_removal_enabled && state.algorithm_config.clustering.enabled && obstacles) {
-    // Clustering needs only the obstacle prefix. Do not duplicate the whole scan
-    // just to copy a small visible ROI back out of it afterwards.
-    const std::vector<KittiPoint> input(processed.points.begin(),processed.points.begin()+static_cast<std::ptrdiff_t>(obstacles));
-    const auto clustering_started=std::chrono::steady_clock::now();
-    clusters=lidar_viewer::algorithms::RunClustering(input,state.algorithm_config.clustering);
-    state.clustering_stage_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-clustering_started).count();
-    state.clustering_average.Add(*state.clustering_stage_ms);
+  if (result.clustering_ms) {
+    state.clustering_stage_ms = result.clustering_ms;
+    state.clustering_average.Add(*result.clustering_ms);
   }
-  std::size_t visible_obstacles=obstacles;
-  if(state.display_roi.enabled) {
-    const lidar_viewer::PreparedRoi display(state.display_roi,coordinates);
-    frame.points.reserve(std::min(processed.points.size(),std::max<std::size_t>(8192,processed.points.size()/2)));visible_obstacles=0;
-    for(std::size_t i=0;i<processed.points.size();++i) {
-      const auto & point=processed.points[i];
-      if(!display.Contains({point.x,point.y,point.z})) continue;
-      frame.points.push_back(point);if(i<obstacles) ++visible_obstacles;
-    }
-  } else frame.points=processed.points;
-  RecomputeFrameBounds(frame);
-  state.ground_removed_count=frame.points.size()-visible_obstacles;
-  state.frame=std::move(frame); state.clusters=std::move(clusters);
-  state.roi_frame=coordinates;
-  RebuildRoiGeometry(state); FilterDetections(state);
-  state.frame_dirty=true; state.roi_pending=false;
-  state.roi_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
+  state.ground_removed_count = result.ground_points;
+  state.frame = std::move(result.frame);
+  state.clusters = std::move(result.clusters);
+  state.roi_ms = result.elapsed_ms;
 }
 
-void PrepareDetectorInput(ViewerState & state, const FrameData & aligned, const FrameData & raw, float yaw,
-  float ground_offset)
+void StoreGeometryResult(ViewerState & state, frames::GeometryResult & result, bool store_exclusions)
 {
-  auto points=std::make_shared<std::vector<KittiPoint>>();points->reserve(aligned.points.size());
-  const auto * intensity=(raw.source_intensities && raw.source_intensities->size()==aligned.points.size()) ?
-    raw.source_intensities->data() : nullptr;
-  for (std::size_t i=0;i<aligned.points.size();++i) {
-    // The base scan already has the dataset floor offset subtracted. Identify
-    // missing returns at the original sensor origin, not the shifted origin.
-    if (raw.points[i].x==0 && raw.points[i].y==0 && raw.points[i].z==-ground_offset) continue;
-    auto p=aligned.points[i];
-    p.intensity=intensity ? intensity[i] : std::numeric_limits<float>::quiet_NaN();
-    points->push_back(p);
+  state.processed_frame = std::move(result.processed);
+  state.processed_obstacles = result.obstacles;
+  if (store_exclusions) state.exclusion_removed_count = result.excluded_points;
+  state.roi_frame = result.coordinates;
+  StoreDisplayResult(state, std::move(result.display));
+  if (result.ground_ms) {
+    state.ground_stage_ms = result.ground_ms;
+    state.ground_average.Add(*result.ground_ms);
   }
-  state.detector_input=std::move(points);state.detector_yaw=yaw;
-  state.detector_alignment=state.geometry_input_config;
-  InvalidateDetectorFrame(state);state.detections.clear();
+  state.ground_passes += result.ground_pass;
+  if (state.imu_level_enabled && result.leveling.applied != state.imu_level_result.applied) {
+    std::cout << (result.leveling.applied ? "IMU leveling active: " : "IMU leveling unavailable: ")
+      << result.leveling.status << '\n' << std::flush;
+  }
+  state.imu_level_result = std::move(result.leveling);
+  state.processing_ms = result.elapsed_ms;
+}
+
+frames::AlignmentOptions AlignmentFor(const ViewerState & state, float ground_offset)
+{
+  return {state.calibration, state.imu_mount, ground_offset, state.imu_level_enabled};
+}
+
+frames::GeometryOptions GeometryOptionsFor(const ViewerState & state, float ground_offset,
+  const lidar_viewer::RoiSettings & exclusions)
+{
+  auto ground = state.algorithm_config.ground_removal;
+  ground.sequence_id = state.ground_sequence;
+  return {AlignmentFor(state, ground_offset), std::move(ground), state.algorithm_config.clustering,
+    exclusions, state.display_roi, state.ground_removal_enabled};
+}
+
+void ApplyRoiResult(ViewerState & state)
+{
+  state.clustering_stage_ms.reset();
+  StoreDisplayResult(state, frames::BuildDisplayFrame(ProcessedFrame(state.processed_frame),
+    state.processed_obstacles, state.roi_frame, state.display_roi,
+    state.ground_removal_enabled, state.algorithm_config.clustering));
+  RebuildRoiGeometry(state);
+  FilterDetections(state);
+  state.frame_dirty = true;
+  state.roi_pending = false;
+}
+
+void StoreDetectorFrame(ViewerState & state, frames::DetectorFrame input)
+{
+  state.detector_input = std::move(input.points);
+  state.detector_yaw = input.yaw;
+  state.detector_alignment = state.geometry_input_config;
+  InvalidateDetectorFrame(state);
+  state.detections.clear();
 }
 
 void RefreshDetectorInput(ViewerState & state)
 {
-  // Enabling a detector does not require running ground segmentation again.
-  if (state.detector_input) {FilterDetections(state);return;}
-  const auto leveling=state.imu_level_enabled ? lidar_viewer::ComputeImuLeveling(state.base_frame.imu,state.imu_mount) :
-    lidar_viewer::ImuLevelingResult{};
-  const auto resolved=lidar_viewer::ResolveDisplayAlignment(state.calibration,state.imu_level_enabled,leveling);
-  FrameData aligned=state.base_frame;
-  const auto transform=BuildCalibrationTransform(resolved.effective);
-  for (auto & point:aligned.points) {
-    const auto p=ApplyCalibrationTransform({point.x,point.y,point.z},transform);
-    point.x=p.x;point.y=p.y;point.z=p.z;
+  // The detector only needs the aligned input. Prepare it without a temporary
+  // transformed frame or another ground pass.
+  if (state.detector_input) {
+    FilterDetections(state);
+    return;
   }
-  PrepareDetectorInput(state,aligned,state.base_frame,resolved.effective.yaw_deg*kPi/180.f,state.global_ground_offset);
+  StoreDetectorFrame(state, frames::BuildDetectorFrame(state.base_frame, AlignmentFor(state, state.global_ground_offset)));
 }
 
 void ApplyCalibration(ViewerState & state, const FrameData * source = nullptr,
   std::optional<float> source_ground_offset = std::nullopt, bool update_detector=true, bool defer_terraseg=false)
 {
-  const auto started=std::chrono::steady_clock::now();
-  FrameData frame=source ? *source : state.base_frame;
-  frame.source_intensities.reset();state.ground_stage_ms.reset();
-  if(frame.annotations) {
+  const auto & raw = source ? *source : state.base_frame;
+  state.ground_stage_ms.reset();
+  if (raw.annotations) {
     // Review stored data without changing coordinates, ordering or labels.
-    state.processed_obstacles=frame.points.size();state.ground_removed_count=0;state.ground_view=ViewerState::GroundView::All;
-    state.processed_frame=frame;state.frame=std::move(frame);state.roi_frame={};
-    state.ground_removal_enabled=false;state.imu_level_enabled=false;state.algorithm_config.clustering.enabled=false;
-    state.algorithm_config.detection.enabled=false;state.detector_input.reset();return;
-  }
-  lidar_viewer::ImuLevelingResult leveling;
-  leveling.status="Off";
-  if (state.imu_level_enabled) {
-    leveling=lidar_viewer::ComputeImuLeveling(frame.imu,state.imu_mount);
-  }
-  const auto resolved=lidar_viewer::ResolveDisplayAlignment(state.calibration,state.imu_level_enabled,leveling);
-  const auto transform=BuildCalibrationTransform(resolved.effective);
-  lidar_viewer::RoiCoordinateFrame coordinates;
-  coordinates.rotation=transform.rotation;
-  coordinates.translation=coordinates.Rotate({0,0,-source_ground_offset.value_or(state.global_ground_offset)})+
-    Vec3{0,0,transform.z_offset};
-  const lidar_viewer::PreparedRoi exclusions(state.applied_exclusions,coordinates,lidar_viewer::RoiFilterStage::Preprocessing);
-  for (auto & point : frame.points) {
-    const auto rotated=ApplyCalibrationTransform({point.x,point.y,point.z},transform);
-    point.x=rotated.x; point.y=rotated.y; point.z=rotated.z;
-  }
-  if (update_detector) {
+    state.frame = raw;
+    state.frame.source_intensities.reset();
+    state.processed_frame = std::make_shared<const FrameData>(state.frame);
+    state.processed_obstacles = raw.points.size();
+    state.ground_removed_count = 0;
+    state.ground_view = ViewerState::GroundView::All;
+    state.roi_frame = {};
+    state.ground_removal_enabled = false;
+    state.imu_level_enabled = false;
+    state.algorithm_config.clustering.enabled = false;
+    state.algorithm_config.detection.enabled = false;
     state.detector_input.reset();
+    return;
+  }
+  const auto options = GeometryOptionsFor(state, source_ground_offset.value_or(state.global_ground_offset),
+    state.applied_exclusions);
+  auto * terraseg = !defer_terraseg && UsesTerraSeg(state) && !raw.points.empty() ? &EnsureTerraSeg(state) : nullptr;
+  auto result = frames::ProcessFrame(raw, options, update_detector && state.algorithm_config.detection.enabled, terraseg);
+  if (update_detector) {
     if (state.algorithm_config.detection.enabled) {
-    // Organized XT32 scans contain zero XYZ for missing returns. Do not turn
-    // those into a dense artificial pillar when height alignment translates Z.
-      PrepareDetectorInput(state,frame,source ? *source : state.base_frame,resolved.effective.yaw_deg*kPi/180.f,
-        source_ground_offset.value_or(state.global_ground_offset));
+      StoreDetectorFrame(state, std::move(result.detector));
     } else {
-      InvalidateDetectorFrame(state);state.detections.clear();
+      state.detector_input.reset();
+      InvalidateDetectorFrame(state);
+      state.detections.clear();
     }
   }
-  state.exclusion_removed_count=0;
-  std::size_t obstacles=frame.points.size();
-  if (state.ground_removal_enabled && !(defer_terraseg && UsesTerraSeg(state)) && !frame.points.empty()) {
-    auto skipped=exclusions.ExtractRejected(frame.points);
-    state.exclusion_removed_count=skipped.size();
-    auto params=state.algorithm_config.ground_removal; params.enabled=true;
-    params.sensor_height_m=std::max(.05f,transform.z_offset-source_ground_offset.value_or(state.global_ground_offset)-params.gseg3d_ground_height_m);
-    params.sequence_id=state.ground_sequence;
-    std::optional<lidar_viewer::algorithms::GroundRemovalResult> result;
-    if(!frame.points.empty()) {
-      double ground_ms=0;
-      if (params.mode=="terraseg") {
-        const auto origin=ApplyCalibrationTransform({0,0,-source_ground_offset.value_or(state.global_ground_offset)},transform);
-        result=EnsureTerraSeg(state).Segment(frame.points,params.gseg3d_ground_height_m,
-          resolved.effective.yaw_deg*kPi/180.f,origin,ground_ms);
-      } else {
-        const auto ground_started=std::chrono::steady_clock::now();
-        result=lidar_viewer::algorithms::RunGroundSegmentation(frame.points,params);
-        ground_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-ground_started).count();
-      }
-      if (result) {
-        state.ground_stage_ms=ground_ms;
-        state.ground_average.Add(*state.ground_stage_ms);
-      }
-    }
-    if (result) {
-      frame.points=std::move(result->non_ground_points);
-      frame.points.reserve(frame.points.size()+skipped.size()+result->ground_points.size());
-    }
-    frame.points.insert(frame.points.end(),skipped.begin(),skipped.end());
-    obstacles=frame.points.size();
-    if (result) {
-      for (auto point : result->ground_points) {point.intensity=-1; frame.points.push_back(point);}
-      ++state.ground_passes;
-    } else if (params.mode!="terraseg") {
-      ++state.ground_passes;
-    }
-  } else state.exclusion_removed_count=exclusions.CountRejected(frame.points);
-  // Skipped points remain visible without a ground label. Only the remaining
-  // points enter segmentation; the learned detector always receives the scan.
-  ApplyRoiResult(state,frame,obstacles,coordinates);
-  state.processed_frame=std::move(frame); state.processed_obstacles=obstacles;
-  if (state.imu_level_enabled && leveling.applied!=state.imu_level_result.applied)
-    std::cout << ((leveling.applied ? "IMU leveling active: " : "IMU leveling unavailable: ") + leveling.status + '\n') << std::flush;
-  state.imu_level_result=std::move(leveling);
-  state.processing_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
+  state.clustering_stage_ms.reset();
+  StoreGeometryResult(state, result, true);
+  RebuildRoiGeometry(state);
+  FilterDetections(state);
+  state.frame_dirty = true;
+  state.roi_pending = false;
 }
 
 void CancelGeometry(ViewerState & state)
@@ -1776,32 +1657,41 @@ void QueueGeometry(ViewerState & state, FrameData base, std::optional<std::size_
     roi_only=false;
   }
   update_detector=update_detector || (state.algorithm_config.detection.enabled && !state.detector_input);
-  // The worker owns a snapshot; it never reads mutable UI state or uses OpenGL.
-  auto work=std::make_unique<ViewerState>();
-  work->base_frame=std::move(base);work->global_ground_offset=state.global_ground_offset;
-  work->calibration=state.calibration;work->imu_level_enabled=state.imu_level_enabled;
-  work->imu_mount=state.imu_mount;work->algorithm_config=state.algorithm_config;
-  work->imu_level_result=state.imu_level_result;
-  work->ground_removal_enabled=state.ground_removal_enabled;work->ground_sequence=state.ground_sequence;
-  work->roi=state.roi;work->display_roi=state.display_roi;work->roi_frame=state.roi_frame;
-  work->analysis_roi=state.analysis_roi;work->applied_exclusions=state.analysis_roi;
-  if (UsesTerraSeg(state)) {
+  // Only frame data and an immutable settings snapshot cross the worker
+  // boundary. Renderer state and detector revision ownership stay here.
+  GeometryWork work;
+  work.base_frame = std::move(base);
+  work.result.leveling = state.imu_level_result;
+  auto options = GeometryOptionsFor(state, state.global_ground_offset, state.analysis_roi);
+  std::shared_ptr<lidar_viewer::TerraSeg> terraseg;
+  if (!roi_only && UsesTerraSeg(state)) {
     EnsureTerraSeg(state);
-    work->terraseg=state.terraseg;
+    terraseg = state.terraseg;
   }
   if (roi_only) {
-    work->processed_frame=state.processed_frame;work->processed_obstacles=state.processed_obstacles;
-    work->processing_ms=state.processing_ms;
+    work.result.processed = state.processed_frame;
+    work.result.obstacles = state.processed_obstacles;
+    work.result.coordinates = state.roi_frame;
+    work.result.elapsed_ms = state.processing_ms;
   }
-  if (!state.geometry_worker) state.geometry_worker=std::make_unique<lidar_viewer::BackgroundWorker>();
-  state.geometry_future=state.geometry_worker->Submit([work=std::move(work),update_detector,roi_only]() mutable {
-    if (roi_only) {
-      ApplyRoiResult(*work,work->processed_frame,work->processed_obstacles,work->roi_frame);
-      if (update_detector) RefreshDetectorInput(*work);
-    }
-    else ApplyCalibration(*work,nullptr,std::nullopt,update_detector);
-    return std::move(work);
-  });
+  const bool detector_enabled = state.algorithm_config.detection.enabled;
+  if (!state.geometry_worker) state.geometry_worker = std::make_unique<lidar_viewer::BackgroundWorker>();
+  state.geometry_future = state.geometry_worker->Submit(
+    [work=std::move(work), options=std::move(options), terraseg=std::move(terraseg),
+     update_detector, detector_enabled, roi_only]() mutable {
+      auto & result = work.result;
+      if (roi_only) {
+        result.display = frames::BuildDisplayFrame(ProcessedFrame(result.processed), result.obstacles,
+          result.coordinates, options.display_roi, options.ground_enabled, options.clustering);
+        if (update_detector) result.detector = frames::BuildDetectorFrame(work.base_frame, options.alignment);
+      } else {
+        auto processed = frames::ProcessFrame(work.base_frame, options, update_detector && detector_enabled, terraseg.get());
+        if (work.base_frame.annotations) processed.leveling = std::move(result.leveling);
+        result = std::move(processed);
+      }
+      work.applied_exclusions = std::move(options.exclusions);
+      return std::move(work);
+    });
   state.geometry_index=index;state.geometry_live_sequence=sequence;
   state.pending_detection_frame.reset();
   state.geometry_updates_detector=update_detector;state.geometry_roi_only=roi_only;
@@ -1913,24 +1803,14 @@ void QueueNextFramePrefetch(ViewerState & state)
   if (state.frames.size()>1) QueueFramePrefetch(state,(state.current_index+1)%state.frames.size());
 }
 
-void CommitGeometry(ViewerState & state, ViewerState & work,
+void CommitGeometry(ViewerState & state, GeometryWork & work,
   std::optional<ViewerState::DetectorSubmission> submission, std::optional<lidar_viewer::DetectorResult> result)
 {
-  state.base_frame=std::move(work.base_frame);state.frame=std::move(work.frame);
-  state.applied_exclusions=std::move(work.applied_exclusions);
-  state.processed_frame=std::move(work.processed_frame);state.processed_obstacles=work.processed_obstacles;
-  state.ground_removed_count=work.ground_removed_count;state.clusters=std::move(work.clusters);
-  if (!state.geometry_roi_only) state.exclusion_removed_count=work.exclusion_removed_count;
-  state.roi_frame=work.roi_frame;state.roi_ms=work.roi_ms;state.processing_ms=work.processing_ms;
-  if (work.ground_passes && work.ground_stage_ms) {
-    state.ground_stage_ms=work.ground_stage_ms;state.ground_average.Add(*work.ground_stage_ms);
-  }
-  if (work.clustering_stage_ms) {
-    state.clustering_stage_ms=work.clustering_stage_ms;state.clustering_average.Add(*work.clustering_stage_ms);
-  }
-  state.ground_passes+=work.ground_passes;state.imu_level_result=std::move(work.imu_level_result);
+  state.base_frame = std::move(work.base_frame);
+  state.applied_exclusions = std::move(work.applied_exclusions);
+  StoreGeometryResult(state, work.result, !state.geometry_roi_only);
   if (state.geometry_updates_detector) {
-    state.detector_input=std::move(work.detector_input);state.detector_yaw=work.detector_yaw;
+    state.detector_input=std::move(work.result.detector.points);state.detector_yaw=work.result.detector.yaw;
     state.detector_alignment=state.submitted_input_config;
     if (submission) {
       state.detector_revision=state.detector_submitted=submission->revision;
@@ -1967,15 +1847,15 @@ void CommitGeometry(ViewerState & state, ViewerState & work,
   else FilterDetections(state);
 }
 
-bool ShouldPairDetection(const ViewerState & state, const ViewerState & work)
+bool ShouldPairDetection(const ViewerState & state, const frames::DetectorFrame & input)
 {
   const bool looping = state.is_playing && state.loop_playback && state.frames.size() > 1 &&
     state.current_index + 1 == state.frames.size();
   const bool next_playback_frame = state.geometry_index &&
     (*state.geometry_index == state.current_index + 1 || (looping && *state.geometry_index == 0));
   const bool next_scan = (state.geometry_live_sequence && state.live_has_frame) || next_playback_frame;
-  return next_scan && state.geometry_updates_detector && work.detector_input &&
-    !work.detector_input->empty() && state.detector_completed == state.detector_revision &&
+  return next_scan && state.geometry_updates_detector && input.points &&
+    !input.points->empty() && state.detector_completed == state.detector_revision &&
     state.detector_error.empty() && DetectorUsesCurrentModel(state) && DetectorCanWait(state, DetectorClock());
 }
 
@@ -1983,7 +1863,7 @@ bool CompleteGeometry(ViewerState & state)
 {
   if (state.roi_gesture.active || !GeometryPending(state)) return false;
   try {
-    std::unique_ptr<ViewerState> work;
+    GeometryWork work;
     std::optional<ViewerState::DetectorSubmission> submission;
     std::optional<lidar_viewer::DetectorResult> result;
     if (state.pending_detection_frame) {
@@ -2006,29 +1886,32 @@ bool CompleteGeometry(ViewerState & state)
     // source with the newest settings instead of showing boxes in old axes.
     if (state.submitted_geometry_config!=state.geometry_config) {
       if (state.submitted_ground_config!=state.geometry_ground_config) {
-        QueueGeometry(state,std::move(work->base_frame),state.geometry_index,state.geometry_live_sequence,
+        QueueGeometry(state,std::move(work.base_frame),state.geometry_index,state.geometry_live_sequence,
           state.geometry_updates_detector || state.submitted_input_config!=state.geometry_input_config,false);
       } else {
         // ROI/cluster edits reuse the in-flight segmentation too. Preserve the
         // fresh scan's aligned detector snapshot instead of computing it twice.
-        work->roi=state.roi;work->display_roi=state.display_roi;work->algorithm_config.clustering=state.algorithm_config.clustering;
-        work->algorithm_config.detection=state.algorithm_config.detection;
-        const bool prepare_detector=work->algorithm_config.detection.enabled &&
-          (state.geometry_updates_detector || !state.detector_input);
-        state.geometry_updates_detector|=prepare_detector;
-        state.geometry_future=state.geometry_worker->Submit([work=std::move(work),prepare_detector]() mutable {
-          ApplyRoiResult(*work,work->processed_frame,work->processed_obstacles,work->roi_frame);
-          if (prepare_detector) RefreshDetectorInput(*work);
-          return std::move(work);
-        });
+        const bool prepare_detector = state.algorithm_config.detection.enabled &&
+          (state.geometry_updates_detector || !state.detector_input) && !work.result.detector.points;
+        state.geometry_updates_detector |= prepare_detector;
+        state.geometry_future = state.geometry_worker->Submit(
+          [work=std::move(work), display_roi=state.display_roi, clustering=state.algorithm_config.clustering,
+           ground_enabled=state.ground_removal_enabled, alignment=AlignmentFor(state, state.global_ground_offset),
+           prepare_detector]() mutable {
+            auto & result = work.result;
+            result.display = frames::BuildDisplayFrame(ProcessedFrame(result.processed), result.obstacles,
+              result.coordinates, display_roi, ground_enabled, clustering);
+            if (prepare_detector) result.detector = frames::BuildDetectorFrame(work.base_frame, alignment);
+            return std::move(work);
+          });
         state.submitted_geometry_config=state.geometry_config;
       }
       return false;
     }
-    if (!submission && ShouldPairDetection(state, *work)) {
+    if (!submission && ShouldPairDetection(state, work.result.detector)) {
       submission = ViewerState::DetectorSubmission{state.next_detector_revision++, DetectorClock()};
       try {
-        state.detector->Submit(submission->revision, work->detector_input, kDetectorCandidateThreshold, work->detector_yaw);
+        state.detector->Submit(submission->revision, work.result.detector.points, kDetectorCandidateThreshold, work.result.detector.yaw);
         state.pending_detection_frame = ViewerState::PendingDetectionFrame{std::move(work), *submission};
         return false;
       } catch (const std::exception & error) {
@@ -2037,7 +1920,7 @@ bool CompleteGeometry(ViewerState & state)
         result->error = error.what();
       }
     }
-    CommitGeometry(state, *work, submission, std::move(result));
+    CommitGeometry(state, work, submission, std::move(result));
     return true;
   } catch (const std::exception & error) {
     if (state.applying_exclusions) {
@@ -2070,7 +1953,7 @@ void LoadFrameByIndex(ViewerState & state, std::size_t index, bool defer_terrase
   if (!state.alignment_initialized) {
     offset = state.frames[next_index].format == InputFormat::KittiXyzi ? next_base.ground_z : 0.f;
   }
-  ApplyGlobalAlignment(next_base, offset);
+  frames::ApplyGlobalAlignment(next_base, offset);
   if (state.alignment_initialized && next_index!=state.current_index+1) ++state.ground_sequence;
   if (state.async_geometry) {
     state.global_ground_offset=offset;state.alignment_initialized=true;
@@ -2245,7 +2128,7 @@ void OpenBagSource(ViewerState & state, std::size_t index, bool reload = false)
       result.first_frame = LoadFrame(result.frames.front());
       load->Stage(lidar_viewer::InputLoadStage::PreparingDisplay);
       result.ground_offset=result.frames.front().format==InputFormat::KittiXyzi ? result.first_frame.ground_z : 0.f;
-      ApplyGlobalAlignment(result.first_frame,result.ground_offset);
+      frames::ApplyGlobalAlignment(result.first_frame,result.ground_offset);
       // Commit the first scan before waiting for the optional CUDA model.
       ApplyCalibration(*prepared,&result.first_frame,result.ground_offset,true,true);
       result.prepared=std::move(prepared);
@@ -4665,7 +4548,7 @@ void BuildRoiEditor(ViewerState & state)
     "Draw a box around points that should skip ground detection, then Apply. Points remain visible.");
   ImGui::EndDisabled();
   if (display) {
-    ImGui::TextDisabled("%s / %s points shown",CountText(state.frame.points.size()).c_str(),CountText(state.processed_frame.points.size()).c_str());
+    ImGui::TextDisabled("%s / %s points shown",CountText(state.frame.points.size()).c_str(),CountText(ProcessedFrame(state.processed_frame).points.size()).c_str());
   } else {
     ImGui::SameLine();ImGui::BeginDisabled(!pending || state.roi_gesture.active || state.applying_exclusions);
     ImGui::PushStyleColor(ImGuiCol_Button,ui::SelectionColor());
@@ -6498,7 +6381,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     try {
       if (state.async_geometry) QueueGeometry(state,state.base_frame,{},{},false,true);
       else {
-        ApplyRoiResult(state,state.processed_frame,state.processed_obstacles,state.roi_frame);
+        ApplyRoiResult(state);
         std::cout<<"ROI applied: "<<state.roi.boxes.size()<<" boxes | "<<state.frame.points.size()<<" points | "
           <<state.roi_ms<<" ms | ground passes "<<state.ground_passes<<std::endl;
       }
@@ -7011,7 +6894,7 @@ int RunViewer(int argc, char ** argv)
                 << " boxes | retained " << state.frame.points.size() << " / " << state.base_frame.points.size() << " points\n";
       std::cout << "Display ROI: " << (state.display_roi.enabled ? "on" : "off") << " | "
                 << state.display_roi.boxes.size() << " boxes | retained " << state.frame.points.size()
-                << " / " << state.processed_frame.points.size() << " points\n";
+                << " / " << ProcessedFrame(state.processed_frame).points.size() << " points\n";
       std::cout << "Display: " << GroundViewKey(state.ground_view) << " | visible " << VisiblePoints(state).count
                 << " | ground " << state.ground_removed_count << " | obstacles "
                 << state.frame.points.size()-std::min(state.frame.points.size(),state.ground_removed_count)
