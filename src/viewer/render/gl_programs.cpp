@@ -69,6 +69,7 @@ GLuint CreatePointProgram()
 
     uniform mat4 u_mvp;
     uniform float u_point_size;
+    uniform int u_first_ground;
     uniform bool u_panorama;
     uniform mat3 u_sensor_rotation;
     uniform vec3 u_sensor_translation;
@@ -78,6 +79,7 @@ GLuint CreatePointProgram()
     out float v_range;
     layout(location = 2) in int a_label;
     flat out int v_label;
+    flat out int v_ground;
 
     void main() {
       gl_PointSize = u_point_size;
@@ -104,6 +106,7 @@ GLuint CreatePointProgram()
       v_intensity = a_intensity;
       v_height = a_position.z;
       v_label = a_label;
+      v_ground = int(u_first_ground >= 0 && gl_VertexID >= u_first_ground);
     }
   )";
 
@@ -113,6 +116,7 @@ GLuint CreatePointProgram()
     in float v_height;
     in float v_range;
     flat in int v_label;
+    flat in int v_ground;
     out vec4 frag_color;
 
     uniform int u_color_mode;
@@ -135,19 +139,19 @@ GLuint CreatePointProgram()
     }
 
     void main() {
+      if (u_color_mode == 3) {
+        frag_color=v_label<0 ? u_unlabeled_color : v_label==0 ? u_background_color : u_label_colors[(v_label-1)%8];
+        return;
+      }
+      if (v_ground != 0) {
+        frag_color = vec4(1.0, 0.12, 0.08, 1.0);
+        return;
+      }
       if (u_color_mode == 4) {
         const int last = u_range_colors.length() - 1;
         float segment = clamp(v_range / max(u_range_max, 0.1), 0.0, 1.0) * float(last);
         int left = min(int(segment), last - 1);
         frag_color = vec4(mix(u_range_colors[left], u_range_colors[left + 1], segment - float(left)), 1.0);
-        return;
-      }
-      if (u_color_mode == 3) {
-        frag_color=v_label<0 ? u_unlabeled_color : v_label==0 ? u_background_color : u_label_colors[(v_label-1)%8];
-        return;
-      }
-      if (v_intensity < -0.5) {
-        frag_color = vec4(1.0, 0.12, 0.08, 1.0);
         return;
       }
       if (u_color_mode == 2) {

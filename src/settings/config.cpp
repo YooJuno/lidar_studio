@@ -48,7 +48,7 @@ void ApplyGroundRemovalValue(
   } else if (key == "use_cuda") {
     params.use_cuda = ParseBool(value);
   } else if (key == "mode") {
-    params.mode = Trim(value);
+    params.mode = algorithms::NormalizeGroundMode(Trim(value));
   } else if (key == "distance_threshold_m") {
     params.distance_threshold_m = ParseFloat(value);
   } else if (key == "final_distance_threshold_m") {

@@ -2571,10 +2571,11 @@ void LoadSettingsFile(ViewerState & state, const fs::path & path)
         state.algorithm_config.ground_removal.candidate_grid_cell_m =
           std::clamp(ParseFiniteFloat(value), 0.1f, 5.0f);
       } else if (key == "ground_mode") {
-        if (value == "fast_grid" || value == "gseg3d" || value == "patchworkpp" ||
-            value == "patchwork_classic" || value == "terraseg" || value == "fugseg" ||
-            value == "grid" || value == "ransac")
-          state.algorithm_config.ground_removal.mode = value;
+        const auto mode = lidar_viewer::algorithms::NormalizeGroundMode(value);
+        if (mode == "fast_grid" || mode == "gseg3d" || mode == "patchworkpp" ||
+            mode == "patchwork_classic" || mode == "terraseg" || mode == "fugseg" ||
+            mode == "grid" || mode == "ransac")
+          state.algorithm_config.ground_removal.mode = mode;
         else throw std::invalid_argument("Unknown ground segmentation method");
       } else if (key == "fugseg_num_segments") {
         state.algorithm_config.ground_removal.fugseg_num_segments=std::clamp(ParseStrictInt(value),30,720);
@@ -5280,9 +5281,10 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         reprocess = true;
       }
       TraceUi("ground_method");
+      const bool gseg3d=ground.mode=="gseg3d";
       const bool classic_patchwork=ground.mode=="patchwork_classic";
       const bool terraseg=ground.mode=="terraseg";
-      ImGui::TextDisabled("%s",ground.mode=="gseg3d" ? "Connected planes / CPU" :
+      ImGui::TextDisabled("%s",gseg3d ? "Connected planes / CPU" :
         terraseg ? "Learned ground segmentation / CUDA" :
         classic_patchwork ? "Local planes with fixed thresholds / CPU" :
         ground.mode=="patchworkpp" ? "Adaptive local planes / CPU" : ground.mode=="fugseg" ? "Uncertainty-aware terrain / CPU" :
@@ -5292,8 +5294,18 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         classic_patchwork ? "Original Patchwork with fixed elevation and flatness thresholds. Sensor height follows Align and Ground reference." :
         ground.mode=="patchworkpp" ? "Original Patchwork++: adaptive local planes, suitable for slopes and uneven roads. Sensor height follows Align." :
         ground.mode=="fugseg" ? "Original FugSeg: uncertainty-aware polar terrain extraction, including sparse and occluded areas." :
-        ground.mode=="gseg3d" ? "Original GSeg3D: plane geometry and connected 3D cells. Ground reference controls the region-growing seeds." :
+        gseg3d ? "Original GSeg3D: plane geometry and connected 3D cells. Ground reference controls the region-growing seeds." :
         "Ground reference and slope limits guide connected local heights. Compare Ground only and Obstacles only when tuning.");
+      if (gseg3d) {
+        ImGui::TextDisabled("Expected ground Z (m)");ImGui::SetNextItemWidth(-1);
+        float reference=ground.gseg3d_ground_height_m;
+        if (ImGui::InputFloat("##GroundReferenceZ", &reference, .05f, .5f, "%.2f") && std::isfinite(reference)) {
+          ground.gseg3d_ground_height_m=std::clamp(reference,-5.f,5.f);
+          reprocess=true;
+        }
+        TraceUi("gseg3d_reference");
+        Tip("Use the floor height in the aligned view. Use 0 m when the floor is on the grid.");
+      }
       if (terraseg && state.ground_removal_enabled) {
         const auto status=EnsureTerraSeg(state).Status();
         ImGui::TextWrapped("%s",status.message.c_str());
@@ -5320,7 +5332,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       }
       const bool ground_settings=ImGui::CollapsingHeader("Algorithm settings");TraceUi("ground_settings");
       if(ground_settings) {
-      if (ground.mode == "gseg3d" || ground.mode == "fast_grid") {
+      if (gseg3d || ground.mode == "fast_grid") {
         float cell = ground.gseg3d_cell_size_x_m;
         ImGui::SetNextItemWidth(-1);
         if (ImGui::SliderFloat("##GsegCells", &cell, .2f, 3.f, "XY cell: %.2f m", ImGuiSliderFlags_AlwaysClamp)) {
@@ -5373,17 +5385,16 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         ImGui::SetNextItemWidth(-1);
         reprocess|=ImGui::SliderFloat("##PlaneDistance",&ground.final_distance_threshold_m,.02f,.5f,"Ground thickness: %.2f m",ImGuiSliderFlags_AlwaysClamp);
       }
-      if (ground.mode=="gseg3d" || ground.mode=="fast_grid" || ground.mode=="patchworkpp" ||
+      if (gseg3d) {
+        ImGui::SetNextItemWidth(-1);
+        reprocess|=ImGui::SliderFloat("##GroundContinuity",&ground.gseg3d_max_ground_height_deviation_m,.05f,.6f,"Height continuity: %.2f m",ImGuiSliderFlags_AlwaysClamp);
+        Tip("Maximum centroid height change between connected cells. A limit below slope x cell width breaks ramps.");
+      } else if (ground.mode=="fast_grid" || ground.mode=="patchworkpp" ||
           ground.mode=="fugseg" || classic_patchwork || terraseg) {
         if (ImGui::CollapsingHeader("Ground reference")) {
           ImGui::TextDisabled("Expected ground Z after Align");ImGui::SetNextItemWidth(-1);
           reprocess|=ImGui::DragFloat("##GroundReferenceZ",&ground.gseg3d_ground_height_m,.01f,-5,5,"%.2f m",ImGuiSliderFlags_AlwaysClamp);
           Tip("Use 0 m when Align has placed the ground on the grid. This is a ground seed height, not a display translation.");
-          if (ground.mode=="gseg3d") {
-            ImGui::SetNextItemWidth(-1);
-            reprocess|=ImGui::SliderFloat("##GroundContinuity",&ground.gseg3d_max_ground_height_deviation_m,.05f,.6f,"Height continuity: %.2f m",ImGuiSliderFlags_AlwaysClamp);
-            Tip("Maximum centroid height change between connected cells. A limit below slope x cell width breaks ramps.");
-          }
         }
       }
 #ifdef LIDAR_VIEWER_HAS_CUDA
@@ -5397,6 +5408,13 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
 #endif
       }
       ImGui::Spacing();Metric("Ground points", CountText(state.status_ground));
+      const auto total_classified=ProcessedFrame(state.processed_frame).points.size();
+      if (gseg3d && state.ground_removal_enabled && state.ground_stage_ms && !reprocess &&
+          !GeometryPending(state) && state.processed_obstacles==total_classified &&
+          state.exclusion_removed_count<total_classified) {
+        ImGui::TextWrapped("No ground classified. Set Expected ground Z to the floor height after Align.");
+        TraceUi("gseg3d_no_ground");
+      }
       if(state.ground_removal_enabled && state.status_ground_average_ms>=0)
         ImGui::TextDisabled("Average %.3f s",state.status_ground_average_ms*.001);
       else ImGui::TextDisabled(state.ground_removal_enabled ? "Average --" : "Ground detection off");
@@ -5861,17 +5879,23 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       !ImGui::IsPopupOpen(nullptr,ImGuiPopupFlags_AnyPopup) && view.w>300*s && view.h>180*s) {
     const float width=std::min(440*s,view.w-32*s);
     BeginPanel("Empty region",{view.x+(view.w-width)*.5f,view.y+(view.h-156*s)*.5f,width,156*s},false);
-    const bool cropped=state.display_roi.enabled && state.frame.points.empty();
+    const bool ground_only=state.ground_view==ViewerState::GroundView::Ground;
+    const bool ground_outside_roi=ground_only && state.display_roi.enabled &&
+      ProcessedFrame(state.processed_frame).points.size()>state.processed_obstacles;
+    const bool cropped=state.display_roi.enabled && (state.frame.points.empty() || ground_outside_roi);
     if (cropped) {
-      ImGui::TextUnformatted("No points inside the display regions");
+      ImGui::TextUnformatted(ground_outside_roi ? "Ground is outside the display regions" :
+        "No points inside the display regions");
       ImGui::TextWrapped("Adjust the display boxes or show the full cloud.");
       if (ImGui::Button("Show full cloud")) {state.display_roi.enabled=false;state.display_roi_pending=true;}
       TraceUi("display_roi_show_full");
     } else {
       const bool all_skipped=state.exclusion_removed_count==state.base_frame.points.size();
-      ImGui::TextUnformatted(state.ground_view==ViewerState::GroundView::Ground ?
+      ImGui::TextUnformatted(ground_only ?
         "No ground points to show" : "No obstacle points to show");
       ImGui::TextWrapped("%s",all_skipped ? "The applied ROI skips all points during ground detection." :
+        ground_only && state.algorithm_config.ground_removal.mode=="gseg3d" ?
+        "In Ground, set Expected ground Z to the floor height after Align." :
         "Check ground settings or show both classes.");
       if (ImGui::Button("Show all points")) state.ground_view=ViewerState::GroundView::All;
     }
@@ -5895,10 +5919,10 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       applied ? ImGui::ColorConvertFloat4ToU32(ui::SuccessColor()) : ImGui::ColorConvertFloat4ToU32(ui::WarningColor()),
       applied ? (estimated ? "IMU level: estimated" : "IMU level: active") : "IMU level: unavailable");
   }
-  if (has_input && state.ground_removal_enabled && state.ground_view != ViewerState::GroundView::Obstacles &&
-      (!panorama || state.camera.panorama.color_mode == 1)) {
-    const float x = panorama ? view.x + view.w - ImGui::CalcTextSize("Ground").x - 30 * s : view.x + 18 * s;
-    const float y = panorama ? view.y + 27 * s : view.y + view.h - 18 * s;
+  if (has_input && state.ground_removal_enabled && state.ground_removed_count>0 &&
+      state.ground_view != ViewerState::GroundView::Obstacles) {
+    const float x = view.x + 18 * s;
+    const float y = view.y + view.h - (panorama && state.grid_settings.enabled ? 43 : 18) * s;
     draw->AddCircleFilled({x, y}, 4 * s, IM_COL32(255, 75, 65, 255));
     draw->AddText({x + 12 * s, y - 8 * s}, muted, "Ground");
   }
@@ -6631,6 +6655,7 @@ int RunViewer(int argc, char ** argv)
     const GLint mvp_loc = glGetUniformLocation(program, "u_mvp");
     const GLint point_size_loc = glGetUniformLocation(program, "u_point_size");
     const GLint color_mode_loc = glGetUniformLocation(program, "u_color_mode");
+    const GLint first_ground_loc = glGetUniformLocation(program, "u_first_ground");
     const GLint min_height_loc = glGetUniformLocation(program, "u_min_height");
     const GLint max_height_loc = glGetUniformLocation(program, "u_max_height");
     const GLint panorama_loc=glGetUniformLocation(program,"u_panorama");
@@ -6809,6 +6834,8 @@ int RunViewer(int argc, char ** argv)
         glUniform4fv(background_color_loc,1,&background_color.x);
         glUniform4fv(plain_color_loc,1,&plain_color.x);
         glUniform1i(color_mode_loc,color_mode);
+        const auto first_ground=state.frame.points.size()-std::min(state.frame.points.size(),state.ground_removed_count);
+        glUniform1i(first_ground_loc,state.ground_removed_count ? static_cast<GLint>(first_ground) : -1);
         glUniform1f(min_height_loc,state.height_color_min);
         glUniform1f(max_height_loc,state.height_color_max);
         glBindVertexArray(state.vao);

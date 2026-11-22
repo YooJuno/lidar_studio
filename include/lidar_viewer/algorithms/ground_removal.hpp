@@ -2,11 +2,23 @@
 
 #include "lidar_viewer/algorithms/types.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <string>
 #include <vector>
 
 namespace lidar_viewer::algorithms
 {
+inline std::string NormalizeGroundMode(std::string mode)
+{
+  std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char value) {
+    return static_cast<char>(std::tolower(value));
+  });
+  if (mode == "gseg") return "gseg3d";
+  if (mode == "patchwork" || mode == "patchwork++") return "patchworkpp";
+  return mode;
+}
+
 struct GroundRemovalParams
 {
   bool enabled{false};

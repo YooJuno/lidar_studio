@@ -41,6 +41,9 @@ int main()
     const auto config = lidar_viewer::LoadPipelineConfig(config_path);
     Check(config.ground_removal.enabled && config.ground_removal.mode == "fast_grid" &&
       config.clustering.min_cluster_size == 12 && config.detection.classes==8 && config.detection.model=="short_range", "Valid algorithm configuration changed");
+    Write(config_path,"ground_removal:\n  mode: GSeg\n");
+    Check(lidar_viewer::LoadPipelineConfig(config_path).ground_removal.mode=="gseg3d",
+      "Legacy GSeg mode does not identify the GSeg3D method");
     for (const auto & contents : {
       "ground_removal:\n  distance_threshold_m: nan\n",
       "ground_removal:\n  distance_threshold_m: inf\n",
