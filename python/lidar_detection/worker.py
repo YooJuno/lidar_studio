@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import struct
 import sys
+from .models import MODELS
 
 REQUEST=struct.Struct('<4sQIf')
 RESPONSE=struct.Struct('<4sQIfI')
@@ -40,7 +41,7 @@ def main():
     parser.add_argument('--model-dir',required=True)
     parser.add_argument('--provider',choices=['auto','cpu'],default='auto')
     parser.add_argument('--native-dir')
-    parser.add_argument('--model',choices=['tiny','short_range'],default='tiny')
+    parser.add_argument('--model',choices=MODELS,default='tiny')
     args=parser.parse_args()
     source=sys.stdin.buffer;sink=sys.stdout.buffer
     # Some optional native libraries print diagnostic messages to stdout.

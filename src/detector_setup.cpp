@@ -200,7 +200,7 @@ struct DetectorSetup::Impl {
 #endif
 #endif
   }
-  void Run(const fs::path & root,const fs::path & script) {
+  void Run(const fs::path & root,const fs::path & script,const std::string & model) {
     try {
       if(!fs::is_regular_file(script)) throw std::runtime_error("The app is missing its model installer");
       const auto config=UserConfigurationDirectory(),data=DataDirectory();
@@ -209,12 +209,29 @@ struct DetectorSetup::Impl {
       const SetupLock installation_lock(data/".setup-lock");
       const auto log=config/"detector-setup.log",status=config/"detector-setup-progress.json";
       {std::error_code error;fs::remove(status,error);}
-      const auto python=Python(root,data,log);
-      Report("Preparing CPU models");
+#if defined(__APPLE__) && defined(__aarch64__)
+      const auto bundled = root.parent_path()/"detector/runtime/bin/python3";
+      fs::path existing;
+      if (model=="base") {
+        std::ifstream configured(config/"detector.cfg");
+        for (std::string line; std::getline(configured,line);) {
+          if (!line.empty() && line.back()=='\r') line.pop_back();
+          if (line.rfind("python=",0)==0) existing=fs::u8path(line.substr(7));
+        }
+        if (!fs::is_regular_file(existing)) existing=bundled;
+      }
+      const bool reuse_runtime=fs::is_regular_file(existing);
+      const auto python = reuse_runtime ? existing : Python(root,data,log);
+#else
+      const auto python = Python(root,data,log);
+#endif
+      Report("Preparing model runtime");
       std::vector<std::string> arguments{python.u8string(),"-E","-s","-B","-u",script.u8string(),"--progress-file",status.u8string()};
+      if (model!="all") arguments.insert(arguments.end(),{"--model",model});
 #if defined(__APPLE__) && defined(__aarch64__)
       // Packages go into the app-owned standalone interpreter, never system Python.
-      arguments.insert(arguments.end(),{"--runtime-python",python.u8string(),"--install-packages"});
+      arguments.insert(arguments.end(),{"--runtime-python",python.u8string()});
+      if (!reuse_runtime) arguments.push_back("--install-packages");
 #endif
       RunCommand(arguments,log,status);Check();
       if(!fs::is_regular_file(config/"detector.cfg")) throw std::runtime_error("Model preparation did not publish a detector configuration");
@@ -230,12 +247,12 @@ struct DetectorSetup::Impl {
 };
 DetectorSetup::DetectorSetup(fs::path prepared_python):impl_(std::make_unique<Impl>()) {impl_->prepared_python=std::move(prepared_python);}
 DetectorSetup::~DetectorSetup() {Cancel();if(impl_->worker.joinable()) impl_->worker.join();}
-bool DetectorSetup::Start(const fs::path & root,const fs::path & script) {
+bool DetectorSetup::Start(const fs::path & root,const fs::path & script,const std::string & model) {
   if(Progress().Active()) return false;
   if(impl_->worker.joinable()) impl_->worker.join();
   impl_->canceled=false;
   {std::lock_guard<std::mutex> lock(impl_->mutex);impl_->progress={};impl_->progress.stage=DetectorSetupStage::Working;impl_->progress.message="Preparing model runtime";}
-  impl_->worker=std::thread([this,root,script]{impl_->Run(root,script);});return true;
+  impl_->worker=std::thread([this,root,script,model]{impl_->Run(root,script,model);});return true;
 }
 void DetectorSetup::Cancel() {impl_->canceled=true;}
 DetectorSetupProgress DetectorSetup::Progress() const {std::lock_guard<std::mutex> lock(impl_->mutex);return impl_->progress;}

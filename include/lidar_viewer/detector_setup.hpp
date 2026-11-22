@@ -19,7 +19,8 @@ public:
   explicit DetectorSetup(std::filesystem::path prepared_python={});~DetectorSetup();
   DetectorSetup(const DetectorSetup &)=delete;
   DetectorSetup & operator=(const DetectorSetup &)=delete;
-  bool Start(const std::filesystem::path & python_root,const std::filesystem::path & setup_script);
+  bool Start(const std::filesystem::path & python_root,const std::filesystem::path & setup_script,
+    const std::string & model = "all");
   void Cancel();
   DetectorSetupProgress Progress() const;
   static std::filesystem::path DataDirectory();

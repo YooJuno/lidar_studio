@@ -203,6 +203,126 @@ void TestMalformedLayouts()
   Throws([&] {DecodePointCloud2(cloud);}, "Nonscalar X accepted");
 }
 
+constexpr const char * kLivoxTopic = "/livox/lidar";
+constexpr const char * kLivoxType = "livox_ros_driver2/msg/CustomMsg";
+
+std::vector<std::uint8_t> LivoxRecord(const std::vector<KittiPoint> & points, bool big_endian = false,
+  const std::string & frame_id = "livox_frame")
+{
+  std::vector<std::uint8_t> data{0, static_cast<std::uint8_t>(big_endian ? 0 : 1), 0, 0};
+  const auto append = [&](auto value) {
+    const auto alignment = sizeof(value);
+    const auto padding = (alignment - (data.size() - 4) % alignment) % alignment;
+    const auto offset = data.size() + padding;
+    data.resize(offset + sizeof(value), 0x5a);
+    Store(data, offset, value, big_endian);
+  };
+  append(std::int32_t{1700000000});
+  append(std::uint32_t{987000000});
+  append(static_cast<std::uint32_t>(frame_id.size() + 1));
+  data.insert(data.end(), frame_id.begin(), frame_id.end());
+  data.push_back(0);
+  append(std::uint64_t{1700000000987000000});
+  append(static_cast<std::uint32_t>(points.size()));
+  data.insert(data.end(), {42, 0, 0, 0});
+  append(static_cast<std::uint32_t>(points.size()));
+  for (const auto & point : points) {
+    append(std::uint32_t{1000000});
+    append(point.x);
+    append(point.y);
+    append(point.z);
+    data.insert(data.end(), {static_cast<std::uint8_t>(point.intensity), 0x10, 2});
+  }
+  return data;
+}
+
+void WriteLivox(rosbag2_cpp::Writer & writer, const std::vector<std::uint8_t> & data, std::int64_t time)
+{
+  auto serialized = std::make_shared<rclcpp::SerializedMessage>(data.size());
+  auto & message = serialized->get_rcl_serialized_message();
+  std::memcpy(message.buffer, data.data(), data.size());
+  message.buffer_length = data.size();
+  writer.write(std::move(serialized), kLivoxTopic, kLivoxType, rclcpp::Time(time));
+}
+
+void TestLivoxStorage(bool acceleration_in_g)
+{
+  const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+  const fs::path folder = fs::temp_directory_path() / ("lidar-livox-bag-" + std::to_string(nonce));
+  struct Cleanup {fs::path path;~Cleanup() {std::error_code ec;fs::remove_all(path,ec);}} cleanup{folder};
+  {
+    rosbag2_cpp::Writer writer;
+    rosbag2_storage::StorageOptions options;
+    options.uri = folder.string();
+    options.storage_id = "sqlite3";
+    writer.open(options);
+    WriteLivox(writer, LivoxRecord({{1.25f, -2.5f, 3.75f, 255},
+      {std::numeric_limits<float>::quiet_NaN(), 2, 3, 8}, {10, 11, 12, 41}}), 1000000);
+    const auto big = LivoxRecord({{-4.5f, .25f, 8, 128}}, true, "livox_sensor");
+    WriteLivox(writer, big, 1000000);
+    sensor_msgs::msg::Imu imu;
+    imu.header.frame_id = "livox_frame";
+    imu.orientation_covariance[0] = -1;
+    const double gravity = acceleration_in_g ? 1. : 9.80665;
+    imu.linear_acceleration.x = .6 * gravity;
+    imu.linear_acceleration.z = .8 * gravity;
+    if (acceleration_in_g) imu.angular_velocity.y = 30; // Unusable gyro leaves acceleration available.
+    writer.write(imu, "/livox/imu", rclcpp::Time(0));
+    writer.write(imu, "/livox/imu", rclcpp::Time(2000000));
+    writer.write(imu, "/livox/imu", rclcpp::Time(4000000));
+    // Motion dominates this recording. Infer units from the quiet segment.
+    imu.angular_velocity.y = 1;
+    imu.linear_acceleration.x = 2 * gravity;
+    imu.linear_acceleration.z = 0;
+    for (const std::int64_t time : {11000000, 12000000, 13000000, 14000000})
+      writer.write(imu, "/livox/imu", rclcpp::Time(time));
+
+    auto bad = big;
+    bad.pop_back();
+    WriteLivox(writer, bad, 5000000);
+    bad = big;
+    bad[1] = 7; // XCDR2 uses a different data layout.
+    WriteLivox(writer, bad, 6000000);
+    bad = big;
+    Store(bad, 12, std::numeric_limits<std::uint32_t>::max(), true);
+    WriteLivox(writer, bad, 7000000);
+    // A single final point takes 19 bytes, preceded by the 4-byte array
+    // length and, 8 bytes before that, the declared point count.
+    const auto sequence_length = big.size() - 19 - 4;
+    bad = big;
+    Store(bad, sequence_length, std::uint32_t{2}, true);
+    WriteLivox(writer, bad, 8000000);
+    Store(bad, sequence_length, std::numeric_limits<std::uint32_t>::max(), true);
+    Store(bad, sequence_length - 8, std::numeric_limits<std::uint32_t>::max(), true);
+    WriteLivox(writer, bad, 9000000);
+    WriteLivox(writer, LivoxRecord({}), 10000000);
+    writer.close();
+  }
+
+  const auto handles = ResolveBagFrames(folder, "");
+  Check(handles.size() == 8 && handles[0].bag_topic == kLivoxTopic,
+    "A sole Livox topic was not automatically selected or indexed");
+  const auto big = LoadBagFrame(handles[1], true);
+  Check(big.frame_id == "livox_sensor" && big.points.size() == 1 && big.points[0].x == -4.5f && big.points[0].y == .25f &&
+    big.points[0].z == 8 && big.points[0].intensity == 128,
+    "Big-endian Livox frame or independent seek decoded incorrectly");
+  const auto little = LoadBagFrame(handles[0]);
+  Check(little.points.size() == 2 && little.points[0].x == 1.25f && little.points[0].y == -2.5f &&
+    little.points[0].z == 3.75f && little.points[0].intensity == 255 &&
+    little.points[1].x == 10 && little.points[1].intensity == 41,
+    "Livox frame lost XYZ/reflectivity, sequence padding or nonfinite filtering");
+  Check(little.timestamp_ns == 1000000 && little.frame_id == "livox_frame" && little.imu &&
+    little.imu->up && little.imu->topic == "/livox/imu" &&
+    little.imu->source == lidar_viewer::ImuGravitySource::AccelGyro &&
+    std::abs(little.imu->up->x - .6) < 1e-6 && std::abs(little.imu->up->z - .8) < 1e-6,
+    "Livox playback lost the bag timestamp, frame ID or IMU pairing");
+  Check(LoadBagFrame(handles[1]).points[0].x == -4.5f, "Livox duplicate timestamp lookup failed");
+  for (std::size_t i = 2; i < 7; ++i)
+    Throws([&] {LoadBagFrame(handles[i]);}, "An invalid Livox payload was accepted");
+  Check(LoadBagFrame(handles[7]).points.empty() && LoadBagFrame(handles[0]).points.size() == 2,
+    "Livox reader did not recover from malformed input or lost a valid empty scan");
+}
+
 void TestStorage(const std::string & storage_id)
 {
   const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -222,6 +342,7 @@ void TestStorage(const std::string & storage_id)
       writer.write(second, "/b2/points", rclcpp::Time(1000000));
       writer.write(second, "/another/cloud", rclcpp::Time(2000000));
       writer.write(second, "/b2/points", rclcpp::Time(3000000));
+      WriteLivox(writer, LivoxRecord({{3, 4, 5, 200}}), 2500000);
       sensor_msgs::msg::Imu imu;
       imu.header.frame_id = "fixture_imu";
       const auto q = lidar_viewer::ImuRotationFromRpy(.1, -.2, .7);
@@ -303,6 +424,10 @@ void TestStorage(const std::string & storage_id)
     Check(ResolveBagFrames(folder / "metadata.yaml", "/another/cloud").size() == 1,
       "Explicit topic/metadata.yaml selection failed");
     Check(ResolveBagFrames(folder, "").size() == 3, "Automatic preferred topic selection failed");
+    const auto livox = ResolveBagFrames(folder, kLivoxTopic);
+    Check(livox.size() == 1 && LoadBagFrame(livox.front()).points[0].intensity == 200 &&
+      LoadBagFrame(handles[0]).points[0].x == 1,
+      "Switching between explicit Livox and PointCloud2 topics used the wrong decoder");
     Throws([&] {ResolveBagFrames(folder, "/missing");}, "Missing topic should fail clearly");
     for (const auto & entry : fs::directory_iterator(folder)) {
       if (entry.path().extension() == ".mcap" || entry.path().extension() == ".db3") {
@@ -326,10 +451,12 @@ int main(int argc, char ** argv)
     Check(RosbagInputAvailable(), "Bag-enabled build reports unavailable");
     TestPointLayouts();
     TestMalformedLayouts();
+    TestLivoxStorage(true);
+    TestLivoxStorage(false);
     TestStorage("mcap");
     TestStorage("sqlite3");
     if (argc == 2) {
-      const auto frames = ResolveBagFrames(argv[1]);
+      const auto frames = ResolveBagFrames(argv[1], "");
       const auto first = LoadBagFrame(frames.front());
       const auto last = LoadBagFrame(frames.back());
       Check(!first.points.empty() && !last.points.empty(), "Real bag first/last frame empty");

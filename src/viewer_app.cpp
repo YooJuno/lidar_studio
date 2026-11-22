@@ -80,6 +80,15 @@ constexpr const char * kSettingsFileName = "lidar_viewer_settings.cfg";
 constexpr const char * kProfilesDir = "config/profiles";
 constexpr const char * kAlgorithmsConfigPath = "config/algorithms.yaml";
 constexpr const char * kDefaultInputPath = "dataset/gangnam/2019_10_04_12_28_25.bin";
+constexpr std::array<const char *, 5> kObjectModels{"tiny", nullptr, nullptr, "short_range", "base"};
+
+int ObjectMethodForModel(const std::string & model)
+{
+  for (std::size_t i=0; i<kObjectModels.size(); ++i) {
+    if (kObjectModels[i] && model==kObjectModels[i]) return static_cast<int>(i);
+  }
+  return 0;
+}
 // Viridis by Nathaniel J. Smith, Stefan van der Walt, and Eric Firing (CC0).
 // https://github.com/BIDS/colormap/blob/master/colormaps.py
 constexpr ImU32 kPanoramaRangeColors[] = {
@@ -513,6 +522,16 @@ struct ViewerState
     fs::path folder;
     std::vector<BagSource> sources;
   };
+  struct DetectorSubmission
+  {
+    std::uint64_t revision;
+    double started_at;
+  };
+  struct PendingDetectionFrame
+  {
+    std::unique_ptr<ViewerState> geometry;
+    DetectorSubmission submission;
+  };
 
   struct FileGroup
   {
@@ -580,6 +599,7 @@ struct ViewerState
   std::vector<fs::path> folder_children;
   std::string folder_error;
   std::future<FolderScanResult> folder_scan_future;
+  bool opening_input_folder{false};
   std::size_t current_index{0};
   std::size_t current_file_group{0};
   FrameData base_frame;
@@ -737,9 +757,10 @@ struct ViewerState
   std::unique_ptr<lidar_viewer::ObjectTracker> tracker;
   std::vector<lidar_viewer::ObjectTrack> visible_tracks;
   std::uint64_t tracking_session{1},tracking_revision{0},tracking_alignment{0};
+  std::uint64_t detector_alignment{0};
   std::string tracking_model,tracking_frame_id,tracking_source;
   std::string tracking_error;
-  std::uint64_t detector_revision{1}, detector_submitted{0}, detector_completed{0};
+  std::uint64_t detector_revision{1}, next_detector_revision{2}, detector_submitted{0}, detector_completed{0};
   float detector_yaw{0}, detector_latency_ms{0};
   double runtime_sample_time{0};
   float runtime_latency_ms{0};
@@ -761,6 +782,7 @@ struct ViewerState
   std::optional<std::size_t> prefetched_index;
   std::unique_ptr<lidar_viewer::BackgroundWorker> geometry_worker;
   std::future<std::unique_ptr<ViewerState>> geometry_future;
+  std::optional<PendingDetectionFrame> pending_detection_frame;
   bool async_geometry{false}, geometry_updates_detector{true}, geometry_roi_only{false};
   std::optional<std::size_t> geometry_index;
   std::optional<std::uint64_t> geometry_live_sequence;
@@ -768,6 +790,11 @@ struct ViewerState
   std::uint64_t geometry_ground_config{0}, geometry_input_config{0};
   std::uint64_t submitted_ground_config{0}, submitted_input_config{0};
 };
+
+bool GeometryPending(const ViewerState & state)
+{
+  return state.geometry_future.valid() || state.pending_detection_frame.has_value();
+}
 
 const lidar_viewer::RoiSettings & EditedRoi(const ViewerState & state)
 {
@@ -1054,8 +1081,15 @@ void RebuildClusterBoxes(ViewerState & state)
       auto fill_color=colors.first,line_color=colors.second;
       const auto index=static_cast<std::size_t>(&detection-state.detections.data());
       if (index<state.visible_tracks.size() && state.visible_tracks[index].id) {
-        if (state.visible_tracks[index].predicted) {fill_color.a*=.15f;line_color.a*=.45f;}
-        else if (!state.visible_tracks[index].confirmed) {fill_color.a*=.4f;line_color.a*=.75f;}
+        const auto & track = state.visible_tracks[index];
+        if (track.predicted) {
+          const bool recent = track.missed_s < state.tracking_params.max_missed_s * .5f;
+          fill_color.a *= recent ? .65f : .30f;
+          line_color.a *= recent ? .85f : .55f;
+        } else if (!track.confirmed) {
+          fill_color.a *= .4f;
+          line_color.a *= .75f;
+        }
       }
       auto batch_it = std::find_if(
         state.cluster_boxes.batches.begin(),
@@ -1129,9 +1163,9 @@ void TrackCurrentDetections(ViewerState & state)
     source=(handle.format==InputFormat::KittiXyzi ? handle.path.parent_path() : handle.path).u8string();
   }
   if (state.tracking_model!=state.algorithm_config.detection.model || state.tracking_frame_id!=state.base_frame.frame_id ||
-      state.tracking_alignment!=state.geometry_input_config || state.tracking_source!=source) {
+      state.tracking_alignment!=state.detector_alignment || state.tracking_source!=source) {
     ResetTracking(state);state.tracking_model=state.algorithm_config.detection.model;
-    state.tracking_frame_id=state.base_frame.frame_id;state.tracking_alignment=state.geometry_input_config;
+    state.tracking_frame_id=state.base_frame.frame_id;state.tracking_alignment=state.detector_alignment;
     state.tracking_source=source;
   }
   if (state.tracking_revision==state.detector_revision) return;
@@ -1160,23 +1194,61 @@ double DetectorClock()
   return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
+void InvalidateDetectorFrame(ViewerState & state)
+{
+  state.detector_revision = state.next_detector_revision++;
+  state.full_detections.clear();
+  state.detector_error.clear();
+}
+
+bool DetectorUsesCurrentModel(const ViewerState & state)
+{
+  return state.algorithm_config.detection.enabled && state.detector && !state.detector_retry &&
+    state.detector_active_model == state.algorithm_config.detection.model;
+}
+
+bool DetectorCanWait(const ViewerState & state, double started_at)
+{
+  const auto status = state.detector->Status();
+  // A CPU result can take several seconds. Give live CPU inference a shorter
+  // deadline than file playback while leaving the receiver and UI responsive.
+  const double cpu_allowance = state.live_stats.connected ? 6. : 30.;
+  const double allowance = status.provider == "CUDAExecutionProvider" ? 2. : cpu_allowance;
+  return status.ready && !status.failed && DetectorClock() - started_at < allowance;
+}
+
 bool DetectorFramePending(const ViewerState & state)
 {
-  if (!state.algorithm_config.detection.enabled || !state.detector ||
+  if (!DetectorUsesCurrentModel(state) ||
       state.detector_submitted!=state.detector_revision || state.detector_completed==state.detector_revision) return false;
-  const auto status=state.detector->Status();
-  // Let playback continue during startup or failure. Once ready, keep cloud
-  // and boxes on the same revision. A slow backend never blocks UI or recording.
-  // Quality models on CPU can take longer than two seconds. Expiring every
-  // frame before inference finishes starves offline playback of all boxes.
-  // Keep the matching scan while the GUI remains responsive.
-  const double allowance=status.provider=="CUDAExecutionProvider" || state.live_stats.connected ? 2. : 30.;
-  return status.ready && !status.failed && DetectorClock()-state.detector_submitted_at<allowance;
+  return DetectorCanWait(state, state.detector_submitted_at);
+}
+
+// Cache down to the UI minimum once. Lower candidates never suppress a
+// higher-scoring NMS survivor, so score changes only need a display filter.
+constexpr float kDetectorCandidateThreshold = .1f;
+
+void ApplyDetectorResult(ViewerState & state, lidar_viewer::DetectorResult result)
+{
+  state.detector_completed = result.revision;
+  state.full_detections = std::move(result.detections);
+  state.detector_latency_ms = result.latency_ms;
+  state.detector_detail = std::move(result.detail);
+  state.detector_error = std::move(result.error);
+  if (state.detector_error.empty()) {
+    state.object_average.Add(result.processing_ms);
+    TrackCurrentDetections(state);
+  } else {
+    ResetTracking(state);
+  }
+  FilterDetections(state);
+  if (std::getenv("LIDAR_VIEWER_DETECTOR_TRACE"))
+    std::cout<<"Detector frame "<<state.current_index<<" revision "<<state.detector_revision<<" boxes "<<state.detections.size()<<" full "<<state.full_detections.size()<<std::endl;
 }
 
 bool UpdateDetector(ViewerState & state)
 {
-  if (!state.algorithm_config.detection.enabled) return false;
+  if (!state.algorithm_config.detection.enabled || state.pending_detection_frame) return false;
   if (!state.detector_input || state.detector_input->empty()) {
     if (state.detector_completed!=state.detector_revision) {
       state.detector_completed=state.detector_revision;state.full_detections.clear();TrackCurrentDetections(state);FilterDetections(state);
@@ -1191,9 +1263,7 @@ bool UpdateDetector(ViewerState & state)
     state.detector_retry=false;state.detector_submitted=0;state.detector_error.clear();
   }
   if (state.detector_submitted!=state.detector_revision) {
-    // Lower candidates never suppress a higher-scoring NMS survivor. Cache
-    // down to the UI minimum once; changing score is then an immediate filter.
-    try {state.detector->Submit(state.detector_revision,state.detector_input,.1f,state.detector_yaw);}
+    try {state.detector->Submit(state.detector_revision,state.detector_input,kDetectorCandidateThreshold,state.detector_yaw);}
     catch (const std::exception & error) {
       state.detector_error=error.what();state.detector_completed=state.detector_revision;
       state.full_detections.clear();FilterDetections(state);return false;
@@ -1201,13 +1271,7 @@ bool UpdateDetector(ViewerState & state)
     state.detector_submitted=state.detector_revision;state.detector_submitted_at=DetectorClock();
   }
   if (auto result=state.detector->Poll();result && result->revision==state.detector_revision) {
-    state.detector_completed=result->revision;state.full_detections=std::move(result->detections);
-    state.detector_latency_ms=result->latency_ms;state.detector_detail=result->detail;state.detector_error=result->error;
-    if(state.detector_error.empty()) {state.object_average.Add(result->processing_ms);TrackCurrentDetections(state);}
-    else ResetTracking(state);
-    FilterDetections(state);
-    if (std::getenv("LIDAR_VIEWER_DETECTOR_TRACE"))
-      std::cout<<"Detector frame "<<state.current_index<<" revision "<<state.detector_revision<<" boxes "<<state.detections.size()<<" full "<<state.full_detections.size()<<std::endl;
+    ApplyDetectorResult(state, std::move(*result));
     return true;
   }
   return false;
@@ -1481,7 +1545,8 @@ void PrepareDetectorInput(ViewerState & state, const FrameData & aligned, const 
     if (raw.points[i].x!=0 || raw.points[i].y!=0 || raw.points[i].z!=-ground_offset) points->push_back(p);
   }
   state.detector_input=std::move(points);state.detector_yaw=yaw;
-  ++state.detector_revision;state.full_detections.clear();state.detections.clear();state.detector_error.clear();
+  state.detector_alignment=state.geometry_input_config;
+  InvalidateDetectorFrame(state);state.detections.clear();
 }
 
 void RefreshDetectorInput(ViewerState & state)
@@ -1537,7 +1602,7 @@ void ApplyCalibration(ViewerState & state, const FrameData * source = nullptr,
       PrepareDetectorInput(state,frame,source ? *source : state.base_frame,resolved.effective.yaw_deg*kPi/180.f,
         source_ground_offset.value_or(state.global_ground_offset));
     } else {
-      ++state.detector_revision;state.full_detections.clear();state.detections.clear();state.detector_error.clear();
+      InvalidateDetectorFrame(state);state.detections.clear();
     }
   }
   state.exclusion_removed_count=0;
@@ -1575,6 +1640,7 @@ void ApplyCalibration(ViewerState & state, const FrameData * source = nullptr,
 void CancelGeometry(ViewerState & state)
 {
   if (state.geometry_worker) state.geometry_worker->CancelPending();
+  state.pending_detection_frame.reset();
   state.geometry_future={};state.geometry_index.reset();state.geometry_live_sequence.reset();
   state.applying_exclusions=false;
 }
@@ -1610,6 +1676,7 @@ void QueueGeometry(ViewerState & state, FrameData base, std::optional<std::size_
     return std::move(work);
   });
   state.geometry_index=index;state.geometry_live_sequence=sequence;
+  state.pending_detection_frame.reset();
   state.geometry_updates_detector=update_detector;state.geometry_roi_only=roi_only;
   state.submitted_geometry_config=state.geometry_config;state.roi_pending=false;
   state.submitted_ground_config=state.geometry_ground_config;
@@ -1713,12 +1780,95 @@ void QueueNextFramePrefetch(ViewerState & state)
   if (state.frames.size()>1) QueueFramePrefetch(state,(state.current_index+1)%state.frames.size());
 }
 
+void CommitGeometry(ViewerState & state, ViewerState & work,
+  std::optional<ViewerState::DetectorSubmission> submission, std::optional<lidar_viewer::DetectorResult> result)
+{
+  state.base_frame=std::move(work.base_frame);state.frame=std::move(work.frame);
+  state.applied_exclusions=std::move(work.applied_exclusions);
+  state.processed_frame=std::move(work.processed_frame);state.processed_obstacles=work.processed_obstacles;
+  state.ground_removed_count=work.ground_removed_count;state.clusters=std::move(work.clusters);
+  if (!state.geometry_roi_only) state.exclusion_removed_count=work.exclusion_removed_count;
+  state.roi_frame=work.roi_frame;state.roi_ms=work.roi_ms;state.processing_ms=work.processing_ms;
+  if (work.ground_passes && work.ground_stage_ms) {
+    state.ground_stage_ms=work.ground_stage_ms;state.ground_average.Add(*work.ground_stage_ms);
+  }
+  if (work.clustering_stage_ms) {
+    state.clustering_stage_ms=work.clustering_stage_ms;state.clustering_average.Add(*work.clustering_stage_ms);
+  }
+  state.ground_passes+=work.ground_passes;state.imu_level_result=std::move(work.imu_level_result);
+  if (state.geometry_updates_detector) {
+    state.detector_input=std::move(work.detector_input);state.detector_yaw=work.detector_yaw;
+    state.detector_alignment=state.submitted_input_config;
+    if (submission) {
+      state.detector_revision=state.detector_submitted=submission->revision;
+      state.detector_submitted_at=submission->started_at;
+      state.full_detections.clear();state.detector_error.clear();
+    } else {
+      InvalidateDetectorFrame(state);
+    }
+  }
+  RebuildRoiGeometry(state);state.frame_dirty=true;
+  if (state.applying_exclusions) {
+    state.applying_exclusions=false;SetTransientStatus(state,"ROI applied to ground segmentation");
+  }
+  if (state.geometry_roi_only)
+    std::cout<<"ROI applied: "<<state.roi.boxes.size()<<" boxes | "<<state.frame.points.size()<<" points | "
+      <<state.roi_ms<<" ms | ground passes "<<state.ground_passes<<std::endl;
+  if (std::getenv("LIDAR_VIEWER_ROI_TRACE"))
+    std::cout<<"Analysis input: excluded "<<state.exclusion_removed_count<<" | detector "
+      <<(state.detector_input ? state.detector_input->size() : 0)<<" | ground passes "<<state.ground_passes<<std::endl;
+  if (state.geometry_index) {
+    state.current_index=*state.geometry_index;UpdateCurrentFileGroup(state);QueueNextFramePrefetch(state);
+  }
+  if (state.geometry_live_sequence) {
+    state.live_display_sequence=*state.geometry_live_sequence;
+    if (!state.live_has_frame) {
+      state.fit_view_requested=true;
+      std::cout<<"Live first frame: "<<state.frame.points.size()<<" points"<<std::endl;
+    }
+    state.live_has_frame=true;
+  }
+  state.geometry_index.reset();state.geometry_live_sequence.reset();
+  // The tracker uses the newly committed frame index, timestamp and alignment.
+  if (result) ApplyDetectorResult(state, std::move(*result));
+  else FilterDetections(state);
+}
+
+bool ShouldPairDetection(const ViewerState & state, const ViewerState & work)
+{
+  const bool looping = state.is_playing && state.loop_playback && state.frames.size() > 1 &&
+    state.current_index + 1 == state.frames.size();
+  const bool next_playback_frame = state.geometry_index &&
+    (*state.geometry_index == state.current_index + 1 || (looping && *state.geometry_index == 0));
+  const bool next_scan = (state.geometry_live_sequence && state.live_has_frame) || next_playback_frame;
+  return next_scan && state.geometry_updates_detector && work.detector_input &&
+    !work.detector_input->empty() && state.detector_completed == state.detector_revision &&
+    state.detector_error.empty() && DetectorUsesCurrentModel(state) && DetectorCanWait(state, DetectorClock());
+}
+
 bool CompleteGeometry(ViewerState & state)
 {
-  if (!state.geometry_future.valid() || state.roi_gesture.active ||
-      state.geometry_future.wait_for(std::chrono::seconds(0))!=std::future_status::ready) return false;
+  if (state.roi_gesture.active || !GeometryPending(state)) return false;
   try {
-    auto work=state.geometry_future.get();
+    std::unique_ptr<ViewerState> work;
+    std::optional<ViewerState::DetectorSubmission> submission;
+    std::optional<lidar_viewer::DetectorResult> result;
+    if (state.pending_detection_frame) {
+      auto & pending = *state.pending_detection_frame;
+      if (state.submitted_geometry_config == state.geometry_config && DetectorUsesCurrentModel(state)) {
+        result = state.detector->Poll();
+        if (result && result->revision != pending.submission.revision) result.reset();
+        if (!result && DetectorCanWait(state, pending.submission.started_at)) return false;
+        // If the wait expired, the scan can still use a matching reply that
+        // arrives while it stays on screen. Keep its submission ID for polling.
+        submission = pending.submission;
+      }
+      work = std::move(pending.geometry);
+      state.pending_detection_frame.reset();
+    } else {
+      if (state.geometry_future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return false;
+      work = state.geometry_future.get();
+    }
     // A settings edit supersedes an in-flight result. Recompute the requested
     // source with the newest settings instead of showing boxes in old axes.
     if (state.submitted_geometry_config!=state.geometry_config) {
@@ -1742,45 +1892,19 @@ bool CompleteGeometry(ViewerState & state)
       }
       return false;
     }
-    state.base_frame=std::move(work->base_frame);state.frame=std::move(work->frame);
-    state.applied_exclusions=std::move(work->applied_exclusions);
-    state.processed_frame=std::move(work->processed_frame);state.processed_obstacles=work->processed_obstacles;
-    state.ground_removed_count=work->ground_removed_count;state.clusters=std::move(work->clusters);
-    if (!state.geometry_roi_only) state.exclusion_removed_count=work->exclusion_removed_count;
-    state.roi_frame=work->roi_frame;state.roi_ms=work->roi_ms;state.processing_ms=work->processing_ms;
-    if(work->ground_passes && work->ground_stage_ms) {
-      state.ground_stage_ms=work->ground_stage_ms;state.ground_average.Add(*work->ground_stage_ms);
-    }
-    if(work->clustering_stage_ms) {
-      state.clustering_stage_ms=work->clustering_stage_ms;state.clustering_average.Add(*work->clustering_stage_ms);
-    }
-    state.ground_passes+=work->ground_passes;state.imu_level_result=std::move(work->imu_level_result);
-    if (state.geometry_updates_detector) {
-      state.detector_input=std::move(work->detector_input);state.detector_yaw=work->detector_yaw;
-      ++state.detector_revision;state.full_detections.clear();state.detector_error.clear();
-    }
-    RebuildRoiGeometry(state);FilterDetections(state);state.frame_dirty=true;
-    if (state.applying_exclusions) {
-      state.applying_exclusions=false;SetTransientStatus(state,"ROI applied to ground segmentation");
-    }
-    if (state.geometry_roi_only)
-      std::cout<<"ROI applied: "<<state.roi.boxes.size()<<" boxes | "<<state.frame.points.size()<<" points | "
-        <<state.roi_ms<<" ms | ground passes "<<state.ground_passes<<std::endl;
-    if (std::getenv("LIDAR_VIEWER_ROI_TRACE"))
-      std::cout<<"Analysis input: excluded "<<state.exclusion_removed_count<<" | detector "
-        <<(state.detector_input ? state.detector_input->size() : 0)<<" | ground passes "<<state.ground_passes<<std::endl;
-    if (state.geometry_index) {
-      state.current_index=*state.geometry_index;UpdateCurrentFileGroup(state);QueueNextFramePrefetch(state);
-    }
-    if (state.geometry_live_sequence) {
-      state.live_display_sequence=*state.geometry_live_sequence;
-      if (!state.live_has_frame) {
-        state.fit_view_requested=true;
-        std::cout<<"Live first frame: "<<state.frame.points.size()<<" points"<<std::endl;
+    if (!submission && ShouldPairDetection(state, *work)) {
+      submission = ViewerState::DetectorSubmission{state.next_detector_revision++, DetectorClock()};
+      try {
+        state.detector->Submit(submission->revision, work->detector_input, kDetectorCandidateThreshold, work->detector_yaw);
+        state.pending_detection_frame = ViewerState::PendingDetectionFrame{std::move(work), *submission};
+        return false;
+      } catch (const std::exception & error) {
+        result.emplace();
+        result->revision = submission->revision;
+        result->error = error.what();
       }
-      state.live_has_frame=true;
     }
-    state.geometry_index.reset();state.geometry_live_sequence.reset();
+    CommitGeometry(state, *work, submission, std::move(result));
     return true;
   } catch (const std::exception & error) {
     if (state.applying_exclusions) {
@@ -1835,10 +1959,13 @@ bool TryLoadFrame(ViewerState & state, std::size_t index)
   try {
     if (state.frames.empty() || state.dataset_edit_future.valid()) return false;
     index%=state.frames.size();
-    if (state.geometry_future.valid() && state.geometry_index==index) {
+    if (GeometryPending(state) && state.geometry_index==index) {
       state.requested_frame.reset();
       return false;
     }
+    // A seek can wait for disk I/O. Discard a held advance immediately so
+    // its detector reply cannot overtake the newer request.
+    if (state.pending_detection_frame) CancelGeometry(state);
     ConsumeReadyPrefetch(state,index);
     if (state.frame_cache.find(index)==state.frame_cache.end()) {
       state.requested_frame=index;
@@ -2071,6 +2198,27 @@ void RestoreBagSources(ViewerState & state)
   SetTransientStatus(state,"Removed recordings restored to the list.");
 }
 
+void OpenInputSources(ViewerState & state, const fs::path & path,
+  std::vector<BagSource> sources, bool dataset)
+{
+  if (dataset || (sources.empty() && path.extension() == ".bin" && fs::is_regular_file(path))) {
+    const auto canonical = fs::canonical(path);
+    sources.push_back({canonical, canonical.filename().u8string(), {}, {}});
+  }
+  if (sources.empty())
+    throw std::runtime_error("Select a point cloud file, dataset folder, PCAP or ROS 2 bag");
+  const auto selected = sources.front().path;
+  UnhideBagSource(state, selected);
+  state.bag_sources = MergeBagSources(state.bag_sources, sources);
+  RestoreSelectedSourceIndex(state);
+  const auto target = std::find_if(state.bag_sources.begin(), state.bag_sources.end(),
+    [&](const BagSource & source) { return source.path == selected; });
+  state.bag_date_filter.clear();
+  state.bag_search.fill('\0');
+  // Explicitly reopening a dataset reloads external label edits.
+  OpenBagSource(state, target - state.bag_sources.begin(), dataset);
+}
+
 void OpenInputPath(ViewerState & state, const fs::path & input)
 {
   if(state.dataset_edit_future.valid()) throw std::runtime_error("Wait for the sample edit to finish");
@@ -2080,26 +2228,38 @@ void OpenInputPath(ViewerState & state, const fs::path & input)
     throw std::runtime_error("Wait for the example operation to finish or cancel its download");
   auto path=input.filename()=="metadata.json" ? input.parent_path() : input;
   if((path.filename()=="points" || path.filename()=="pointcloud") && fs::is_regular_file(path.parent_path()/"metadata.json")) path=path.parent_path();
-  const bool dataset=state.review_window || lidar_viewer::IsDatasetFile(path) ||
-    (fs::is_directory(path) && !IsRos2BagInput(path) && !IsPcapCapture(path));
-  auto sources=dataset ? std::vector<BagSource>{} : DiscoverBagSources(path);
-  if(dataset) {const auto canonical=fs::canonical(path);sources.push_back({canonical,canonical.filename().u8string(),{}, {}});}
-  if (sources.empty() && input.extension()==".bin" && fs::is_regular_file(input)) {
-    const auto path=fs::canonical(input);
-    sources.push_back({path,path.filename().u8string(),{}, {}});
+  const bool directory = fs::is_directory(path);
+  const bool dataset = state.review_window || lidar_viewer::IsDatasetFile(path) ||
+    (directory && fs::is_regular_file(path/"metadata.json"));
+  if (directory && !dataset && !IsRos2BagInput(path) && !IsPcapCapture(path)) {
+    state.folder_scan_future = std::async(std::launch::async, [path]() {
+      const auto folder = fs::canonical(path);
+      return ViewerState::FolderScanResult{folder, DiscoverBagSources(folder)};
+    });
+    state.opening_input_folder = true;
+    state.ui_error.clear();
+    return;
   }
-  if (sources.size() != 1)
-    throw std::runtime_error("Select a point cloud file, dataset folder, PCAP or ROS 2 bag");
-  const auto selected = sources.front().path;
-  UnhideBagSource(state,selected);
-  state.bag_sources = MergeBagSources(state.bag_sources, sources);
-  RestoreSelectedSourceIndex(state);
-  const auto target = std::find_if(state.bag_sources.begin(), state.bag_sources.end(),
-    [&](const BagSource & source) { return source.path == selected; });
-  state.bag_date_filter.clear();
-  state.bag_search.fill('\0');
-  // Explicitly reopening a dataset reloads external label edits.
-  OpenBagSource(state, target - state.bag_sources.begin(), dataset);
+  OpenInputSources(state, path, dataset ? std::vector<BagSource>{} : DiscoverBagSources(path), dataset);
+}
+
+void CompleteInputFolder(ViewerState & state)
+{
+  if (!state.opening_input_folder ||
+      state.folder_scan_future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+  state.opening_input_folder = false;
+  try {
+    auto found = state.folder_scan_future.get();
+    const bool dataset = found.sources.empty();
+    if (!dataset) {
+      found.sources = FilterBagSources(std::move(found.sources), state.hidden_sources);
+      if (found.sources.empty())
+        throw std::runtime_error("All recordings in this folder were removed from the source list. Use Restore removed or open a recording directly.");
+    }
+    OpenInputSources(state, found.folder, std::move(found.sources), dataset);
+  } catch (const std::exception & error) {
+    state.ui_error = std::string("Input could not be opened: ") + error.what();
+  }
 }
 
 void DropCallback(GLFWwindow * window, int count, const char ** paths)
@@ -2164,7 +2324,8 @@ void ClearDeletedExampleInput(ViewerState & state,const fs::path & directory)
     state.is_playing=false;state.timeline_dragging=false;state.current_index=0;state.current_file_group=0;state.seek_draft=0;
     state.ground_removed_count=0;state.exclusion_removed_count=0;state.ground_stage_ms.reset();state.clustering_stage_ms.reset();
     state.ground_average.Reset();state.object_average.Reset();state.clustering_average.Reset();
-    state.clusters.clear();state.detections.clear();state.full_detections.clear();state.detector_input.reset();++state.detector_revision;
+    state.clusters.clear();state.detections.clear();state.detector_input.reset();
+    InvalidateDetectorFrame(state);
     ResetTracking(state);RebuildClusterBoxes(state);state.roi_renderer.vertices.clear();state.roi_renderer.dirty=true;
     state.status_points=0;state.status_ground=0;
     state.status_ground_average_ms=-1;state.status_object_average_ms=-1;state.status_processing_ms=0;state.status_roi_ms=0;
@@ -2270,7 +2431,8 @@ void CompleteBagLoad(ViewerState & state)
     state.live_has_frame = false;
     state.frame = std::move(staged.frame);
     state.detector_input=std::move(staged.detector_input);state.detector_yaw=staged.detector_yaw;
-    ++state.detector_revision;state.full_detections.clear();
+    state.detector_alignment=state.geometry_input_config;
+    InvalidateDetectorFrame(state);
     state.processed_frame=std::move(staged.processed_frame);
     state.processed_obstacles=staged.processed_obstacles;
     state.processing_ms=staged.processing_ms; state.roi_ms=staged.roi_ms;
@@ -2466,7 +2628,8 @@ void ConnectLive(ViewerState & state)
   state.exclusion_removed_count=0;
   state.ground_average.Reset();state.object_average.Reset();state.clustering_average.Reset();
   state.ground_stage_ms.reset();state.clustering_stage_ms.reset();
-  state.clusters.clear(); state.detections.clear();state.full_detections.clear();state.detector_input.reset();++state.detector_revision;
+  state.clusters.clear();state.detections.clear();state.detector_input.reset();
+  InvalidateDetectorFrame(state);
   RebuildClusterBoxes(state);
   state.roi_renderer.vertices.clear(); state.roi_renderer.dirty = true;
   state.global_ground_offset = 0; state.alignment_initialized = true;
@@ -2488,7 +2651,7 @@ void UpdateLiveFrame(ViewerState & state)
 {
   if (!state.live_mode) return;
   RefreshLiveStats(state);
-  if (!state.live_stats.connected || state.live_paused || state.geometry_future.valid() || DetectorFramePending(state)) return;
+  if (!state.live_stats.connected || state.live_paused || GeometryPending(state) || DetectorFramePending(state)) return;
   auto next = state.live.TakeLatest();
   if (!next) return;
   try {
@@ -2787,7 +2950,8 @@ void LoadSettingsFile(ViewerState & state, const fs::path & path)
         state.algorithm_config.ground_removal.candidate_grid_cell_m =
           std::clamp(ParseFiniteFloat(value), 0.1f, 5.0f);
       } else if (key == "ground_mode") {
-        if (value == "fast_grid" || value == "gseg3d" || value == "patchworkpp" || value == "fugseg" || value == "grid" || value == "ransac")
+        if (value == "fast_grid" || value == "gseg3d" || value == "patchworkpp" ||
+            value == "patchwork_classic" || value == "fugseg" || value == "grid" || value == "ransac")
           state.algorithm_config.ground_removal.mode = value;
         else throw std::invalid_argument("Unknown ground segmentation method");
       } else if (key == "fugseg_num_segments") {
@@ -2908,7 +3072,7 @@ void LoadSettingsFile(ViewerState & state, const fs::path & path)
       } else if (key == "detection_enabled") {
         state.algorithm_config.detection.enabled = (ParseStrictInt(value) != 0);
       } else if (key == "detection_model") {
-        if (value!="tiny" && value!="short_range") throw std::invalid_argument("Unknown detector model");
+        if (!lidar_viewer::algorithms::IsDetectorModel(value)) throw std::invalid_argument("Unknown detector model");
         state.algorithm_config.detection.model=value;state.detector_model_loaded=true;
       } else if (key == "detection_min_score") {
         state.algorithm_config.detection.min_confidence=std::clamp(ParseFiniteFloat(value),.1f,1.f);
@@ -2918,7 +3082,8 @@ void LoadSettingsFile(ViewerState & state, const fs::path & path)
         state.algorithm_config.detection.classes=static_cast<std::uint32_t>(mask);
       } else if (key == "object_method") {
         const int method=ParseStrictInt(value);
-        if (method<0 || method>3) throw std::invalid_argument("Unknown object method");
+        if (method<0 || static_cast<std::size_t>(method)>=kObjectModels.size())
+          throw std::invalid_argument("Unknown object method");
         state.object_method=method;
       } else if (key == "calibration_yaw_deg") {
         state.calibration.yaw_deg = std::clamp(ParseFiniteFloat(value), -180.0f, 180.0f);
@@ -3004,8 +3169,8 @@ void LoadSettings(ViewerState & state)
   // Preserve explicitly saved model thresholds; migrate legacy defaults only.
   if (!state.detector_model_loaded && state.algorithm_config.detection.model=="short_range")
     state.algorithm_config.detection.min_confidence=std::max(.5f,state.algorithm_config.detection.min_confidence);
-  if (state.object_method==0 || state.object_method==3)
-    state.object_method=state.algorithm_config.detection.model=="short_range" ? 3 : 0;
+  if (kObjectModels[state.object_method])
+    state.object_method=ObjectMethodForModel(state.algorithm_config.detection.model);
   state.roi=lidar_viewer::GroundExclusionRoi(std::move(state.roi));
   for (auto & box:state.display_roi.boxes) box.mode=lidar_viewer::RoiBoxMode::Include;
   state.saved_display_roi=state.display_roi;state.display_roi_history.Clear();
@@ -3066,6 +3231,25 @@ void AdvanceFrame(ViewerState & state, int direction)
   }
 }
 
+bool AdvancePlayback(ViewerState & state, bool detector_result_ready)
+{
+  if (!state.is_playing || state.dataset_edit_future.valid() || state.timeline_dragging ||
+      state.requested_frame || state.frames.size() <= 1 || GeometryPending(state) ||
+      DetectorFramePending(state) || detector_result_ready) {
+    return false;
+  }
+  const double now = glfwGetTime();
+  const double interval = 1.0 / std::max(0.1, state.playback_fps);
+  const double due = state.last_frame_advance_time + interval;
+  if (now < due) return false;
+  const auto previous = state.current_index;
+  AdvanceFrame(state, 1);
+  // Preserve the fractional delay from the render tick. Rebase after a long
+  // stall so slow disk reads or inference cannot trigger catch-up playback.
+  if (state.is_playing) state.last_frame_advance_time = now - due < interval ? due : now;
+  return state.current_index != previous;
+}
+
 void TogglePlayback(ViewerState & state)
 {
   if (state.roi_gesture.active) {
@@ -3076,7 +3260,10 @@ void TogglePlayback(ViewerState & state)
   if (state.live_mode) {SetLivePaused(state,!state.live_paused);return;}
   if (state.frames.empty() || state.loading_bag_source) return;
   state.is_playing=!state.is_playing;
-  if (!state.is_playing) state.requested_frame.reset();
+  if (!state.is_playing) {
+    state.requested_frame.reset();
+    if (state.algorithm_config.detection.enabled && state.geometry_index) CancelGeometry(state);
+  }
   state.last_frame_advance_time=glfwGetTime();
 }
 
@@ -3396,7 +3583,7 @@ void KeyCallback(GLFWwindow * window, int key, int, int action, int mods)
   if (!typing && !popup && action==GLFW_PRESS) {
     const bool dataset=!state->frames.empty() && state->frames.front().dataset_sample;
     if(state->review_window || state->dataset_profile=="dataset" || dataset) {
-      if(key==GLFW_KEY_DELETE && !state->dataset_edit_future.valid() && dataset && !state->loading_bag_source && !state->requested_frame && !state->geometry_future.valid()) {
+      if(key==GLFW_KEY_DELETE && !state->dataset_edit_future.valid() && dataset && !state->loading_bag_source && !state->requested_frame && !GeometryPending(*state)) {
         state->dataset_delete_requested=state->frames[state->current_index].path;return;
       }
       if((mods&GLFW_MOD_CONTROL) && key==GLFW_KEY_Z) {if(!state->dataset_edit_future.valid()) state->dataset_restore_requested=true;return;}
@@ -3691,7 +3878,8 @@ void BuildFolderPicker(ViewerState & state)
     std::min(560.f * state.ui_layout.scale, display.y - 32.f)}, ImGuiCond_Appearing);
   if (!ImGui::BeginPopupModal("Add data folder", nullptr, ImGuiWindowFlags_NoSavedSettings)) return;
   bool scanning = state.folder_scan_future.valid();
-  if (scanning && state.folder_scan_future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+  if (scanning && !state.opening_input_folder &&
+      state.folder_scan_future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
     try {
       auto found = state.folder_scan_future.get();
       if (found.sources.empty()) throw std::runtime_error("No ROS 2 bags found in this folder or its subfolders");
@@ -3870,6 +4058,7 @@ void BuildLiveDialog(ViewerState & state)
     try {
       if (connected) {
         state.live.Disconnect();
+        if (state.geometry_live_sequence) CancelGeometry(state);
         RefreshLiveStats(state);
         std::cout << "Live disconnected" << std::endl;
       } else ConnectLive(state);
@@ -3962,6 +4151,7 @@ void BuildLiveTransport(ViewerState & state, bool input_busy)
           throw std::runtime_error("The saved PCAP is no longer available. Check the recording folder.");
         }
         state.live.Disconnect();
+        if (state.geometry_live_sequence) CancelGeometry(state);
         RefreshLiveStats(state);
         OpenInputPath(state, state.live_saved_pcap);
       } catch (const std::exception & error) {state.ui_error = error.what();}
@@ -4661,7 +4851,7 @@ void UpdateDatasetEdits(ViewerState & state)
       state.ui_error.clear();
     } catch(const std::exception & error) {state.ui_error=std::string("Sample edit failed: ")+error.what();}
   }
-  if(state.loading_bag_source || state.geometry_future.valid() || state.requested_frame) return;
+  if(state.loading_bag_source || GeometryPending(state) || state.requested_frame) return;
   if(!state.dataset_delete_requested && !state.dataset_restore_requested) return;
   try {
     ViewerState::DatasetEdit edit;
@@ -4696,7 +4886,7 @@ void BuildDatasetPanel(ViewerState & state)
   }
   TraceUi("dataset_folder_path");Tip(state.dataset_review_path.data());
   const bool editing=state.dataset_edit_future.valid();
-  const bool can_delete=!state.frames.empty() && !state.loading_bag_source && !state.requested_frame && !state.geometry_future.valid();
+  const bool can_delete=!state.frames.empty() && !state.loading_bag_source && !state.requested_frame && !GeometryPending(state);
   ImGui::BeginDisabled(editing || state.loading_bag_source.has_value());
   const float gap=ImGui::GetStyle().ItemSpacing.x,side=32*s;
   const bool have_undo=!state.dataset_undo.empty();
@@ -5450,21 +5640,25 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       TraceUi("ground_display");
       Tip("Display classified points only. ROI remains active. Switching views reuses the existing result and keeps playback running.");
       ImGui::TextDisabled("Method");
-      const char * modes[] = {"fast_grid", "gseg3d", "patchworkpp", "fugseg", "grid", "ransac"};
-      const char * labels[] = {"Fast grid", "GSeg3D", "Patchwork++", "FugSeg", "Grid", "RANSAC"};
+      const char * modes[] = {"fast_grid", "gseg3d", "patchworkpp", "fugseg", "grid", "ransac", "patchwork_classic"};
+      const char * labels[] = {"Fast grid", "GSeg3D", "Patchwork++", "FugSeg", "Grid", "RANSAC", "Patchwork (classic)"};
+      const auto count=static_cast<int>(std::size(modes));
       int mode = 0;
-      for (int i = 0; i < 6; ++i) if (ground.mode == modes[i]) mode = i;
+      for (int i = 0; i < count; ++i) if (ground.mode == modes[i]) mode = i;
       ImGui::SetNextItemWidth(-1);
-      if (ImGui::Combo("##GroundMethod", &mode, labels, 6)) {
+      if (ImGui::Combo("##GroundMethod", &mode, labels, count)) {
         ground.mode = modes[mode];
         state.ground_removal_enabled=true;
         reprocess = true;
       }
       TraceUi("ground_method");
+      const bool classic_patchwork=ground.mode=="patchwork_classic";
       ImGui::TextDisabled("%s",ground.mode=="gseg3d" ? "Connected planes / CPU" :
+        classic_patchwork ? "Local planes with fixed thresholds / CPU" :
         ground.mode=="patchworkpp" ? "Adaptive local planes / CPU" : ground.mode=="fugseg" ? "Uncertainty-aware terrain / CPU" :
         ground.mode=="fast_grid" ? "Local terrain grid" : ground.mode=="ransac" ? "Global plane + local check" : "Connected height cells");
       Tip(ground.mode=="ransac" ? "Fits one dominant plane. Prefer local-plane methods when the terrain changes slope." :
+        classic_patchwork ? "Original Patchwork with fixed elevation and flatness thresholds. Sensor height follows Align and Ground reference." :
         ground.mode=="patchworkpp" ? "Original Patchwork++: adaptive local planes, suitable for slopes and uneven roads. Sensor height follows Align." :
         ground.mode=="fugseg" ? "Original FugSeg: uncertainty-aware polar terrain extraction, including sparse and occluded areas." :
         ground.mode=="gseg3d" ? "Original GSeg3D: plane geometry and connected 3D cells. Ground reference controls the region-growing seeds." :
@@ -5518,13 +5712,13 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
           ImGui::SetNextItemWidth(-1);
           reprocess|=ImGui::SliderFloat("##PatchSlope",&ground.max_ground_angle_deg,1,45,"Max slope: %.0f deg",ImGuiSliderFlags_AlwaysClamp);
         }
-      } else {
+      } else if (!classic_patchwork) {
         ImGui::SetNextItemWidth(-1);
         reprocess |= ImGui::SliderFloat("##GroundCells", &ground.candidate_grid_cell_m, .1f, 3.f, "Cell size: %.2f m", ImGuiSliderFlags_AlwaysClamp);
         ImGui::SetNextItemWidth(-1);
         reprocess|=ImGui::SliderFloat("##PlaneDistance",&ground.final_distance_threshold_m,.02f,.5f,"Ground thickness: %.2f m",ImGuiSliderFlags_AlwaysClamp);
       }
-      if (ground.mode=="gseg3d" || ground.mode=="fast_grid" || ground.mode=="patchworkpp" || ground.mode=="fugseg") {
+      if (ground.mode=="gseg3d" || ground.mode=="fast_grid" || ground.mode=="patchworkpp" || ground.mode=="fugseg" || classic_patchwork) {
         if (ImGui::CollapsingHeader("Ground reference")) {
           ImGui::TextDisabled("Expected ground Z after Align");ImGui::SetNextItemWidth(-1);
           reprocess|=ImGui::DragFloat("##GroundReferenceZ",&ground.gseg3d_ground_height_m,.01f,-5,5,"%.2f m",ImGuiSliderFlags_AlwaysClamp);
@@ -5537,12 +5731,12 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         }
       }
 #ifdef LIDAR_VIEWER_HAS_CUDA
-      if (ground.mode!="gseg3d" && ground.mode!="patchworkpp" && ground.mode!="fugseg") {
+      if (ground.mode!="gseg3d" && ground.mode!="patchworkpp" && ground.mode!="fugseg" && !classic_patchwork) {
         reprocess |= ImGui::Checkbox("Use CUDA", &ground.use_cuda);
         TraceUi("ground_cuda");
       }
 #else
-      if (ground.mode!="gseg3d" && ground.mode!="patchworkpp" && ground.mode!="fugseg") ImGui::TextDisabled("CPU backend");
+      if (ground.mode!="gseg3d" && ground.mode!="patchworkpp" && ground.mode!="fugseg" && !classic_patchwork) ImGui::TextDisabled("CPU backend");
 #endif
       }
       ImGui::Spacing();Metric("Ground points", CountText(state.status_ground));
@@ -5561,10 +5755,11 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       auto & clustering=state.algorithm_config.clustering;
       SectionTitle("Object analysis");
       bool enabled=detection.enabled || clustering.enabled;
-      if (enabled) state.object_method=detection.enabled ? (detection.model=="short_range" ? 3 : 0) : (clustering.mode=="euclidean_3d" ? 1 : 2);
+      if (enabled) state.object_method=detection.enabled ? ObjectMethodForModel(detection.model) :
+        (clustering.mode=="euclidean_3d" ? 1 : 2);
       const bool toggled=ImGui::Checkbox("Enable objects",&enabled);
       TraceUi("object_enable");
-      if (state.object_method==0 || state.object_method==3) {
+      if (kObjectModels[state.object_method]) {
         ImGui::SameLine(ImGui::GetWindowContentRegionMax().x-65*s);ImGui::BeginDisabled(!enabled);
         if (ImGui::Checkbox("IDs",&state.tracking_params.enabled)) {
           ResetTracking(state);TrackCurrentDetections(state);FilterDetections(state);
@@ -5574,18 +5769,18 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       }
       ImGui::TextDisabled("Method");ImGui::SetNextItemWidth(-1);
       const bool method_changed=ImGui::Combo("##ObjectMethod",&state.object_method,
-        "CenterPoint tiny (fast)\0Euclidean 3D (clusters)\0Projected XY (clusters)\0AWML ShortRange (quality)\0");
+        "CenterPoint tiny (fast)\0Euclidean 3D (clusters)\0Projected XY (clusters)\0AWML ShortRange (quality)\0CenterPoint base\0");
       TraceUi("object_method");
-      const bool learned=state.object_method==0 || state.object_method==3;
+      const char * model=kObjectModels[state.object_method];
+      const bool learned=model!=nullptr;
+      const bool base_model=learned && std::string_view(model)=="base";
       if (toggled || method_changed) {
         const bool was_detection=detection.enabled;
         const bool was_clustering=clustering.enabled;
         if (method_changed && learned) {
-          const std::string model=state.object_method==3 ? "short_range" : "tiny";
           if (model!=detection.model) {
-            detection.model=model;detection.min_confidence=model=="short_range" ? .5f : .35f;
-            ++state.detector_revision;state.detector_completed=0;
-            state.full_detections.clear();state.detector_error.clear();
+            detection.model=model;detection.min_confidence=detection.model=="tiny" ? .35f : .5f;
+            InvalidateDetectorFrame(state);state.detector_completed=0;
             ResetTracking(state);
           }
         }
@@ -5616,7 +5811,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
           } else if(!status.configured && state.detector) {
             ImGui::TextColored(ui::WarningColor(),"Detection model is not installed");
             TraceUi("object_status_missing");
-            ImGui::TextWrapped("Prepare the CPU models here to start detection.");
+            ImGui::TextWrapped("Install the selected model to start detection.");
           } else if(!status.ready) {
             ImGui::TextColored(ui::InfoColor(),"Loading detection model...");
           } else {
@@ -5625,10 +5820,11 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
           }
           TraceUi("object_status");
         }
-        ImGui::TextDisabled("%s",detection.model=="short_range" ? "TIER IV AWML / ConvNeXt 2.0" : "Autoware CenterPoint tiny v4.1");
+        ImGui::TextDisabled("%s",detection.model=="short_range" ? "TIER IV AWML / ConvNeXt 2.0" :
+          base_model ? "Autoware CenterPoint base v4.1" : "Autoware CenterPoint tiny v4.1");
         Tip(detection.model=="short_range" ?
           "Original AWML model; XY range +/-51.2 m. Uses the full gravity-aligned scan before ground/ROI filtering. Ground height and IMU alignment must be correct." :
-          "Original Autoware tiny model; XY range +/-76.8 m. Uses the full gravity-aligned scan before ground/ROI filtering. Ground height and IMU alignment must be correct.");
+          "Original Autoware model; XY range +/-76.8 m. Uses the full gravity-aligned scan before ground/ROI filtering. Ground height and IMU alignment must be correct.");
         const auto model_status=state.detector ? state.detector->Status() : lidar_viewer::DetectorStatus{};
         const auto & setup_progress=state.detector_setup_progress;
         if(enabled && (setup_progress.Active() || !model_status.configured || model_status.failed)) {
@@ -5648,14 +5844,16 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
               ImGui::TextWrapped("Preparation canceled. Downloaded files will be reused.");
             const bool retry=setup_progress.stage==lidar_viewer::DetectorSetupStage::Failed ||
               setup_progress.stage==lidar_viewer::DetectorSetupStage::Canceled;
-            if(ImGui::Button(retry ? "Retry preparation" : "Install CPU models",{-1,0})) {
+            if(ImGui::Button(retry ? "Retry preparation" : base_model ? "Install CenterPoint base" : "Install CPU models",{-1,0})) {
               if(!state.detector_setup) state.detector_setup=std::make_unique<lidar_viewer::DetectorSetup>();
               state.detector_setup_applied=false;
-              state.detector_setup->Start(lidar_viewer::ProjectResourcePath("python"),lidar_viewer::ProjectResourcePath("tools/setup_detector.py"));
+              state.detector_setup->Start(lidar_viewer::ProjectResourcePath("python"),
+                lidar_viewer::ProjectResourcePath("tools/setup_detector.py"),base_model ? "base" : "all");
               UpdateDetectorSetup(state);
             }
             TraceUi("object_setup_install");
-            ImGui::TextWrapped("Downloads both models once. Detection starts automatically when ready.");
+            ImGui::TextWrapped("%s",base_model ? "Downloads the optional base weights. Detection starts automatically when ready." :
+              "Downloads the tiny and ShortRange models once. Detection starts automatically when ready.");
             if(model_status.configured && ImGui::Button("Retry model",{-1,0})) state.detector_retry=true;
           }
           if(!setup_progress.log.empty() && ImGui::CollapsingHeader("Installation details"))
@@ -5687,7 +5885,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         TraceUi("object_score");
         Tip("Type a score from 0.10 to 1.00, or use -/+ for 0.01 steps (Ctrl: 0.10). Filters cached results without rerunning inference. Scores are not calibrated probabilities.");
         if (filter_changed) FilterDetections(state);
-        if (detection.min_confidence<(detection.model=="short_range" ? .5f : .35f)) {
+        if (detection.min_confidence<(detection.model=="tiny" ? .35f : .5f)) {
           ImGui::TextColored(ui::WarningColor(),"Low-confidence candidates visible");
           Tip("Lower scores increase false positives. The quality preset starts at 0.50; this is an application default, not a calibrated probability.");
         }
@@ -5720,6 +5918,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
           ImGui::SetNextItemWidth(-1);
           ImGui::SliderFloat("##TrackHold",&state.tracking_params.max_missed_s,.1f,2.f,"Keep missing: %.1f s");
           TraceUi("tracking_hold");
+          Tip("Keep confirmed tracks visible during a short detection gap. The est. label marks a predicted position.");
           ImGui::SetNextItemWidth(-1);
           ImGui::SliderInt("##TrackConfirm",&state.tracking_params.confirmation_hits,1,10,"Confirm after: %d hits");
           TraceUi("tracking_confirm");
@@ -5861,7 +6060,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         <<" object "<<objects.Count()<<' '<<state.status_object_average_ms<<std::endl;
     }
   }
-  const bool status_busy=state.requested_frame.has_value() || state.geometry_future.valid();
+  const bool status_busy=state.requested_frame.has_value() || GeometryPending(state);
   if (status_busy && !state.pending_read_started) state.pending_read_started=status_now;
   if (!status_busy) state.pending_read_started.reset();
   const bool long_wait=state.pending_read_started && status_now-*state.pending_read_started>.75;
@@ -5892,8 +6091,10 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       state.input_load->Cancelled() ? "Canceling..." : lidar_viewer::InputLoadStageName(progress.stage),
       CountText(progress.frames).c_str(),LoadEta(progress,state.input_load->Cancelled()).c_str());
   }
+  else if (state.opening_input_folder) ImGui::TextColored(ui::InfoColor(), "Searching for recordings...");
   else if (!state.transient_status.empty()) ImGui::TextColored(ui::SuccessColor(), "%s", state.transient_status.c_str());
-  else if (long_wait) ImGui::TextDisabled("%s",state.requested_frame ? "Reading selected frame..." : "Processing selected frame...");
+  else if (long_wait) ImGui::TextDisabled("%s",state.requested_frame ? "Reading selected frame..." :
+    state.pending_detection_frame ? "Detecting objects in next scan..." : "Processing selected frame...");
   else if (state.live_mode) {
     if (state.live_has_frame) ImGui::TextDisabled("%zu points | Displayed %llu / received %llu", state.status_points,
       static_cast<unsigned long long>(state.status_live_display), static_cast<unsigned long long>(state.status_live_received));
@@ -6120,7 +6321,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       state.ui_error.clear();
     } catch (const std::exception & error) {state.roi_pending=false;state.ui_error=error.what();}
   }
-  if (refresh_detector && !reprocess && !state.geometry_future.valid()) {
+  if (refresh_detector && !reprocess && !GeometryPending(state)) {
     try {
       if (!state.detector_input && state.async_geometry) QueueGeometry(state,state.base_frame,{},{},true,true);
       else RefreshDetectorInput(state);
@@ -6285,7 +6486,8 @@ void RenderDetectionLabels(const ViewerState & state,const Mat4 & mvp)
     if(left>right) continue;
     char text[160];
     if (track) {
-      if (track->predicted) std::snprintf(text,sizeof(text),"%s #%llu predicted",lidar_viewer::algorithms::DetectionClassName(detection.class_id),static_cast<unsigned long long>(track->id));
+      if (track->predicted) std::snprintf(text,sizeof(text),"%s #%llu est.",
+        lidar_viewer::algorithms::DetectionClassName(detection.class_id),static_cast<unsigned long long>(track->id));
       else std::snprintf(text,sizeof(text),"%s #%llu %.2f%s",lidar_viewer::algorithms::DetectionClassName(detection.class_id),
         static_cast<unsigned long long>(track->id),detection.confidence,track->confirmed ? "" : " new");
       const auto length=std::strlen(text);
@@ -6368,7 +6570,8 @@ void DestroyPointReview(ViewerState & r)
 }
 void TickBackgroundInput(ViewerState & input,GLFWwindow * window)
 {
-  CompleteBagPicker(input,window);CompleteDatasetPicker(input,window);CompleteBagLoad(input);UpdateRoiExport(input);
+  CompleteBagPicker(input,window);CompleteDatasetPicker(input,window);CompleteInputFolder(input);
+  CompleteBagLoad(input);UpdateRoiExport(input);
   if(!input.review_window) UpdateSourceDurations(input);
   const auto before=input.current_index;
   const bool geometry=CompleteGeometry(input);CompleteFrameRequest(input);UpdateDatasetEdits(input);
@@ -6376,12 +6579,7 @@ void TickBackgroundInput(ViewerState & input,GLFWwindow * window)
     std::cout<<"Background frame "<<input.review_window<<' '<<input.current_index<<std::endl;
   const bool detector=UpdateDetector(input);
   if(!geometry && !detector) UpdateLiveFrame(input);
-  if(input.is_playing && !input.dataset_edit_future.valid() && !input.timeline_dragging && !input.requested_frame && input.frames.size()>1 &&
-      !input.geometry_future.valid() && !DetectorFramePending(input) && !detector &&
-      glfwGetTime()-input.last_frame_advance_time>=1./std::max(.1,input.playback_fps)) {
-    const auto previous=input.current_index;AdvanceFrame(input,1);
-    if(input.current_index!=previous) {input.last_frame_advance_time=glfwGetTime();++input.playback_measurement_advances;}
-  }
+  if (AdvancePlayback(input, detector)) ++input.playback_measurement_advances;
 }
 } // namespace
 
@@ -6427,7 +6625,7 @@ int RunViewer(int argc, char ** argv)
                   << "--lidar-ip / --multicast-ip: filter the sender or join its IPv4 multicast group.\n"
                   << "--lidar-calibration FILE: supply a manufacturer's calibration file.\n"
                   << "--ros-live: optionally subscribe to ROS 2 LiDAR and IMU topics.\n"
-                  << "--topic: select a ROS 2 LiDAR topic. Playback uses /b2/points if present, or the only PointCloud2 topic.\n"
+                  << "--topic: select a ROS 2 LiDAR topic. Playback prefers /b2/points, then a sole PointCloud2 or Livox CustomMsg topic.\n"
                   << "         ROS 2 live input defaults to /b2/points.\n"
                   << "--record-folder: parent folder for recordings started explicitly with Record.\n"
                   << "--sensor-height: explicit display Z translation (0..5 m); no automatic bag leveling.\n"
@@ -6814,6 +7012,7 @@ int RunViewer(int argc, char ** argv)
       UpdateDrivingExample(studio);
       CompleteBagPicker(state, window);
       CompleteDatasetPicker(state,window);
+      CompleteInputFolder(state);
       UpdateRoiExport(state);
       CompleteBagLoad(state);
       if(!state.review_window) UpdateSourceDurations(state);
@@ -6854,18 +7053,7 @@ int RunViewer(int argc, char ** argv)
         state.transient_status.clear();
       }
 
-      if (state.is_playing && !state.dataset_edit_future.valid() && !state.timeline_dragging && !state.requested_frame && state.frames.size() > 1 && !state.geometry_future.valid() && !DetectorFramePending(state) && !detector_result_ready) {
-        const double now_time = glfwGetTime();
-        const double frame_interval = 1.0 / std::max(0.1, state.playback_fps);
-        if ((now_time - state.last_frame_advance_time) >= frame_interval) {
-          const auto previous=state.current_index;
-          AdvanceFrame(state, 1);
-          if (state.current_index!=previous) {
-            state.last_frame_advance_time = now_time;
-            advanced_frame = true;
-          }
-        }
-      }
+      if (AdvancePlayback(state, detector_result_ready)) advanced_frame = true;
 
       const bool uploaded_frame = state.frame_dirty;
       if (uploaded_frame) {
@@ -6997,9 +7185,9 @@ int RunViewer(int argc, char ** argv)
       // VSync is not enforced by every driver/headless display. Sleep between
       // frames instead of continuously repainting an unchanged cloud. Input
       // events wake GLFW immediately; ROS reception/recording stays independent.
-      const bool background_active=studio.review_active && ((studio.live_mode && !studio.live_paused) || studio.is_playing || studio.loading_bag_source || studio.geometry_future.valid());
+      const bool background_active=studio.review_active && ((studio.live_mode && !studio.live_paused) || studio.is_playing || studio.loading_bag_source || GeometryPending(studio));
       const bool active=background_active || (state.live_mode && !state.live_paused) || state.is_playing ||
-        state.geometry_future.valid() || state.requested_frame.has_value() || state.loading_bag_source.has_value() || state.dataset_edit_future.valid() ||
+        GeometryPending(state) || state.requested_frame.has_value() || state.loading_bag_source.has_value() || state.dataset_edit_future.valid() ||
         ImGui::IsAnyItemActive();
       const double active_hz=state.is_playing && !state.live_mode ? std::max(60.,state.playback_fps) : 60.;
       const double remaining=1./(active ? active_hz : 20.)-(glfwGetTime()-frame_begin_time);

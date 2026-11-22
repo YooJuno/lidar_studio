@@ -101,6 +101,10 @@ GroundRemovalResult RunGroundRemovalPatchworkPP(
   const std::vector<KittiPoint> & input,
   const GroundRemovalParams & params);
 
+GroundRemovalResult RunGroundRemovalPatchworkClassic(
+  const std::vector<KittiPoint> & input,
+  const GroundRemovalParams & params);
+
 GroundRemovalResult RunGroundRemovalFugSeg(
   const std::vector<KittiPoint> & input,
   const GroundRemovalParams & params);

@@ -82,6 +82,14 @@ int main() {
     live.Update({D(.4f)},F(7,1.1,1,true),params,.5f);
     Check(live.Tracks().front().id!=id,"Reversed sensor time retained old velocity");
 
+    ObjectTracker slow_live;
+    const auto slow_id=slow_live.Update({D(0)},F(1,1,1,true),params,.5f).front().id;
+    slow_live.Update({D(.2f)},F(11,2,1,true),params,.5f);
+    slow_live.Update({D(.4f)},F(21,3,1,true),params,.5f);
+    Check(Id(slow_live.Tracks(),slow_id).confirmed,"Slow successful live inference reset the ID");
+    slow_live.Update({},F(31,4,1,true),params,.5f);
+    Check(slow_live.Tracks().empty(),"Slow live inference kept a prediction past the configured timeout");
+
     ObjectTracker noise;double raw_error=0,filtered_error=0;
     for (std::uint64_t i=0;i<150;++i) {
       const float truth=static_cast<float>(i)*.05f,measurement=truth+.22f*std::sin(static_cast<float>(i)*2.1f);
@@ -97,6 +105,9 @@ int main() {
     auto invalid=D(0);invalid.oriented_bounds.center.x=std::numeric_limits<float>::quiet_NaN();
     ObjectTracker robust;robust.Update({invalid,D(0,0,3,0,.2f)},F(0),params,.5f);
     Check(robust.Tracks().empty(),"Invalid or below-threshold boxes created tracks");
+    robust.Update({D(0,0,3,0,.99f),D(10,0,3,0,1.f)},F(1),params,1.f);
+    Check(robust.Tracks().size()==1 && robust.Tracks().front().detection.confidence==1.f,
+      "The maximum UI confidence threshold did not filter tracks correctly");
     params.max_missed_s=std::numeric_limits<float>::infinity();bool rejected=false;
     try {robust.Update({},F(1),params,.5f);} catch (const std::invalid_argument &) {rejected=true;}
     Check(rejected,"Invalid tracking parameters were accepted");

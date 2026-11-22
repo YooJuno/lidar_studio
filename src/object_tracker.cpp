@@ -155,7 +155,7 @@ const TrackingStats & ObjectTracker::Stats() const {return impl_->stats;}
 const std::vector<ObjectTrack> & ObjectTracker::Update(const std::vector<algorithms::Detection> & detections,
   const TrackingFrame & frame,const TrackingParams & params,float min_confidence)
 {
-  if (frame.timestamp_ns<0 || !std::isfinite(min_confidence) || min_confidence<.1f || min_confidence>.99f ||
+  if (frame.timestamp_ns<0 || !std::isfinite(min_confidence) || min_confidence<.1f || min_confidence>1.f ||
       !std::isfinite(params.max_missed_s) || params.max_missed_s<.05f || params.max_missed_s>10 ||
       params.confirmation_hits<1 || params.confirmation_hits>20) throw std::invalid_argument("Invalid tracking frame or settings");
   auto & core=*impl_;
@@ -171,8 +171,13 @@ const std::vector<ObjectTrack> & ObjectTracker::Update(const std::vector<algorit
   if (!reason.empty()) {Reset();dt=0;}
   core.stats={};core.stats.reset_reason=reason;core.output.clear();
   auto age=[&](const TrackState & t) {return static_cast<double>((static_cast<long double>(frame.timestamp_ns)-t.last_measurement)*1e-9L);};
-  core.states.erase(std::remove_if(core.states.begin(),core.states.end(),[&](const auto & t) {
+  const auto expired = [&](const TrackState & t) {
     return age(t)>(t.confirmed ? params.max_missed_s : std::min(.25f,params.max_missed_s));
+  };
+  core.states.erase(std::remove_if(core.states.begin(),core.states.end(),[&](const auto & t) {
+    // Live inference can skip scans. A track measured on the last processed
+    // scan gets one chance to match this result before using its miss timeout.
+    return expired(t) && !(frame.allow_skipped_frames && t.measurement);
   }),core.states.end());
   for (auto & track:core.states) Predict(track,dt);
 
@@ -224,6 +229,8 @@ const std::vector<ObjectTrack> & ObjectTracker::Update(const std::vector<algorit
     Correct(track,detections[index],index,frame.timestamp_ns);matched[static_cast<std::size_t>(j)]=1;
     track.confirmed=track.confirmed || track.streak>=params.confirmation_hits;
   }
+  if (frame.allow_skipped_frames)
+    core.states.erase(std::remove_if(core.states.begin(),core.states.end(),expired),core.states.end());
   for (std::size_t j=0;j<indices.size();++j) if (!matched[j]) {
     if (core.states.size()>=kMaxTracks) {++core.stats.capacity_dropped;continue;}
     if (core.next_id==std::numeric_limits<std::uint64_t>::max()) throw std::overflow_error("Tracking ID exhausted");

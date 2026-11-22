@@ -82,6 +82,9 @@ jobs:
             --model-dir "$XDG_DATA_HOME/lidar_viewer/detector/centerpoint-shortrange-v2.0.0"
           "$runtime" tests/test_centerpoint.py --require-native --provider cpu --model tiny \
             --model-dir "$XDG_DATA_HOME/lidar_viewer/detector/centerpoint-tiny-v4.1"
+          python3 tools/setup_detector.py --model base
+          "$runtime" tests/test_centerpoint.py --require-native --provider cpu --model base \
+            --model-dir "$XDG_DATA_HOME/lidar_viewer/detector/centerpoint-base-v4.1"
       - name: Asynchronous detector playback and ROI GUI test
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'

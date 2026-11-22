@@ -12,6 +12,7 @@ Original neural network weights are unchanged. The adapter uses a single scan
 
 Original model (bundled in Mac releases or downloaded through in-app setup):
 AutowareFoundation/lidar_centerpoint tiny v4.1
+The official base v4.1 variant is available as a separate in-app download.
 Revision 494c8171def40bd36cc2feb323e0a5acbfab132b
 https://huggingface.co/AutowareFoundation/lidar_centerpoint
 Model card declares Apache-2.0; see the model card's Legal Notice and training

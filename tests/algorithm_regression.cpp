@@ -235,7 +235,7 @@ void TestGroundWorkspaceReuse()
   const auto equal=[](const auto & a,const auto & b) {
     return a.size()==b.size() && (a.empty() || std::memcmp(a.data(),b.data(),a.size()*sizeof(KittiPoint))==0);
   };
-  for(const auto * mode:{"fugseg","gseg3d"}) {
+  for(const auto * mode:{"fugseg","gseg3d","patchwork_classic"}) {
     GroundRemovalParams params;params.enabled=true;params.mode=mode;params.use_cuda=false;
     const auto reference=RunGroundSegmentation(scene,params);
     for(const auto position:{std::size_t{0},scene.size()/2,scene.size()}) {
@@ -256,6 +256,36 @@ void TestGroundWorkspaceReuse()
   }
 }
 
+void TestPatchworkClassicGroundReference()
+{
+  std::vector<KittiPoint> scene;
+  for (int x=-72; x<=72; ++x) for (int y=-72; y<=72; ++y) {
+    if (x*x+y*y<64) continue;
+    scene.push_back({x*.25f, y*.25f, 0, 0});
+  }
+  const auto road_count=scene.size();
+  for (int z=0; z<20; ++z) scene.push_back({7.f,3.f,.5f+z*.1f,1.f});
+  scene.push_back({8.f,0,-2.5f,1.f});
+  scene.push_back({42.f,0,0,1.f});
+  GroundRemovalParams params;
+  params.enabled=true;
+  params.mode="patchwork_classic";
+  params.max_candidate_radius_m=40.f;
+  const auto baseline=RunGroundSegmentation(scene,params);
+  Check(baseline.ground_points.size()>=road_count*.9 &&
+    baseline.ground_points.size()+baseline.non_ground_points.size()==scene.size(),
+    "Patchwork classic lost ground or source points");
+  for (const auto & point : baseline.ground_points)
+    Check(point.intensity==0.f,"Patchwork classic accepted an obstacle, deep reflection or out-of-range point");
+
+  params.sensor_height_m=5.f;
+  params.gseg3d_ground_height_m=2.5f;
+  for (auto & point : scene) point.z+=params.gseg3d_ground_height_m;
+  auto shifted=RunGroundSegmentation(scene,params);
+  Check(shifted.ground_points.size()==baseline.ground_points.size(),
+    "Patchwork classic lost calibrated ground with a taller mount or changed ground Z");
+}
+
 void TestGroundQuality()
 {
   for (const float slope : {0.f,.12f}) {
@@ -272,7 +302,7 @@ void TestGroundQuality()
     }
     cloud.push_back(cloud.front());++truth_ground;
     cloud.push_back({std::numeric_limits<float>::quiet_NaN(),0,0,1});
-    for (const auto * mode : {"fast_grid","gseg3d","patchworkpp","fugseg","grid","ransac"}) {
+    for (const auto * mode : {"fast_grid","gseg3d","patchworkpp","patchwork_classic","fugseg","grid","ransac"}) {
       GroundRemovalParams params;params.enabled=true;params.mode=mode;params.max_candidate_radius_m=40;
       params.max_candidate_z=4;params.patchwork_min_points_per_patch=6;
       params.patchwork_min_range_m=0;params.sequence_id=slope==0 ? 101 : 102;
@@ -348,6 +378,7 @@ void RunAlgorithmRegressionTests()
   TestLongRampAndSourceAttributes();
   TestFugSegSensorContract();
   TestGroundWorkspaceReuse();
+  TestPatchworkClassicGroundReference();
   bool rejected=false;
   try {GroundRemovalParams invalid;invalid.mode="unknown";RunGroundSegmentation({},invalid);}
   catch (const std::invalid_argument &) {rejected=true;}

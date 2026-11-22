@@ -8,12 +8,12 @@ Input is one full, gravity-aligned XYZ scan in vehicle/ground coordinates.
 The fourth model feature is time lag (zero for a single scan), NOT intensity.
 """
 from pathlib import Path
-import hashlib
 import math
 import time
 import numpy as np
 from .native import stable_order,fill_features,backend_name,nms_indices,nms_backend_name
-from .models import get_model,AWML_REVISION
+from .models import get_model,AWML_REVISION,sha256_file
+from .runtime_options import make_session_options
 
 MODEL_REVISION='494c8171def40bd36cc2feb323e0a5acbfab132b'
 MODEL_FILES={
@@ -34,7 +34,7 @@ def verify_weights(folder,model='tiny'):
     for name,_,expected in get_model(model).files:
         if not name.endswith('.onnx'):continue
         path=Path(folder)/name
-        if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest()!=expected:
+        if not path.is_file() or sha256_file(path)!=expected:
             raise RuntimeError(f'Missing or invalid model file: {name}. Run detector setup again.')
 
 
@@ -249,7 +249,6 @@ class CenterPoint:
                         ort.preload_dlls(cuda=False,cudnn=True,directory=str(directory));break
                 ort.preload_dlls()
             except AttributeError:pass
-        options=ort.SessionOptions();options.intra_op_num_threads=2;options.inter_op_num_threads=1
         providers=['CPUExecutionProvider']
         if provider!='cpu' and 'CUDAExecutionProvider' in available:
             # ConvNeXt's depthwise convolutions benefit from ORT's CUDA NHWC
@@ -257,6 +256,7 @@ class CenterPoint:
             providers=[('CUDAExecutionProvider',{'cudnn_conv_algo_search':'HEURISTIC',
                 'arena_extend_strategy':'kSameAsRequested','use_tf32':int(use_tf32),
                 'prefer_nhwc':int(model=='short_range' and use_tf32)}),*providers]
+        options=make_session_options(ort,cpu_only=providers==['CPUExecutionProvider'])
         self.session=ort.InferenceSession(str(path),sess_options=options,providers=providers)
         self.provider=self.session.get_providers()[0]
         self.output_names=[value.name for value in self.session.get_outputs()]

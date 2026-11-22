@@ -26,7 +26,7 @@ class InstallerTests(unittest.TestCase):
         self.data=self.root/'data';self.progress=self.root/'progress.json'
         digest=hashlib.sha256(b'validated model').hexdigest()
         self.models={name:SimpleNamespace(folder=name+'-model',title=name,
-            files=[('model.onnx','https://models.example.test/'+name,digest)])for name in ('tiny','short_range')}
+            files=[('model.onnx','https://models.example.test/'+name,digest)])for name in ('tiny','short_range','base')}
         self.run=self.enter(patch.object(setup.subprocess,'run'))
         self.enter(patch.object(setup,'directories',return_value=(self.config,self.data)))
         self.enter(patch.object(setup,'MODELS',self.models))
@@ -47,9 +47,40 @@ class InstallerTests(unittest.TestCase):
             setup.main();self.assertEqual(download.call_count,2)
             config=(self.config/'detector.cfg').read_text()
             self.assertIn('short_range_model_dir=',config)
+            self.assertFalse((self.data/'base-model').exists())
             self.assertEqual(json.loads(self.progress.read_text())['message'],'Models ready')
             setup.main();self.assertEqual(download.call_count,2)
             self.assertEqual((self.config/'detector.cfg').read_text(),config)
+
+    def test_base_installs_only_its_weights_and_keeps_the_existing_runtime(self):
+        python=self.root/'existing runtime/python'
+        python.parent.mkdir();python.touch()
+        config=self.config/'detector.cfg'
+        config.write_text(f'python={python}\nprovider=auto\nmanaged_runtime=1\n'
+            'model_dir=/custom/tiny\nshort_range_model_dir=/custom/short\n',encoding='utf-8')
+        with patch.object(sys,'argv',['setup','--model','base']), \
+                patch.object(setup.urllib.request,'urlopen',side_effect=self.response) as download:
+            setup.main()
+        self.assertEqual(download.call_count,1)
+        self.assertTrue(download.call_args.args[0].full_url.endswith('/base'))
+        self.assertEqual(self.run.call_count,2) # dependency check and validating Base, no pip
+        self.assertTrue(all(call.args[0][0]==str(python) for call in self.run.call_args_list))
+        self.assertEqual(self.run.call_args.args[0][-2:],['auto','base'])
+        self.assertEqual(config.read_text(encoding='utf-8'),f'python={python}\nmodel_dir=/custom/tiny\n'
+            f'short_range_model_dir=/custom/short\nbase_model_dir={self.data/"base-model"}\n'
+            'provider=auto\nmanaged_runtime=1\n')
+
+    def test_base_keeps_legacy_sibling_weights_and_custom_python_imports(self):
+        python=self.root/'manual-python'
+        python.touch()
+        tiny=self.root/'custom/tiny'
+        config=self.config/'detector.cfg'
+        config.write_text(f'python={python}\nmodel_dir={tiny}\nprovider=auto\n')
+        with patch.object(sys,'argv',['setup','--model','base']), \
+                patch.object(setup.urllib.request,'urlopen',side_effect=self.response):
+            setup.main()
+        self.assertIn(f'short_range_model_dir={tiny.parent/"short_range-model"}\n',config.read_text())
+        self.assertTrue(all(call.args[0][:3]==[str(python),'-B','-c'] for call in self.run.call_args_list))
 
     def test_failed_checksum_preserves_configuration_and_removes_partial(self):
         (self.config/'detector.cfg').write_text('previous working setup')

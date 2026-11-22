@@ -15,7 +15,7 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'python'))
-from lidar_detection.models import MODELS
+from lidar_detection.models import DEFAULT_MODELS, MODELS
 
 RUNTIME = json.loads((ROOT/'python/lidar_detection/runtime.json').read_text())['macos_arm64']
 PYTHON_URL = RUNTIME['url']
@@ -67,7 +67,8 @@ def build(destination):
     env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', PIP_DISABLE_PIP_VERSION_CHECK='1')
     subprocess.run([str(python), '-E', '-s', '-B', '-m', 'pip', 'install', '--no-cache-dir',
                     '--only-binary=:all:', *REQUIREMENTS], env=env, check=True)
-    for variant, spec in MODELS.items():
+    bundled_models = {variant: MODELS[variant] for variant in DEFAULT_MODELS}
+    for variant, spec in bundled_models.items():
         model = destination / 'models' / spec.folder
         for name, url, expected in spec.files:
             download(url, model / name, expected)
@@ -78,7 +79,7 @@ def build(destination):
     (destination / 'manifest.json').write_text(json.dumps(dict(
         python='3.12.16', python_source=PYTHON_URL, python_sha256=PYTHON_SHA256,
         requirements=REQUIREMENTS, models={name: dict(folder=m.folder, files={n: h for n, _, h in m.files})
-                                         for name, m in MODELS.items()}), indent=2))
+                                         for name, m in bundled_models.items()}), indent=2))
     # Imports in the app also use -B; no interpreter cache writes may invalidate
     # the read-only, signed application bundle.
     for cache in runtime.rglob('__pycache__'):

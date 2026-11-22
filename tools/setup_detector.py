@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Install the optional original Autoware CenterPoint model in user storage."""
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,7 +14,9 @@ import venv
 
 ROOT=Path(__file__).resolve().parent.parent
 sys.path.insert(0,str(ROOT/'python'))
-from lidar_detection.models import MODELS
+from lidar_detection.models import DEFAULT_MODELS, MODELS, sha256_file
+
+MODEL_CONFIG_KEYS={'tiny':'model_dir','short_range':'short_range_model_dir','base':'base_model_dir'}
 
 def directories():
     home=Path.home()
@@ -35,7 +36,7 @@ def directories():
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--model',choices=['all','short_range','tiny'],default='all')
+    parser.add_argument('--model',choices=['all',*MODELS],default='all',help='all installs the standard tiny and short_range pair')
     parser.add_argument('--cuda',action='store_true',help='ONNX Runtime CUDA 12 + cuDNN 9 (Linux/Windows x64)')
     parser.add_argument('--runtime-python',type=Path,help='Use an existing isolated Python with numpy, onnx and onnxruntime; install no packages')
     parser.add_argument('--install-packages',action='store_true',help=argparse.SUPPRESS)
@@ -54,19 +55,34 @@ def main():
     if args.cuda and (sys.platform=='darwin' or platform.machine().lower() not in ('x86_64','amd64')):
         parser.error('CUDA runtime requires Linux or Windows x64')
     config,data=directories();data.mkdir(parents=True,exist_ok=True)
-    selected=list(MODELS) if args.model=='all' else [args.model]
-    if args.runtime_python:
-        python=args.runtime_python.expanduser().absolute()
+    config_file=config/'detector.cfg'
+    previous={}
+    if config_file.is_file():
+        for line in config_file.read_text(encoding='utf-8').splitlines():
+            key,separator,value=line.partition('=')
+            if separator:previous[key]=value
+    selected=DEFAULT_MODELS if args.model=='all' else (args.model,)
+    requested_python=args.runtime_python.expanduser().absolute() if args.runtime_python else None
+    configured_python=Path(previous['python']).expanduser().absolute() if previous.get('python') else None
+    reuse_runtime=(args.model=='base' and not args.cuda and configured_python is not None
+        and configured_python.is_file() and requested_python in (None,configured_python))
+    runtime_python=configured_python if reuse_runtime else requested_python
+    provider='auto' if args.cuda or (reuse_runtime and previous.get('provider','auto')!='cpu') else 'cpu'
+    managed_runtime=previous.get('managed_runtime')=='1' if reuse_runtime else args.install_packages
+    if runtime_python:
+        python=runtime_python
     else:
         runtime=data/'runtime'
         print('Creating isolated Python runtime:',runtime,flush=True)
         venv.EnvBuilder(with_pip=True,system_site_packages=False).create(runtime)
         python=runtime/('Scripts/python.exe' if sys.platform=='win32' else 'bin/python')
-    if not args.runtime_python or args.install_packages:
+    if not runtime_python or (args.install_packages and not reuse_runtime):
         report('Installing private CPU runtime packages' if not args.cuda else 'Installing CUDA runtime packages')
         runtime_package='onnxruntime-gpu[cuda,cudnn]==1.23.2' if args.cuda else 'onnxruntime==1.23.2'
         subprocess.run([str(python),'-E','-s','-B','-m','pip','install','--disable-pip-version-check','numpy==2.2.6','onnx==1.20.1',runtime_package],check=True)
-    subprocess.run([str(python),'-E','-s','-B','-c','import numpy,onnx,onnxruntime'],check=True)
+    # A reused custom runtime must see the same site packages as the worker.
+    runtime_args=[str(python),'-B'] if reuse_runtime and not managed_runtime else [str(python),'-E','-s','-B']
+    subprocess.run([*runtime_args,'-c','import numpy,onnx,onnxruntime'],check=True)
     context=ssl.create_default_context()
     # Standalone/python.org interpreters may have no OS CA bundle configured.
     # pip ships a maintained CA bundle; add its roots without disabling TLS checks.
@@ -79,7 +95,7 @@ def main():
         spec=MODELS[variant];model=data/spec.folder;model.mkdir(parents=True,exist_ok=True)
         for name,url,digest in spec.files:
             target=model/name
-            if target.exists() and hashlib.sha256(target.read_bytes()).hexdigest()==digest:continue
+            if target.is_file() and sha256_file(target)==digest:continue
             message=f'Downloading {spec.title}: {name}'
             report(message)
             temporary=target.with_suffix('.download')
@@ -92,18 +108,28 @@ def main():
                         if not chunk:break
                         output.write(chunk)
                         received+=len(chunk);report(message,received,total)
-                if hashlib.sha256(temporary.read_bytes()).hexdigest()!=digest:raise RuntimeError('Model checksum mismatch: '+name)
+                if sha256_file(temporary)!=digest:raise RuntimeError('Model checksum mismatch: '+name)
                 temporary.replace(target)
             finally:temporary.unlink(missing_ok=True)
         report('Validating '+spec.title)
-        subprocess.run([str(python),'-E','-s','-B','-c',
+        subprocess.run([*runtime_args,'-c',
             'import sys;sys.path.insert(0,sys.argv[1]);from lidar_detection.centerpoint import CenterPoint;'
             'm=CenterPoint(sys.argv[2],sys.argv[3],sys.argv[4]);print("Validated:",m.spec.title,m.provider)',
-            str(python_root),str(model),'auto' if args.cuda else 'cpu',variant],check=True)
+            str(python_root),str(model),provider,variant],check=True)
     config.mkdir(parents=True,exist_ok=True)
-    text=f'python={python}\nmodel_dir={data/MODELS["tiny"].folder}\nshort_range_model_dir={data/MODELS["short_range"].folder}\nprovider={"auto" if args.cuda else "cpu"}\nmanaged_runtime={int(args.install_packages)}\n'
-    if '\n' in str(python) or '\n' in str(model):raise RuntimeError('Newlines in runtime paths are unsupported')
-    temporary=config/'detector.cfg.tmp';temporary.write_text(text,encoding='utf-8');temporary.replace(config/'detector.cfg')
+    settings={'python':str(python)}
+    for variant,key in MODEL_CONFIG_KEYS.items():
+        default_path=str(data/MODELS[variant].folder)
+        # Installing a single variant must not replace paths for other models.
+        previous_path=previous.get(key)
+        if variant=='short_range' and not previous_path and previous.get('model_dir'):
+            previous_path=str(Path(previous['model_dir']).parent/MODELS[variant].folder)
+        settings[key]=default_path if variant in selected else previous_path or default_path
+    settings.update(provider=provider,managed_runtime=str(int(managed_runtime)))
+    if any('\r' in value or '\n' in value for value in settings.values()):
+        raise RuntimeError('Newlines in runtime paths are unsupported')
+    text=''.join(f'{key}={value}\n' for key,value in settings.items())
+    temporary=config_file.with_suffix('.cfg.tmp');temporary.write_text(text,encoding='utf-8');temporary.replace(config_file)
     report('Models ready')
     print('Ready. Open Objects > Enable objects (or Retry model). Configuration:',config/'detector.cfg')
 

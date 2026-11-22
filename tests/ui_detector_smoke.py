@@ -29,7 +29,11 @@ def main():
     # Versioned protocol fixture, deliberately slower than some UI frames.
     (private/'python/detector_worker.py').write_text('''import sys,struct,time,os
 from pathlib import Path
-with (Path(__file__).parent/'starts.txt').open('a') as log:log.write(str(os.getpid())+'\\n')
+folder=Path(__file__).parent
+with (folder/'starts.txt').open('a') as log:log.write(str(os.getpid())+'\\n')
+hold=folder/'hold_inference'
+held=folder/'held_revision'
+fail=folder/'fail_inference'
 source=sys.stdin.buffer;sink=sys.stdout.buffer
 q=struct.Struct('<4sQIf');r=struct.Struct('<4sQIfI')
 def exact(n):
@@ -42,6 +46,15 @@ def exact(n):
 time.sleep(.4);sink.write(r.pack(b'LDR1',0,0,0,20)+b'CPUExecutionProvider');sink.flush()
 while True:
  magic,revision,count,score=q.unpack(exact(q.size));exact(count*12);time.sleep(.07)
+ if fail.exists():
+  fail.unlink()
+  raise SystemExit(1)
+ if hold.exists():
+  marker=held.with_suffix('.tmp')
+  marker.write_text(str(revision))
+  marker.replace(held)
+  deadline=time.monotonic()+6
+  while hold.exists() and time.monotonic()<deadline:time.sleep(.01)
  sink.write(r.pack(b'LDR1',revision,2,70,0)+struct.pack('<9f',-3,2,.8,1,.7,1.6,.5,.8,4)+struct.pack('<9f',4,2,.8,4,2,1.6,0,.8,0));sink.flush()
 ''')
     viewer=private/'build/lidar_viewer';shutil.copy2(args.viewer.resolve(),viewer)
@@ -84,6 +97,46 @@ while True:
             check('paused_redraw_does_not_bias_processing_average',averages()[-1]==sample)
             ticks=[float(t)for t in re.findall(r'Status sample ([-.\d]+)',log_path.read_text())]
             check('runtime_labels_refresh_at_most_once_per_second',all(b-a>=.99 for a,b in zip(ticks,ticks[1:])))
+
+            # Keep the worker on the next scan long enough to inspect the
+            # intermediate paint without depending on its normal timing.
+            crop = (380, 180, 1540, 750)
+            hold = private/'python/hold_inference'
+            held = private/'python/held_revision'
+            complete_scene = capture(x11, window, out/'paired_before.png')
+            hold.touch()
+            try:
+                controls.click('playback_next')
+                wait(held.is_file, timeout=4)
+                pending_scene = capture(x11, window, out/'paired_pending.png')
+                check('inference_keeps_the_entire_previous_scene_visible',
+                      rows() == paused and changed_pixels(complete_scene, pending_scene, crop) == 0)
+            finally:
+                hold.unlink(missing_ok=True)
+            wait(lambda: len(rows()) > len(paused))
+            time.sleep(.15)
+            check('matching_result_advances_the_cloud_and_boxes',
+                  rows()[-1][0] == paused[-1][0] + 1 and rows()[-1][2] == paused[-1][2] and
+                  changed_pixels(complete_scene, capture(x11, window, out/'paired_next.png'), crop) > 80)
+            paused = rows()
+
+            # A nonadjacent seek supersedes a held result. Receiving the old
+            # inference must not present its scan or put its boxes on the seek.
+            held.unlink()
+            hold.touch()
+            try:
+                controls.click('playback_next')
+                wait(held.is_file, timeout=4)
+                stale_revision = int(held.read_text())
+                controls.click('timeline', .75)
+            finally:
+                hold.unlink(missing_ok=True)
+            wait(lambda: len(rows()) > len(paused))
+            check('seek_discards_the_superseded_detector_result',
+                  all(result[1] != stale_revision for result in rows()[len(paused):]) and
+                  abs(rows()[-1][0] - paused[-1][0]) > 5)
+            paused = rows()
+
             before_score=capture(x11,window,out/'score_before.png')
             controls.enter('object_score',.95);controls.chord('s')
             profile=out/'settings/lidar_viewer/profiles/rosbag.cfg'
@@ -134,6 +187,42 @@ while True:
             capture(x11,window,out/'03_quality_model.png')
             old_count=len(rows());method(1);method(3);time.sleep(.3)
             check('return_to_same_quality_model_reuses_worker',len(rows())==old_count and len((private/'python/starts.txt').read_text().splitlines())==2)
+
+            controls.click('timeline', .997)
+            wait(lambda: rows()[-1][0] == 119)
+            time.sleep(.15)
+            last_scene = capture(x11, window, out/'loop_last.png')
+            last_rows = rows()
+            held.unlink()
+            hold.touch()
+            try:
+                controls.click('playback_toggle')
+                wait(held.is_file, timeout=4)
+                wrapping = capture(x11, window, out/'loop_pending.png')
+                check('loop_waits_for_the_first_frame_and_its_boxes',
+                      rows() == last_rows and changed_pixels(last_scene, wrapping, crop) == 0)
+                controls.click('playback_toggle')
+            finally:
+                hold.unlink(missing_ok=True)
+            time.sleep(.4)
+            check('pause_discards_the_held_automatic_advance',
+                  rows() == last_rows and changed_pixels(last_scene,
+                      capture(x11, window, out/'loop_paused.png'), crop) == 0)
+            controls.click('playback_toggle')
+            wait(lambda: any(result[0] == 0 for result in rows()[len(last_rows):]))
+            controls.click('playback_toggle')
+
+            # Model process failure during an adjacent step must still let
+            # the point cloud advance. Hide boxes to observe the cloud alone.
+            controls.click('object_targets_clear')
+            before_failure = capture(x11, window, out/'before_worker_failure.png')
+            (private/'python/fail_inference').touch()
+            controls.click('playback_next')
+            wait(lambda: not (private/'python/fail_inference').exists(), timeout=4)
+            time.sleep(.35)
+            failed_scene = capture(x11, window, out/'after_worker_failure.png')
+            check('worker_failure_releases_the_held_cloud',
+                  changed_pixels(before_failure, failed_scene, crop) > 80)
             check('original_profiles_unchanged',before==settings_inventory(repo));result['status']='passed'
     except Exception as error:
         result.update(status='failed',error=str(error),traceback=traceback.format_exc())

@@ -13,6 +13,7 @@ from unittest.mock import patch
 import numpy as np
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'python'))
 from lidar_detection.centerpoint import pillarize,decode,rotated_iou,suppress,CenterPoint
+from lidar_detection.models import MODELS
 from lidar_detection.worker import read_into,reply,RESPONSE
 from lidar_detection.native import backend_name,nms_backend_name
 from reference_centerpoint import pillarize as reference_pillarize,rotated_iou as reference_iou,autoware_nms
@@ -57,6 +58,15 @@ class PrePostTests(unittest.TestCase):
         arrays['dim'][0,:,100,80]=np.log([.6,1.2,1.8]);arrays['rot'][0,:,100,80]=[0,1]
         box=decode(arrays,.5,'short_range')[0]
         np.testing.assert_allclose(box[:7],[.16,13.12,.9,1.2,.6,1.8,-np.pi/2],atol=1e-5)
+        with self.assertRaises(ValueError):decode(arrays,.5,'tiny')
+    def test_base_uses_full_resolution_head(self):
+        arrays={name:np.zeros((1,ch,480,480),np.float32) for name,ch in [('heatmap',5),('reg',2),('height',1),('dim',3),('rot',2)]}
+        arrays['heatmap'][:]=-20;arrays['heatmap'][0,4,220,240]=2
+        arrays['reg'][0,:,220,240]=[.25,.5];arrays['height'][0,0,220,240]=.9
+        arrays['dim'][0,:,220,240]=np.log([.6,1.2,1.8]);arrays['rot'][0,:,220,240]=[0,1]
+        box=decode(arrays,.5,'base')[0]
+        np.testing.assert_allclose(box[:7],[.08,-6.24,.9,1.2,.6,1.8,-np.pi/2],atol=1e-5)
+        self.assertEqual(int(box[8]),4)
         with self.assertRaises(ValueError):decode(arrays,.5,'tiny')
     def test_scalar_clipping_matches_vector_reference(self):
         rng=np.random.default_rng(113)
@@ -162,7 +172,7 @@ def model_check(folder,cloud,variant,provider):
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser();parser.add_argument('--model-dir');parser.add_argument('--cloud')
-    parser.add_argument('--model',choices=['tiny','short_range'],default='tiny')
+    parser.add_argument('--model',choices=MODELS,default='tiny')
     parser.add_argument('--provider',choices=['auto','cpu'],default='auto')
     parser.add_argument('--require-native',action='store_true');args=parser.parse_args()
     if args.require_native and backend_name()!='native':raise SystemExit('Native preprocessing library was not found')

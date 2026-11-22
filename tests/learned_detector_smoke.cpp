@@ -110,6 +110,14 @@ while True:
     }
     std::ofstream(folder/"detector.cfg")<<"python=/missing/python\nmodel_dir="<<temporary.u8string()<<'\n';
     {LearnedDetector explicit_config;explicit_config.Start(scripts);Check(!explicit_config.Status().configured,"Bundled fallback silently replaced an explicit user configuration");}
+    const auto optional_base=temporary/"optional-base";
+    std::filesystem::create_directories(optional_base);
+    std::ofstream(folder/"detector.cfg")<<"python="<<(runtime/"python3").u8string()<<
+      "\nmodel_dir="<<(temporary/"uninstalled-tiny").u8string()<<"\nbase_model_dir="<<optional_base.u8string()<<'\n';
+    for (const auto * variant : {"base", "tiny", "short_range"}) {
+      LearnedDetector detector;detector.Start(scripts,variant);
+      Wait([&]{const auto status=detector.Status();Check(!status.failed,status.message.c_str());return status.ready;});
+    }
 #endif
     ConfigEnvironment(previous);std::filesystem::remove_all(temporary.parent_path());
     std::cout<<"learned_detector_smoke: protocol, latest request, yaw, process failure and cancellation passed\n";return 0;

@@ -2,7 +2,7 @@
 
 기능 소개와 빠른 시작은 영문 [README](../README.md)를 참고하세요. 이 문서는 센서 설정, 알고리즘 파라미터, 라벨 형식, 테스트와 측정 기록을 다룹니다.
 
-CMake + OpenGL 기반 LiDAR 뷰어입니다. 직접 연결한 Ethernet LiDAR, PCAP, BIN·NPY·PCD 파일, ROS 2 PointCloud2 bag을 지원합니다.
+CMake + OpenGL 기반 LiDAR 뷰어입니다. 직접 연결한 Ethernet LiDAR, PCAP, BIN·NPY·PCD 파일, ROS 2 PointCloud2·Livox CustomMsg bag을 지원합니다.
 
 ## Build
 
@@ -167,7 +167,9 @@ GitHub Actions의 **Build and release**는 PR·main push·수동 실행에서 �
 
 실행 중에는 상단 **Open → Open file...** 또는 **Ctrl+O**로 시스템 파일 선택 창을 열 수 있습니다. 선택하면 해당 bag을 열고 첫 프레임에서 정지합니다. 취소하거나 열기에 실패하면 현재 점군을 유지하며, 재생 중이었다면 재생도 복원합니다. 로딩 카드에는 파일명·색인한 LiDAR 프레임/전체 수·IMU 표본 수·남은 시간(ETA)·선택 메시지의 스캔 진행률을 표시합니다. 전체 수를 아직 모르는 단계는 활동 표시줄로 구분합니다. **Cancel opening / Esc**로 취소할 수 있으며, 명령행에서 bag을 열어도 창이 먼저 표시됩니다. 단일 bag을 고르는 동작은 상위 폴더 전체를 등록하지 않습니다.
 
-bag에서 `/b2/points`를 우선 사용합니다. PointCloud2 토픽이 하나이면 이름에 관계없이 자동으로 선택합니다. 여러 토픽 중 하나를 지정할 때는 `--topic /your/points`로 실행합니다.
+bag에서 `/b2/points`를 우선 사용합니다. PointCloud2 토픽이 하나이면 자동으로 선택합니다. PointCloud2 토픽이 없는 Livox 기록에서는 CustomMsg 토픽이 하나일 때 자동으로 선택합니다. 다른 토픽을 고르려면 `--topic /your/points`를 사용하세요.
+
+여러 bag이 담긴 상위 폴더를 캔버스에 놓으면 기록을 찾아 목록에 추가하고 첫 bag을 엽니다. 아래 재생 바의 소스 목록에서 다른 bag으로 전환할 수 있습니다.
 
 ```bash
 git clone --recursive https://github.com/YooJuno/lidar_studio.git
@@ -434,7 +436,7 @@ xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_file_dialog_sm
 
 ### 지면분리 검증 범위
 
-GSeg3D·Patchwork++·FugSeg는 원본 라이브러리를 연결하며, Fast grid·Grid·RANSAC도 실제 분할을 수행합니다. 지면분리를 끈 상태에서 방식을 선택하면 분류를 켜서 결과가 바로 반영됩니다. Patchwork++에는 해당 방식이 사용하지 않는 격자 크기·CUDA 조작을 표시하지 않습니다.
+GSeg3D·Patchwork++·Patchwork·FugSeg는 원본 라이브러리를 연결합니다. **Patchwork (classic)**은 고정 높이·평탄도 기준으로 국소 평면을 분류합니다. Align과 Ground reference에서 기준 높이를 맞춥니다. 지면 분리를 끈 상태에서 방식을 선택하면 분류가 켜집니다.
 
 CTest는 여섯 방식 모두에 대해 정답이 정해진 평지·약 7도 경사와 45cm 이상 높이의 장애물 장면에서 지면 precision ≥98%, recall ≥85%, 전체 점 보존을 검사합니다. 이 제한된 합성 검사는 모든 실제 지형의 정확도를 보장하지 않습니다. GSeg3D의 높이 연속성 기본값은 원본 코어와 같은 0.30m이며, 이전 0.10m 값은 1m 셀의 경사 연결을 끊는 문제가 있었습니다. Ground reference에서 연속성·기준 높이를 조절할 수 있습니다.
 
@@ -459,12 +461,13 @@ xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_app_settings_s
 
 - **AWML ShortRange (quality)** — 기본값: [TIER IV AWML CenterPoint-ShortRange base v2.0.0](https://github.com/tier4/AWML/blob/9e44a974aae03a196003950898dc909cd0c680ad/projects/CenterPoint/docs/CenterPoint-ShortRange/v2/base.md)의 원본 ConvNeXt 모델입니다. 공식 T4 평가 5,703프레임에서 mAP 83.9, 보행자 AP 77.5를 보고합니다. 이 수치는 해당 평가셋 결과이며 XT32 현장 정확도가 아닙니다. 앱은 오검출을 줄이는 시작값으로 Min score 0.50을 사용합니다.
 - **CenterPoint tiny (fast)**: [CenterPoint 논문(CVPR 2021)](https://arxiv.org/abs/2006.11275)에 기반한 [Autoware의 원본 CenterPoint tiny v4.1 모델](https://huggingface.co/AutowareFoundation/lidar_centerpoint)입니다. **Targets**에서 Person·Bicycle·Car·Truck·Bus를 각각 켜고 끌 수 있고 All/Clear로 전체 선택·해제합니다. 대상과 Min score는 저장된 모델 결과를 즉시 필터링하며, 모델 로딩이나 추론을 다시 하지 않습니다. 선택은 프로파일에 저장합니다.
+- **CenterPoint base**는 Autoware가 공개한 v4.1 원본 표준 모델입니다. XY 범위는 ±76.8m이며 시작 점수는 0.50입니다. Method에서 선택한 뒤 **Install CenterPoint base**를 눌러 선택적으로 설치합니다. [Autoware 모델 카드](https://huggingface.co/AutowareFoundation/lidar_centerpoint)
 - **Euclidean 3D (clusters)**: 지면분리 후 가까운 장애물 점을 3차원 거리로 묶습니다. 사람·차량 클래스는 만들지 않습니다.
 - **Projected XY (clusters)**: XY 거리와 수직 간격으로 묶습니다. 높이가 떨어진 면을 합칠 수 있으므로 보통 Euclidean 3D부터 사용합니다.
 
 학습 모델은 **전체 수평 보정 스캔**을 받습니다. 지면 ROI·지면 분리·클러스터링은 모델 입력을 자르지 않습니다. CenterPoint 선택 시 **Cluster overlay**에서 기하학 그룹을 함께 볼 수도 있습니다.
 
-이 컴퓨터의 GPU 런타임과 두 모델은 설치·실행 검증을 마쳤습니다. 기본값은 AWML ShortRange이며 기존 실행 중인 앱에서는 새 실행 파일로 다시 시작해야 새 모델 선택지가 나타납니다. 기본 뷰어 실행 후 Objects에서 켜면 됩니다.
+기본 모델은 AWML ShortRange입니다. 연속 재생에서 다음 검출 결과를 기다리는 동안 직전 점군과 박스를 함께 표시합니다. 다음 결과가 도착하면 해당 점군과 박스를 동시에 갱신합니다.
 
 ```bash
 source /opt/ros/jazzy/setup.bash
@@ -530,7 +533,7 @@ ShortRange 도입 비교(2026-10-30): 사용자가 사람이 없다고 확인한
 
 학습 모델을 선택한 **Objects → IDs**에서 프레임 간 ID를 유지합니다. 3D 등속도 Kalman 필터로 중심·크기·yaw·속도를 추정하고 Hungarian 전역 매칭을 사용합니다. 클래스·위치 공분산·크기·방향으로 연결 후보를 제한합니다. [AB3DMOT 논문](https://arxiv.org/abs/2008.08063)의 tracking-by-detection 구성을 참고한 독립 구현이며 원본 AB3DMOT 코드나 벤치마크 성능을 그대로 제공하는 것은 아닙니다. 등속도 모델과 관측이 선형이므로 EKF 대신 선형 Kalman 필터를 사용합니다.
 
-- 기본 3회 연속 관측 후 확정합니다. 초기 후보에는 `new`, 잠깐 검출이 끊겨 예측만 유지한 박스에는 `predicted`를 표시합니다. **Tracking options**에서 확인 횟수·누락 유지 시간(기본 0.8초), 궤적과 속도 표시를 조절합니다. 추적이 모델 오검출 자체를 제거하거나 의미 분류를 교정하지는 않습니다.
+- 기본 3회 연속 관측 후 확정합니다. 잠깐 검출이 끊겨 예측 위치로 유지한 박스에는 `est.`를 표시합니다. **Tracking options**에서 확인 횟수·누락 유지 시간(기본 0.8초), 궤적과 속도 표시를 조절합니다.
 - bag은 기록 시각, 실시간은 유효한 스캔 시각으로 계산합니다. 재생 속도나 UI FPS가 바뀌어도 물리적인 시간 간격은 유지합니다. 시각이 없는 BIN은 표시된 스캔 주기(기본 10 Hz)를 가정합니다. 정지·필터 조절·ROI Apply는 추적 시간을 진행시키거나 모델을 재실행하지 않습니다.
 - 프레임 되감기·불연속 이동·반복 재생, 소스·모델·수동 좌표 보정 변경에는 추적을 초기화합니다. 실시간의 프레임 누락은 센서 시간 간격으로 예측합니다. ID는 초기화 후 재사용하지 않으며, 검출 해제/재활성화 때문에 같은 모델 프로세스를 새로 만들지 않습니다.
 - 현재 속도와 궤적은 **수평 보정한 센서 기준 상대 운동**입니다. 센서 자체의 이동도 포함하며 odometry 기반 자차 운동 보상은 수행하지 않습니다. 사용자 bag에는 동적 odometry/TF가 없으므로 세계 좌표의 절대 속도로 해석하면 안 됩니다.

@@ -3,9 +3,15 @@
 #include "lidar_viewer/algorithms/clustering.hpp"
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 namespace lidar_viewer::algorithms
 {
+constexpr bool IsDetectorModel(std::string_view model)
+{
+  return model == "tiny" || model == "short_range" || model == "base";
+}
+
 enum DetectionClassId
 {
   DetectionClassCar = 0,

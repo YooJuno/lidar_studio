@@ -129,9 +129,11 @@ find_package(Eigen3 REQUIRED NO_MODULE)
 include(cmake/FugSeg.cmake)
 add_library(lidar_viewer_patchworkpp STATIC
   third_party/patchwork_plusplus/cpp/patchworkpp/src/patchworkpp.cpp
+  third_party/patchwork_plusplus/cpp/patchwork/src/patchwork.cpp
   third_party/patchwork_plusplus/cpp/common/src/plane_fit.cpp)
 target_include_directories(lidar_viewer_patchworkpp SYSTEM PUBLIC
   third_party/patchwork_plusplus/cpp/patchworkpp/include
+  third_party/patchwork_plusplus/cpp/patchwork/include
   third_party/patchwork_plusplus/cpp/common/include)
 target_link_libraries(lidar_viewer_patchworkpp PUBLIC Eigen3::Eigen)
 

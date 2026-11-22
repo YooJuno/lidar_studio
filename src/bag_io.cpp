@@ -152,36 +152,51 @@ void OpenReader(rosbag2_cpp::Reader & reader, const fs::path & path)
   }
 }
 
-std::string ChooseTopic(rosbag2_cpp::Reader & reader, const std::string & requested)
+enum class PointFormat {PointCloud2, Livox};
+
+struct PointTopic
 {
-  const auto topics = reader.get_all_topics_and_types();
-  std::vector<std::string> point_topics;
-  for (const auto & entry : topics) {
-    if (entry.type == "sensor_msgs/msg/PointCloud2") {
-      point_topics.push_back(entry.name);
-      if (entry.name == requested && !requested.empty()) {
-        if (entry.serialization_format != "cdr") {
-          throw std::runtime_error("PointCloud2 topic must use ROS CDR serialization: " + requested);
-        }
-        return requested;
-      }
-    }
+  std::string name;
+  PointFormat format;
+  bool cdr;
+};
+
+PointTopic ChooseTopic(rosbag2_cpp::Reader & reader, const std::string & requested)
+{
+  std::vector<PointTopic> point_topics;
+  for (const auto & entry : reader.get_all_topics_and_types()) {
+    const bool cdr = entry.serialization_format == "cdr";
+    if (entry.type == "sensor_msgs/msg/PointCloud2")
+      point_topics.push_back({entry.name, PointFormat::PointCloud2, cdr});
+    else if (entry.type == "livox_ros_driver2/msg/CustomMsg")
+      point_topics.push_back({entry.name, PointFormat::Livox, cdr});
   }
-  if (requested.empty()) {
-    const auto preferred = std::find(point_topics.begin(), point_topics.end(), "/b2/points");
-    if (preferred != point_topics.end()) {
-      return ChooseTopic(reader, *preferred);
+  const auto checked = [](const PointTopic & topic) {
+    if (!topic.cdr) throw std::runtime_error("Point-cloud topic must use ROS CDR serialization: " + topic.name);
+    return topic;
+  };
+  if (!requested.empty()) {
+    for (const auto & topic : point_topics) {
+      if (topic.name == requested) return checked(topic);
     }
-    if (point_topics.size() == 1) {
-      return ChooseTopic(reader, point_topics.front());
+  } else {
+    const PointTopic * standard = nullptr;
+    std::size_t standard_count = 0;
+    for (const auto & topic : point_topics) {
+      if (topic.format != PointFormat::PointCloud2) continue;
+      if (topic.name == "/b2/points") return checked(topic);
+      standard = &topic;
+      ++standard_count;
     }
+    if (standard_count == 1) return checked(*standard);
+    if (point_topics.size() == 1) return checked(point_topics.front());
   }
   std::ostringstream error;
-  error << (requested.empty() ? "Choose a PointCloud2 topic using --topic." :
-    "No compatible PointCloud2 topic '" + requested + "'. Use --topic to select one.");
-  error << " Available PointCloud2 topics:";
-  for (const auto & name : point_topics) {
-    error << ' ' << name;
+  error << (requested.empty() ? "Choose a point-cloud topic using --topic." :
+    "No compatible point-cloud topic '" + requested + "'. Use --topic to select one.");
+  error << " Available PointCloud2 or Livox CustomMsg topics:";
+  for (const auto & topic : point_topics) {
+    error << ' ' << topic.name;
   }
   if (point_topics.empty()) {
     error << " (none)";
@@ -235,7 +250,7 @@ const Field * FindField(const PointCloud & cloud, const std::string & name, bool
 }
 
 template<typename T>
-double ReadNumber(const std::uint8_t * bytes, bool swap)
+T ReadNumber(const std::uint8_t * bytes, bool swap)
 {
   std::array<std::uint8_t, sizeof(T)> data{};
   std::memcpy(data.data(), bytes, sizeof(T));
@@ -244,7 +259,7 @@ double ReadNumber(const std::uint8_t * bytes, bool swap)
   }
   T value;
   std::memcpy(&value, data.data(), sizeof(T));
-  return static_cast<double>(value);
+  return value;
 }
 
 double ReadScalar(const std::uint8_t * point, const Field & field, bool swap)
@@ -271,10 +286,114 @@ bool HostBigEndian()
   return byte == 0;
 }
 
+class LivoxCdr
+{
+public:
+  explicit LivoxCdr(const rcl_serialized_message_t & message)
+  {
+    if (!message.buffer || message.buffer_length < 4 || message.buffer[0] != 0 || message.buffer[1] > 1) {
+      throw std::runtime_error("Livox CustomMsg must use plain CDR1 serialization");
+    }
+    // Alignment is relative to the payload after the CDR encapsulation.
+    payload_ = message.buffer + 4;
+    size_ = message.buffer_length - 4;
+    swap_ = (message.buffer[1] == 0) != HostBigEndian();
+  }
+
+  std::size_t Remaining() const {return size_ - offset_;}
+  bool SwapBytes() const {return swap_;}
+
+  const std::uint8_t * Take(std::size_t bytes, std::size_t alignment = 1)
+  {
+    const auto padding = (alignment - offset_ % alignment) % alignment;
+    if (padding > Remaining() || bytes > Remaining() - padding)
+      throw std::runtime_error("Truncated Livox CustomMsg payload");
+    offset_ += padding;
+    const auto * data = payload_ + offset_;
+    offset_ += bytes;
+    return data;
+  }
+
+  std::uint32_t ReadUint32() {return ReadNumber<std::uint32_t>(Take(4, 4), swap_);}
+
+private:
+  const std::uint8_t * payload_{};
+  std::size_t size_{}, offset_{};
+  bool swap_{};
+};
+
+FrameData DecodeLivoxCloud(const rcl_serialized_message_t & message)
+{
+  // Layout defined by Livox-SDK/livox_ros_driver2 CustomMsg and CustomPoint.
+  // Read XYZ and reflectivity directly from the bag without a driver dependency.
+  LivoxCdr cdr(message);
+  cdr.Take(8, 4); // Header stamp. Playback and IMU use the bag receipt timestamp.
+  const auto frame_id_size = cdr.ReadUint32();
+  const auto * frame_id = cdr.Take(frame_id_size);
+  if (!frame_id_size || frame_id[frame_id_size - 1] != 0)
+    throw std::runtime_error("Invalid Livox CustomMsg frame ID");
+  cdr.Take(8, 8); // timebase
+  const auto point_num = cdr.ReadUint32();
+  cdr.Take(4); // lidar_id and reserved bytes
+  const std::size_t count = cdr.ReadUint32();
+  if (point_num != count) throw std::runtime_error("Livox CustomMsg point counts disagree");
+
+  // offset_time, XYZ, reflectivity, tag and line. CDR pads only before the
+  // next point's 4-byte offset_time, so the last point needs just 19 bytes.
+  constexpr std::size_t stride = 20, point_bytes = 19;
+  FrameData frame;
+  if (count > frame.points.max_size() ||
+    (count && (cdr.Remaining() < point_bytes || (count - 1) > (cdr.Remaining() - point_bytes) / stride)))
+  {
+    throw std::runtime_error("Truncated or oversized Livox CustomMsg point array");
+  }
+  const auto * points = cdr.Take(count ? (count - 1) * stride + point_bytes : 0);
+  frame.frame_id.assign(reinterpret_cast<const char *>(frame_id), frame_id_size - 1);
+  frame.points.reserve(count);
+  const bool swap = cdr.SwapBytes();
+  for (std::size_t i = 0; i < count; ++i) {
+    const auto * point = points + i * stride;
+    const KittiPoint decoded{ReadNumber<float>(point + 4, swap), ReadNumber<float>(point + 8, swap),
+      ReadNumber<float>(point + 12, swap), static_cast<float>(point[16])};
+    if (std::isfinite(decoded.x) && std::isfinite(decoded.y) && std::isfinite(decoded.z))
+      frame.points.push_back(decoded);
+  }
+  return frame;
+}
+
+void NormalizeLivoxImuAcceleration(std::vector<lidar_viewer::ImuObservation> & observations)
+{
+  // Livox Driver2 forwards acceleration in g from the sensor. Confirm the
+  // units from the recording, since some publishers already convert to SI.
+  constexpr double gravity = 9.80665;
+  std::size_t valid = 0, near_one_g = 0;
+  for (const auto & sample : observations) {
+    if (!sample.acceleration_valid) continue;
+    const auto & gyro = sample.angular_velocity;
+    const double turn_rate = std::hypot(gyro.x, gyro.y, gyro.z);
+    // Use stationary samples to distinguish units, as in gravity estimation.
+    const bool gyro_usable = sample.gyro_valid && turn_rate < 20;
+    if (gyro_usable && turn_rate >= .35) continue;
+    const auto & acceleration = sample.acceleration;
+    const double magnitude = std::hypot(acceleration.x, acceleration.y, acceleration.z);
+    if (!std::isfinite(magnitude)) continue;
+    ++valid;
+    if (std::abs(magnitude - 1) < 1.5 / gravity) ++near_one_g;
+  }
+  if (near_one_g <= valid / 2) return;
+  for (auto & sample : observations) {
+    auto & acceleration = sample.acceleration;
+    acceleration.x *= gravity;
+    acceleration.y *= gravity;
+    acceleration.z *= gravity;
+  }
+}
+
 struct ReaderCache
 {
   fs::path path;
   std::string topic;
+  PointFormat format{PointFormat::PointCloud2};
   std::unique_ptr<rosbag2_cpp::Reader> reader;
 };
 }  // namespace
@@ -336,7 +455,8 @@ std::vector<FrameHandle> ResolveBagFrames(
   const fs::path path = BagPath(input);
   rosbag2_cpp::Reader reader;
   OpenReader(reader, path);
-  const std::string topic = ChooseTopic(reader, requested_topic);
+  const auto point_topic = ChooseTopic(reader, requested_topic);
+  const auto & topic = point_topic.name;
   auto imu = std::make_shared<lidar_viewer::ImuTimeline>();
   std::unordered_map<std::string, std::uint64_t> counts;
   for (const auto & entry : reader.get_metadata().topics_with_message_count)
@@ -441,7 +561,7 @@ std::vector<FrameHandle> ResolveBagFrames(
     }
   }
   if (frames.empty()) {
-    throw std::runtime_error("Bag topic has no PointCloud2 messages: " + topic);
+    throw std::runtime_error("Bag topic has no point-cloud messages: " + topic);
   }
   progress.stage=lidar_viewer::InputLoadStage::PreparingImu;
   if (load) load->Publish(progress);
@@ -461,6 +581,11 @@ std::vector<FrameHandle> ResolveBagFrames(
       })) {
       for (auto & sample : observations) sample.orientation_valid = false;
     }
+    if (point_topic.format == PointFormat::Livox && imu->frame_id == "livox_frame" &&
+      (imu->topic == "/livox/imu" || imu->topic.rfind("/livox/imu_", 0) == 0))
+    {
+      NormalizeLivoxImuAcceleration(observations);
+    }
     imu->samples = lidar_viewer::EstimateImuGravity(observations);
     imu->status = imu->topic.empty() ? "No IMU topic recorded" : "No reliable IMU gravity estimate";
   }
@@ -477,12 +602,11 @@ static FrameData ReadBagFrame(const FrameHandle & handle,ReaderCache & cache)
 {
   const fs::path path = BagPath(handle.path);
   if (!cache.reader || cache.path != path || cache.topic != handle.bag_topic) {
-    cache.reader = std::make_unique<rosbag2_cpp::Reader>();
-    OpenReader(*cache.reader, path);
-    ChooseTopic(*cache.reader, handle.bag_topic);
-    FilterTopic(*cache.reader, handle.bag_topic);
-    cache.path = path;
-    cache.topic = handle.bag_topic;
+    auto reader = std::make_unique<rosbag2_cpp::Reader>();
+    OpenReader(*reader, path);
+    const auto topic = ChooseTopic(*reader, handle.bag_topic);
+    FilterTopic(*reader, topic.name);
+    cache = {path, topic.name, topic.format, std::move(reader)};
   }
   cache.reader->seek(handle.bag_timestamp_ns);
   std::size_t duplicate = 0;
@@ -497,14 +621,18 @@ static FrameData ReadBagFrame(const FrameHandle & handle,ReaderCache & cache)
     if (duplicate++ != handle.bag_duplicate_index) {
       continue;
     }
-    PointCloud cloud;
-    rclcpp::SerializedMessage serialized(*message->serialized_data);
-    rclcpp::Serialization<PointCloud> serialization;
-    serialization.deserialize_message(&serialized, &cloud);
-    auto frame = DecodePointCloud2(cloud);
+    FrameData frame;
+    if (cache.format == PointFormat::Livox) {
+      frame = DecodeLivoxCloud(*message->serialized_data);
+    } else {
+      PointCloud cloud;
+      rclcpp::SerializedMessage serialized(*message->serialized_data);
+      rclcpp::Serialization<PointCloud>().deserialize_message(&serialized, &cloud);
+      frame = DecodePointCloud2(cloud);
+    }
     frame.timestamp_ns=handle.bag_timestamp_ns;
     if (handle.imu_timeline)
-      frame.imu = lidar_viewer::MatchFrameImu(*handle.imu_timeline, handle.bag_timestamp_ns, cloud.header.frame_id);
+      frame.imu = lidar_viewer::MatchFrameImu(*handle.imu_timeline, handle.bag_timestamp_ns, frame.frame_id);
     return frame;
   }
   throw std::runtime_error("Indexed bag frame is missing; input bag may have changed: " + handle.label);

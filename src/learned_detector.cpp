@@ -162,10 +162,10 @@ void LearnedDetector::Stop() {
   {std::lock_guard<std::mutex> lock(impl_->process_mutex);impl_->child.Close();}
 }
 void LearnedDetector::Start(const std::filesystem::path & root,const std::string & variant) {
-  if (variant!="tiny" && variant!="short_range") throw std::invalid_argument("Unknown detector model");
+  if (!algorithms::IsDetectorModel(variant)) throw std::invalid_argument("Unknown detector model");
   Stop();
   const auto config=UserConfigurationDirectory()/"detector.cfg";
-  std::filesystem::path python,model,short_model;std::string provider="auto",line;bool managed=false;
+  std::filesystem::path python,model,short_model,base_model;std::string provider="auto",line;bool managed=false;
   std::ifstream file(config);
   while (std::getline(file,line)) {
     if (!line.empty() && line.back()=='\r') line.pop_back();
@@ -174,17 +174,24 @@ void LearnedDetector::Start(const std::filesystem::path & root,const std::string
     if (key=="python") python=std::filesystem::u8path(value);
     else if (key=="model_dir") model=std::filesystem::u8path(value);
     else if (key=="short_range_model_dir") short_model=std::filesystem::u8path(value);
+    else if (key=="base_model_dir") base_model=std::filesystem::u8path(value);
     else if (key=="provider" && value=="cpu") provider=value;
     else if (key=="managed_runtime") managed=value=="1";
   }
-  if (variant=="short_range") model=!short_model.empty() ? short_model : model.empty() ?
-    std::filesystem::path{} : model.parent_path()/"centerpoint-shortrange-v2.0.0";
+  const auto model_root = model.empty() ? std::filesystem::path{} : model.parent_path();
+  if (variant=="short_range") model=!short_model.empty() ? short_model : model_root.empty() ?
+    std::filesystem::path{} : model_root/"centerpoint-shortrange-v2.0.0";
+  if (variant=="base") model=!base_model.empty() ? base_model : model_root.empty() ?
+    std::filesystem::path{} : model_root/"centerpoint-base-v4.1";
   // Packaged Mac builds contain an offline, relocatable CPU runtime. Explicit
   // user configurations retain priority; a new Mac needs no setup command.
-  bool bundled=managed;
-  if((variant=="tiny" || variant=="short_range") && python.empty() && model.empty()) {
-    const auto assets=root.parent_path()/"detector";
-    const auto runtime=assets/"runtime/bin/python3";
+  const auto assets=root.parent_path()/"detector";
+  const auto runtime=assets/"runtime/bin/python3";
+  bool bundled=managed || python==runtime;
+  // Installing only Base with the bundled interpreter leaves the two
+  // optional user model directories empty. Continue using their bundled weights.
+  if (variant!="base" && ((python.empty() && model.empty()) ||
+      (python==runtime && !std::filesystem::is_directory(model)))) {
     const auto weights=assets/"models"/(variant=="short_range" ? "centerpoint-shortrange-v2.0.0" : "centerpoint-tiny-v4.1");
     if(std::filesystem::is_regular_file(runtime) && std::filesystem::is_directory(weights)) {
       python=runtime;model=weights;provider="cpu";bundled=true;
