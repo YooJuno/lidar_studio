@@ -43,6 +43,7 @@ struct BenchmarkReport
   std::string version, split;
   std::size_t scans, keyframes, scenes, point_labelled;
   bool keyframes_only;
+  double detector_score;
   std::vector<BenchmarkRow> rows;
   std::vector<FailureExample> cases;
 };
@@ -68,7 +69,8 @@ BenchmarkReport LoadReport(fs::path path)
   const auto & data = root.get_child("dataset");
   BenchmarkReport report{std::move(path), data.get<std::string>("version"), data.get<std::string>("split"),
     data.get<std::size_t>("scans"), data.get<std::size_t>("keyframes"), data.get_child("scenes").size(),
-    data.get<std::size_t>("point_labelled_keyframes"), data.get<bool>("keyframes_only"), {}, {}};
+    data.get<std::size_t>("point_labelled_keyframes"), data.get<bool>("keyframes_only"),
+    root.get<double>("settings.detector_score"), {}, {}};
   for (const auto & entry : root.get_child("rows")) {
     const auto & row = entry.second;
     report.rows.push_back({row.get<std::string>("stage"), row.get<std::string>("method"),
@@ -276,6 +278,8 @@ void BenchmarkWorkspace::Impl::DrawResults(float scale)
       result->version.c_str(), result->split.c_str(), result->scenes, result->scans, result->keyframes);
     ImGui::TextDisabled("%zu with point labels  |  %s", result->point_labelled,
       result->keyframes_only ? "Keyframes only" : "Ordered replay with intermediate scans");
+  if (std::any_of(result->rows.begin(), result->rows.end(), [](const auto & row) {return row.stage == "Detection";}))
+    ImGui::TextDisabled("Detection and tracking counts at score %.2f", result->detector_score);
     ImGui::Spacing();
     for (const auto * stage : {"Ground", "Detection", "Tracking"}) {
       if (std::none_of(result->rows.begin(), result->rows.end(), [stage](const auto & row) {return row.stage == stage;})) continue;
