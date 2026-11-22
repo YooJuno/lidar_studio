@@ -29,6 +29,8 @@ def write_fixture(folder):
     for index in range(30):
         cloud=PointCloud2();cloud.header.frame_id='pandar_xt32_forward'
         cloud.header.stamp.sec=50+index//10;cloud.header.stamp.nanosec=index%10*100_000_000
+        if index==9: cloud.header.stamp.nanosec=800_000_000
+        if index==10: cloud.header.stamp.sec=cloud.header.stamp.nanosec=0
         # A nonzero Z keeps frame zero's marker from being treated as a missing return.
         points=[(float(index),0.,.1,0.)]
         for cx in [-3+index*.1,3-index*.1]:
@@ -36,7 +38,10 @@ def write_fixture(folder):
         cloud.height=1;cloud.width=len(points);cloud.point_step=16;cloud.row_step=cloud.width*16
         cloud.fields=[PointField(name=n,offset=i*4,datatype=PointField.FLOAT32,count=1) for i,n in enumerate(['x','y','z','intensity'])]
         cloud.data=b''.join(struct.pack('<4f',*p) for p in points)
-        writer.write('/b2/points',serialize_message(cloud),50_000_000_000+index*100_000_000)
+        # Recorder delivery alternates between 20 and 180 ms per scan. The
+        # sensor headers retain the actual 100 ms acquisition interval.
+        receipt=80_000_000_000+index*100_000_000+(index%2)*80_000_000
+        writer.write('/b2/points',serialize_message(cloud),80_800_000_000 if index==9 else receipt)
     writer.close()
 
 
@@ -63,7 +68,11 @@ sink.write(r.pack(b'LDR1',0,0,0,20)+b'CPUExecutionProvider');sink.flush()
 while True:
  tag,rev,count,score=q.unpack(exact(q.size));data=exact(count*12);index=round(struct.unpack_from('<f',data)[0])
  boxes=[[-3+index*.1,2,.9,.7,.6,1.8,0,.9,4],[3-index*.1,2,.9,.7,.6,1.8,0,.9,4]]
- if index in [6,7]:boxes.pop(0)
+ if index in [4,5]:boxes[0][7]=.40
+ if index==6:boxes.pop(0)
+ if index==7:
+  detail=b'One scan has invalid model input'
+  sink.write(r.pack(b'LDE1',rev,0,0,len(detail))+detail);sink.flush();continue
  if index%2:boxes.reverse()
  time.sleep(.02);sink.write(r.pack(b'LDR1',rev,len(boxes),20,0)+b''.join(struct.pack('<9f',*b) for b in boxes));sink.flush()
 ''')
@@ -92,10 +101,21 @@ while True:
             wait(lambda:x11.viewer_window() is not None);window=x11.viewer_window();x11.focus(window);x11.resize(window,1600,960);c=Controls(x11,window,log_path)
             wait(lambda:len(tracks())==2);initial=tracks();ids={t[1] for t in initial};left=min(initial,key=lambda t:t[-1])[1]
             for index in range(1,13):
-                x11.key(window,'Right');wait(lambda:any(t[0]==index for t in tracks()))
+                x11.key(window,'Right');wait(lambda:any(int(f[0])==index for f in frames()))
                 current=[t for t in tracks() if t[0]==index]
                 check(f'frame_{index}_keeps_ids_despite_order_or_occlusion',{t[1] for t in current}==ids)
+                if index in [4,5]:
+                    check(f'frame_{index}_uses_a_weak_observation_without_hiding_it',
+                          re.search(fr'Track frame {index} id {int(left)} .*predicted 0 .* weak 1',log()) and
+                          re.search(fr'Detector frame {index} revision \d+ boxes 2 full 2',log()))
                 if index in [6,7]:check(f'frame_{index}_predicts_missing_object',any(t[1]==left and t[4]==1 for t in current))
+                if index==7:
+                    check('recoverable_detector_error_does_not_drop_confirmed_ids',
+                          all(t[3]==1 and t[4]==1 for t in current))
+            check('sensor_acquisition_clock_and_missing_stamp_fallback',
+                  'Tracking clock frame 0 recording' in log() and 'Tracking clock frame 4 sensor' in log() and
+                  all(f'Tracking clock frame {i} cadence' in log() for i in (9,10,11)) and
+                  'Tracking clock frame 12 sensor' in log())
             last=[t for t in tracks() if t[0]==12]
             check('reacquisition_confirms_same_ids_and_sensor_time_speed',all(t[3]==1 and t[4]==0 and abs(t[5]-1)<.2 for t in last))
             paused=tracks();requests=frames();time.sleep(1.1)

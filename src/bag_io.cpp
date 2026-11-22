@@ -128,6 +128,12 @@ namespace
 using PointCloud = sensor_msgs::msg::PointCloud2;
 using Field = sensor_msgs::msg::PointField;
 
+std::optional<std::int64_t> RosHeaderStampNs(std::int32_t seconds, std::uint32_t nanoseconds)
+{
+  if (seconds < 0 || nanoseconds >= 1000000000u) return {};
+  return static_cast<std::int64_t>(seconds) * 1000000000 + nanoseconds;
+}
+
 fs::path BagPath(const fs::path & input)
 {
   const fs::path path = input.filename() == "metadata.yaml" ? input.parent_path() : input;
@@ -327,7 +333,10 @@ FrameData DecodeLivoxCloud(const rcl_serialized_message_t & message, bool preser
   // Layout defined by Livox-SDK/livox_ros_driver2 CustomMsg and CustomPoint.
   // Read XYZ and reflectivity directly from the bag without a driver dependency.
   LivoxCdr cdr(message);
-  cdr.Take(8, 4); // Header stamp. Playback and IMU use the bag receipt timestamp.
+  const bool swap = cdr.SwapBytes();
+  const auto * stamp_bytes = cdr.Take(8, 4);
+  const auto stamp = RosHeaderStampNs(ReadNumber<std::int32_t>(stamp_bytes, swap),
+    ReadNumber<std::uint32_t>(stamp_bytes + 4, swap));
   const auto frame_id_size = cdr.ReadUint32();
   const auto * frame_id = cdr.Take(frame_id_size);
   if (!frame_id_size || frame_id[frame_id_size - 1] != 0)
@@ -342,6 +351,7 @@ FrameData DecodeLivoxCloud(const rcl_serialized_message_t & message, bool preser
   // next point's 4-byte offset_time, so the last point needs just 19 bytes.
   constexpr std::size_t stride = 20, point_bytes = 19;
   FrameData frame;
+  if (stamp && *stamp > 0) frame.acquisition_timestamp_ns = stamp;
   if (count > frame.points.max_size() ||
     (count && (cdr.Remaining() < point_bytes || (count - 1) > (cdr.Remaining() - point_bytes) / stride)))
   {
@@ -355,7 +365,6 @@ FrameData DecodeLivoxCloud(const rcl_serialized_message_t & message, bool preser
     original = std::make_shared<std::vector<float>>();
     original->reserve(count);
   }
-  const bool swap = cdr.SwapBytes();
   for (std::size_t i = 0; i < count; ++i) {
     const auto * point = points + i * stride;
     const KittiPoint decoded{ReadNumber<float>(point + 4, swap), ReadNumber<float>(point + 8, swap),
@@ -410,8 +419,8 @@ FrameData DecodePointCloud2(const PointCloud & cloud, bool preserve_source_inten
 {
   FrameData frame;
   frame.frame_id = cloud.header.frame_id;
-  if (cloud.header.stamp.sec>=0 && cloud.header.stamp.nanosec<1000000000u)
-    frame.timestamp_ns=static_cast<std::int64_t>(cloud.header.stamp.sec)*1000000000+cloud.header.stamp.nanosec;
+  frame.timestamp_ns = RosHeaderStampNs(cloud.header.stamp.sec, cloud.header.stamp.nanosec);
+  if (frame.timestamp_ns && *frame.timestamp_ns > 0) frame.acquisition_timestamp_ns = frame.timestamp_ns;
   const std::uint64_t count = static_cast<std::uint64_t>(cloud.width) * cloud.height;
   if (count == 0) {
     frame.has_source_intensity = false;

@@ -245,6 +245,7 @@ struct LiveSession::Impl
       Record(cloud, options.points_topic, received);
       auto next=std::make_unique<LiveFrame>();
       next->frame=DecodePointCloud2(cloud, true); next->sequence=sequence;
+      next->frame.receipt_timestamp_ns=received;
       if (!next->frame.timestamp_ns || *next->frame.timestamp_ns<=0) next->frame.timestamp_ns=received;
       NormalizeIntensity(next->frame);
       ImuTimeline timeline;

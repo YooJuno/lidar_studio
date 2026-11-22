@@ -29,6 +29,8 @@ struct ObjectTrack
   std::uint64_t id{0};
   Vec3 velocity{};
   bool confirmed{false}, predicted{false};
+  bool low_confidence_update{false};
+  float last_strong_confidence{0};
   float missed_s{0};
   std::optional<std::size_t> measurement_index;
   std::vector<Vec3> trail;
@@ -41,7 +43,7 @@ struct TrackingStats
   std::string reset_reason;
 };
 
-// Sensor-time 3D constant-velocity Kalman filter and global Hungarian matching.
+// Sensor-time 3D constant-velocity Kalman filtering and confidence-staged matching.
 // No rendering, wall-clock aging, inference process or unbounded history.
 class ObjectTracker
 {

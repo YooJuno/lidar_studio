@@ -2,10 +2,8 @@
 #include <Eigen/Cholesky>
 #include <Eigen/Core>
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <cmath>
-#include <functional>
 #include <limits>
 #include <queue>
 #include <stdexcept>
@@ -18,7 +16,10 @@ using State=Eigen::Matrix<double,10,1>;
 using Covariance=Eigen::Matrix<double,10,10>;
 using Measurement=Eigen::Matrix<double,7,1>;
 using Noise=Eigen::Matrix<double,7,7>;
-constexpr double pi=3.14159265358979323846, gate=16.27, forbidden=1e6, unmatched=1.1;
+constexpr double pi=3.14159265358979323846, forbidden=1e6, unmatched=1.1;
+constexpr double strong_gate=16.27, weak_gate=7.81;
+constexpr float weak_score_fraction=.6f, max_weak_age_s=.5f;
+constexpr int max_confirmation_hits=20;
 
 bool Valid(const algorithms::Detection & d)
 {
@@ -37,6 +38,11 @@ Measurement Measure(const algorithms::Detection & d)
   const auto & b=d.oriented_bounds;
   Measurement z;z<<b.center.x,b.center.y,b.center.z,std::atan2(b.axis_x.y,b.axis_x.x),
     b.half_length*2,b.half_width*2,b.max_z-b.min_z;
+  if (d.class_id!=algorithms::DetectionClassPerson && z[4]<z[5]) {
+    // Equivalent rectangles can switch which axis the detector calls length.
+    std::swap(z[4],z[5]);
+    z[3]+=pi*.5;
+  }
   return z;
 }
 
@@ -101,31 +107,94 @@ std::vector<int> Assign(const std::vector<double> & costs,std::size_t rows,std::
 struct TrackState
 {
   State x=State::Zero();Covariance covariance=Covariance::Identity();
-  std::uint64_t id{0};int class_id{-1},streak{1};bool confirmed{false};
-  float score{0};std::int64_t last_measurement{0};
+  std::uint64_t id{0};int class_id{-1},streak{1},strong_hits{1};bool confirmed{false};
+  int alternate_class{-1},alternate_hits{0};
+  float score{0},strong_score{0};
+  std::int64_t last_measurement{0},last_strong{0};
+  bool weak_update{false},missed_previous{false};
   std::optional<std::size_t> measurement;
   std::vector<Vec3> trail;
 };
+
+struct Observation
+{
+  std::size_t index;
+  Measurement box;
+  bool strong;
+};
+
+bool IsVehicle(int class_id)
+{
+  return class_id==algorithms::DetectionClassCar || class_id==algorithms::DetectionClassBus ||
+    class_id==algorithms::DetectionClassTruck;
+}
+
+bool ForecastCoveredBy(const TrackState & forecast,const Measurement & box,int observed_class)
+{
+  if (forecast.class_id!=observed_class && !(IsVehicle(forecast.class_id) && IsVehicle(observed_class))) return false;
+  const Eigen::Vector3d offset=forecast.x.head<3>()-box.head<3>();
+  const Eigen::Vector3d smaller=forecast.x.segment<3>(4).cwiseMin(box.segment<3>(4));
+  const Eigen::Vector3d larger=forecast.x.segment<3>(4).cwiseMax(box.segment<3>(4));
+  if (offset.head<2>().squaredNorm()>larger.head<2>().squaredNorm()*.0625 ||
+      std::abs(offset.z())>smaller.z()*.25 || (smaller.array()<larger.array()*.7).any()) return false;
+  const double c=std::cos(box[3]),s=std::sin(box[3]);
+  return std::abs(c*offset.x()+s*offset.y())<smaller.x()*.25 &&
+    std::abs(-s*offset.x()+c*offset.y())<smaller.y()*.25;
+}
 
 void Predict(TrackState & track,double dt)
 {
   Covariance f=Covariance::Identity(),q=Covariance::Zero();
   for (int i=0;i<3;++i) {
-    f(i,i+7)=dt;const double variance=i==2 ? 4. : 16.;
-    q(i,i)=variance*dt*dt*dt*dt*.25;
-    q(i,i+7)=q(i+7,i)=variance*dt*dt*dt*.5;q(i+7,i+7)=variance*dt*dt;
+    f(i,i+7)=dt;const double acceleration_density=i==2 ? .4 : 1.6;
+    // Continuous acceleration noise accumulates consistently across skipped scans.
+    q(i,i)=acceleration_density*dt*dt*dt/3.;
+    q(i,i+7)=q(i+7,i)=acceleration_density*dt*dt*.5;q(i+7,i+7)=acceleration_density*dt;
   }
   q(3,3)=.09*dt;for(int i=4;i<7;++i) q(i,i)=.01*dt;
   track.x=f*track.x;track.covariance=f*track.covariance*f.transpose()+q;track.measurement.reset();
+  track.weak_update=false;
 }
 
-void Correct(TrackState & track,const algorithms::Detection & detection,std::size_t index,std::int64_t stamp)
+double AssociationCost(const TrackState & track,const algorithms::Detection & detection,
+  const Measurement & z,const Eigen::Matrix3d & inverse,bool weak,double unobserved_s)
 {
-  auto z=Measure(detection);
+  const bool changed_class=track.class_id!=detection.class_id;
+  if (changed_class && (weak || !track.confirmed || !IsVehicle(track.class_id) || !IsVehicle(detection.class_id)))
+    return forbidden;
+  const Eigen::Vector3d delta=z.head<3>()-track.x.head<3>();
+  const double mahal=delta.dot(inverse*delta);
+  const bool strict=weak || changed_class;
+  const double gate=strict ? weak_gate : strong_gate;
+  const bool person=track.class_id==algorithms::DetectionClassPerson;
+  const double max_distance=strict ? std::clamp(.4*track.x[4]+.4,.75,2.5) : person ? 4. : 12.;
+  if (!std::isfinite(mahal) || mahal>gate || delta.squaredNorm()>max_distance*max_distance) return forbidden;
+  double size_cost=0;
+  for (int axis=4;axis<7;++axis) {
+    const double ratio=z[axis]/std::max(.01,track.x[axis]);
+    if (ratio<(strict ? .55 : .25) || ratio>(strict ? 1.8 : 4.)) return forbidden;
+    size_cost+=std::abs(std::log(ratio));
+  }
+  const double heading=person ? 0. : std::abs(std::remainder(z[3]-track.x[3],pi))/(pi*.5);
+  // A large covariance can keep a stale track eligible, but should not give it
+  // an advantage over a closer, recently measured track.
+  const double distance_scale=std::clamp(.5*track.x[4]+.5,1.,3.);
+  const double distance_cost=std::min(1.,delta.norm()/distance_scale);
+  return .45*mahal/gate+.30*distance_cost+.10*std::min(1.,size_cost/3)+.05*heading+
+    .025*(1-detection.confidence)+.12*std::clamp(unobserved_s/.6,0.,1.)+(changed_class ? .15 : 0.);
+}
+
+void Correct(TrackState & track,const algorithms::Detection & detection,
+  const Observation & observation,std::int64_t stamp,double dt)
+{
+  auto z=observation.box;
   // A 3D box's heading is ambiguous by pi. Correct the nearest equivalent
   // orientation, including wraparound at +/-pi, before the linear update.
   z[3]=track.x[3]+std::remainder(z[3]-track.x[3],pi);
-  const auto r=MeasurementNoise(track.x);
+  // Closely spaced detections share noise. Limit their influence per unit of sensor
+  // time, and downweight weak geometry while still following its position.
+  const double temporal_scale=std::max(1.,.03/std::max(dt,.001));
+  const Noise r=MeasurementNoise(track.x)*temporal_scale*(observation.strong ? 1. : 4.);
   const Noise s=track.covariance.topLeftCorner<7,7>()+r;
   const Eigen::LDLT<Noise> solve(s);
   const Eigen::Matrix<double,10,7> k=solve.solve(track.covariance.leftCols<7>().transpose()).transpose();
@@ -133,7 +202,19 @@ void Correct(TrackState & track,const algorithms::Detection & detection,std::siz
   Covariance residual=Covariance::Identity();residual.leftCols<7>()-=k;
   track.covariance=residual*track.covariance*residual.transpose()+k*r*k.transpose();
   track.covariance=(track.covariance+track.covariance.transpose()).eval()*.5;
-  track.score=detection.confidence;track.last_measurement=stamp;track.measurement=index;++track.streak;
+  track.score=detection.confidence;track.last_measurement=stamp;track.measurement=observation.index;
+  track.weak_update=!observation.strong;track.missed_previous=false;
+  if (!observation.strong) {track.alternate_hits=0;return;}
+  track.strong_score=detection.confidence;track.last_strong=stamp;
+  if (track.strong_hits<2*max_confirmation_hits) ++track.strong_hits;
+  if (!track.confirmed) ++track.streak;
+  if (track.class_id==detection.class_id) {track.alternate_hits=0;return;}
+  if (!track.alternate_hits || track.alternate_class!=detection.class_id) {
+    track.alternate_class=detection.class_id;track.alternate_hits=0;
+  }
+  if (++track.alternate_hits==3) {
+    track.class_id=track.alternate_class;track.alternate_hits=0;
+  }
 }
 }  // namespace
 
@@ -157,7 +238,8 @@ const std::vector<ObjectTrack> & ObjectTracker::Update(const std::vector<algorit
 {
   if (frame.timestamp_ns<0 || !std::isfinite(min_confidence) || min_confidence<.1f || min_confidence>1.f ||
       !std::isfinite(params.max_missed_s) || params.max_missed_s<.05f || params.max_missed_s>10 ||
-      params.confirmation_hits<1 || params.confirmation_hits>20) throw std::invalid_argument("Invalid tracking frame or settings");
+      params.confirmation_hits<1 || params.confirmation_hits>max_confirmation_hits)
+    throw std::invalid_argument("Invalid tracking frame or settings");
   auto & core=*impl_;
   if (core.last && core.last->session==frame.session && core.last->sequence==frame.sequence) return core.output;
   const auto started=std::chrono::steady_clock::now();
@@ -170,75 +252,101 @@ const std::vector<ObjectTrack> & ObjectTracker::Update(const std::vector<algorit
   }
   if (!reason.empty()) {Reset();dt=0;}
   core.stats={};core.stats.reset_reason=reason;core.output.clear();
-  auto age=[&](const TrackState & t) {return static_cast<double>((static_cast<long double>(frame.timestamp_ns)-t.last_measurement)*1e-9L);};
+  const auto age=[&](std::int64_t stamp) {return static_cast<double>((static_cast<long double>(frame.timestamp_ns)-stamp)*1e-9L);};
   const auto expired = [&](const TrackState & t) {
-    return age(t)>(t.confirmed ? params.max_missed_s : std::min(.25f,params.max_missed_s));
+    return age(t.last_strong)>(t.confirmed ? params.max_missed_s : std::min(.25f,params.max_missed_s));
   };
   core.states.erase(std::remove_if(core.states.begin(),core.states.end(),[&](const auto & t) {
     // Live inference can skip scans. A track measured on the last processed
     // scan gets one chance to match this result before using its miss timeout.
-    return expired(t) && !(frame.allow_skipped_frames && t.measurement);
+    return expired(t) && !(frame.allow_skipped_frames && t.measurement && !t.weak_update);
   }),core.states.end());
   for (auto & track:core.states) Predict(track,dt);
 
-  // Keep the strongest bounded set without allocating a buffer proportional to
-  // an arbitrarily large input vector. Equal scores retain their input order.
-  using Candidate=std::pair<float,std::size_t>;
-  std::priority_queue<Candidate,std::vector<Candidate>,std::greater<Candidate>> strongest;
-  std::size_t eligible=0;
-  for (std::size_t i=0;i<detections.size();++i) if (Valid(detections[i]) && detections[i].confidence>=min_confidence) {
-    ++eligible;const Candidate candidate{detections[i].confidence,i};
-    if (strongest.size()<kMaxMeasurements) strongest.push(candidate);
-    else if (candidate.first>strongest.top().first) {strongest.pop();strongest.push(candidate);}
-  }
-  core.stats.capacity_dropped=eligible-strongest.size();
-  std::vector<std::size_t> indices;indices.reserve(strongest.size());
-  while(!strongest.empty()) {indices.push_back(strongest.top().second);strongest.pop();}
-  std::sort(indices.begin(),indices.end(),[&](auto a,auto b) {
+  // Keep strong candidates at the front of a bounded set. Break score ties by
+  // the original input order so duplicates cannot introduce replay variation.
+  const auto better=[&](std::size_t a,std::size_t b) {
     return detections[a].confidence!=detections[b].confidence ? detections[a].confidence>detections[b].confidence : a<b;
+  };
+  const float weak_floor=std::max(.1f,min_confidence*weak_score_fraction);
+  const double weak_age_limit=std::min(max_weak_age_s,params.max_missed_s);
+  const bool can_recover=std::any_of(core.states.begin(),core.states.end(),[&](const TrackState & track) {
+    return track.confirmed && age(track.last_strong)<=weak_age_limit;
   });
-  std::vector<double> costs(core.states.size()*indices.size(),forbidden);
-  for (std::size_t i=0;i<core.states.size();++i) {
-    const auto & track=core.states[i];
-    const Eigen::Matrix3d innovation=track.covariance.topLeftCorner<3,3>()+MeasurementNoise(track.x).topLeftCorner<3,3>();
-    const Eigen::Matrix3d inverse=innovation.ldlt().solve(Eigen::Matrix3d::Identity());
-    for (std::size_t j=0;j<indices.size();++j) {
-      const auto & detection=detections[indices[j]];
-      if (track.class_id!=detection.class_id) continue;
-      const auto z=Measure(detection);const Eigen::Vector3d delta=z.head<3>()-track.x.head<3>();
-      const double distance=delta.norm(),mahal=delta.dot(inverse*delta);
-      const double max_distance=track.class_id==algorithms::DetectionClassPerson ? 4. : 12.;
-      if (!std::isfinite(mahal) || mahal>gate || distance>max_distance) continue;
-      double size_cost=0;bool size_ok=true;
-      for(int axis=4;axis<7;++axis) {
-        const double ratio=z[axis]/std::max(.01,track.x[axis]);
-        if (ratio<.25 || ratio>4) size_ok=false;
-        size_cost+=std::abs(std::log(ratio));
-      }
-      if (!size_ok) continue;
-      const double heading=track.class_id==algorithms::DetectionClassPerson ? 0. : std::abs(std::remainder(z[3]-track.x[3],pi))/(pi*.5);
-      costs[i*indices.size()+j]=.75*mahal/gate+.15*std::min(1.,size_cost/3)+.05*heading+.05*(1-detection.confidence);
-    }
+  const float candidate_floor=can_recover ? weak_floor : min_confidence;
+  std::priority_queue<std::size_t,std::vector<std::size_t>,decltype(better)> strongest(better);
+  std::size_t strong_count=0;
+  for (std::size_t i=0;i<detections.size();++i) if (detections[i].confidence>=candidate_floor && Valid(detections[i])) {
+    if (detections[i].confidence>=min_confidence) ++strong_count;
+    if (strongest.size()<kMaxMeasurements) strongest.push(i);
+    else if (better(i,strongest.top())) {strongest.pop();strongest.push(i);}
   }
-  const auto assignments=Assign(costs,core.states.size(),indices.size());
-  std::vector<unsigned char> matched(indices.size());
-  for (std::size_t i=0;i<core.states.size();++i) {
-    auto & track=core.states[i];const auto j=assignments[i];
-    if (j<0) {track.streak=0;continue;}
-    const auto index=indices[static_cast<std::size_t>(j)];
-    Correct(track,detections[index],index,frame.timestamp_ns);matched[static_cast<std::size_t>(j)]=1;
-    track.confirmed=track.confirmed || track.streak>=params.confirmation_hits;
+  core.stats.capacity_dropped=strong_count-std::min(strong_count,kMaxMeasurements);
+  std::vector<Observation> observations;observations.reserve(strongest.size());
+  while (!strongest.empty()) {
+    const auto index=strongest.top();strongest.pop();
+    observations.push_back({index,Measure(detections[index]),detections[index].confidence>=min_confidence});
+  }
+  std::reverse(observations.begin(),observations.end());
+
+  std::vector<unsigned char> matched(observations.size());
+  std::vector<std::size_t> rows,columns;
+  std::vector<double> costs;
+  const auto associate=[&](bool confirmed, bool strong) {
+    rows.clear();columns.clear();
+    for (std::size_t j=0;j<observations.size();++j)
+      if (!matched[j] && observations[j].strong==strong) columns.push_back(j);
+    if (columns.empty()) return;
+    for (std::size_t i=0;i<core.states.size();++i) {
+      const auto & track=core.states[i];
+      if (!track.measurement && track.confirmed==confirmed && (strong || age(track.last_strong)<=weak_age_limit))
+        rows.push_back(i);
+    }
+    if (rows.empty()) return;
+
+    costs.resize(rows.size()*columns.size());
+    for (std::size_t i=0;i<rows.size();++i) {
+      const auto & track=core.states[rows[i]];
+      const Eigen::Matrix3d innovation=track.covariance.topLeftCorner<3,3>()+MeasurementNoise(track.x).topLeftCorner<3,3>();
+      const Eigen::Matrix3d inverse=innovation.ldlt().solve(Eigen::Matrix3d::Identity());
+      const double unobserved=std::max(0.,age(track.last_measurement)-dt);
+      for (std::size_t j=0;j<columns.size();++j) {
+        const auto & observed=observations[columns[j]];
+        costs[i*columns.size()+j]=AssociationCost(track,detections[observed.index],observed.box,inverse,!strong,unobserved);
+      }
+    }
+    const auto assignments=Assign(costs,rows.size(),columns.size());
+    for (std::size_t i=0;i<rows.size();++i) {
+      if (assignments[i]<0) continue;
+      const auto j=columns[static_cast<std::size_t>(assignments[i])];
+      const auto & observed=observations[j];
+      auto & track=core.states[rows[i]];
+      Correct(track,detections[observed.index],observed,frame.timestamp_ns,dt);
+      matched[j]=1;
+      if (strong && track.streak>=params.confirmation_hits) track.confirmed=true;
+    }
+  };
+  associate(true,true);
+  associate(false,true);
+  if (can_recover) associate(true,false);
+  for (auto & track:core.states) if (!track.measurement) {
+    // One missing scan does not wipe probation evidence. Only strong hits can
+    // increase it; a longer break still requires fresh confirmation.
+    if (track.missed_previous || age(track.last_strong)>.20) track.streak=0;
+    track.missed_previous=true;
+    track.alternate_hits=0;
   }
   if (frame.allow_skipped_frames)
     core.states.erase(std::remove_if(core.states.begin(),core.states.end(),expired),core.states.end());
-  for (std::size_t j=0;j<indices.size();++j) if (!matched[j]) {
+  for (std::size_t j=0;j<observations.size() && observations[j].strong;++j) if (!matched[j]) {
     if (core.states.size()>=kMaxTracks) {++core.stats.capacity_dropped;continue;}
     if (core.next_id==std::numeric_limits<std::uint64_t>::max()) throw std::overflow_error("Tracking ID exhausted");
-    const auto index=indices[j];const auto & detection=detections[index];TrackState track;
-    track.x.head<7>()=Measure(detection);track.covariance.topLeftCorner<7,7>()=MeasurementNoise(track.x);
+    const auto & observed=observations[j];const auto & detection=detections[observed.index];TrackState track;
+    track.x.head<7>()=observed.box;track.covariance.topLeftCorner<7,7>()=MeasurementNoise(track.x);
     track.covariance.bottomRightCorner<3,3>()*=100;
-    track.id=core.next_id++;track.class_id=detection.class_id;track.score=detection.confidence;
-    track.last_measurement=frame.timestamp_ns;track.measurement=index;track.confirmed=params.confirmation_hits==1;
+    track.id=core.next_id++;track.class_id=detection.class_id;track.score=track.strong_score=detection.confidence;
+    track.last_measurement=track.last_strong=frame.timestamp_ns;track.measurement=observed.index;
+    track.confirmed=params.confirmation_hits==1;
     track.trail.reserve(kTrailLength);core.states.push_back(std::move(track));
   }
   core.states.erase(std::remove_if(core.states.begin(),core.states.end(),[](const auto & track) {
@@ -246,12 +354,23 @@ const std::vector<ObjectTrack> & ObjectTracker::Update(const std::vector<algorit
   }),core.states.end());
   for (auto & track:core.states) {
     if (!track.confirmed && !track.measurement) continue;
+    // Briefly established tracks can be reacquired for the entire hold window,
+    // but display a shorter forecast until there is more motion evidence.
+    if (!track.measurement && params.confirmation_hits>1 && track.strong_hits<2*params.confirmation_hits &&
+        age(track.last_measurement)>.35) continue;
+    // A trusted observation already covers this footprint. Keep the predicted
+    // candidate for later association without stacking two boxes in the view.
+    if (!track.measurement && std::any_of(observations.begin(),observations.end(),[&](const Observation & observed) {
+        return observed.strong && ForecastCoveredBy(track,observed.box,detections[observed.index].class_id);
+      })) continue;
     const Vec3 center{static_cast<float>(track.x[0]),static_cast<float>(track.x[1]),static_cast<float>(track.x[2])};
     if (track.trail.size()==kTrailLength) track.trail.erase(track.trail.begin());
     track.trail.push_back(center);
     ObjectTrack output;output.detection=Box(track.x,track.class_id,track.score);output.id=track.id;
     output.velocity={static_cast<float>(track.x[7]),static_cast<float>(track.x[8]),static_cast<float>(track.x[9])};
-    output.confirmed=track.confirmed;output.predicted=!track.measurement;output.missed_s=static_cast<float>(age(track));
+    output.confirmed=track.confirmed;output.predicted=!track.measurement;
+    output.low_confidence_update=track.weak_update;output.last_strong_confidence=track.strong_score;
+    output.missed_s=static_cast<float>(age(track.last_measurement));
     output.measurement_index=track.measurement;output.trail=track.trail;core.output.push_back(std::move(output));
     if (track.confirmed) ++core.stats.confirmed;else ++core.stats.tentative;
     if (!track.measurement) ++core.stats.coasting;

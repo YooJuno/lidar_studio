@@ -764,6 +764,14 @@ struct ViewerState
   std::shared_ptr<const std::vector<KittiPoint>> detector_input;
   std::vector<lidar_viewer::algorithms::Detection> full_detections;
   lidar_viewer::TrackingParams tracking_params;
+  struct TrackingClock {
+    std::uint64_t sequence;
+    std::int64_t recording_ns, tracking_ns;
+    std::optional<std::int64_t> acquisition_ns;
+    double scan_period_ns{0};
+    unsigned period_samples{0};
+  };
+  std::optional<TrackingClock> tracking_clock;
   std::unique_ptr<lidar_viewer::ObjectTracker> tracker;
   std::vector<lidar_viewer::ObjectTrack> visible_tracks;
   std::uint64_t tracking_session{1},tracking_revision{0},tracking_alignment{0};
@@ -1114,6 +1122,9 @@ void RebuildClusterBoxes(ViewerState & state)
           const bool recent = track.missed_s < state.tracking_params.max_missed_s * .5f;
           fill_color.a *= recent ? .65f : .30f;
           line_color.a *= recent ? .85f : .55f;
+        } else if (track.low_confidence_update) {
+          fill_color.a *= .70f;
+          line_color.a *= .90f;
         } else if (!track.confirmed) {
           fill_color.a *= .4f;
           line_color.a *= .75f;
@@ -1162,7 +1173,11 @@ void FilterDetections(ViewerState & state)
     if (state.tracking_params.enabled && state.tracker && state.tracking_revision==state.detector_revision) {
       for (const auto & track:state.tracker->Tracks()) {
         if (track.measurement_index && *track.measurement_index<assigned.size()) assigned[*track.measurement_index]=1;
-        if (state.algorithm_config.detection.Accepts(track.detection)) {
+        // Use strong evidence for visibility and preserve the observed score
+        // on the label. A weak update must not turn into a raw duplicate box.
+        auto eligibility=track.detection;
+        if (track.confirmed) eligibility.confidence=track.last_strong_confidence;
+        if (state.algorithm_config.detection.Accepts(eligibility)) {
           state.detections.push_back(track.detection);state.visible_tracks.push_back(track);
         }
       }
@@ -1178,6 +1193,7 @@ void FilterDetections(ViewerState & state)
 void ResetTracking(ViewerState & state)
 {
   if (state.tracker) state.tracker->Reset();
+  state.tracking_clock.reset();
   ++state.tracking_session;state.tracking_revision=0;state.visible_tracks.clear();
 }
 
@@ -1201,18 +1217,70 @@ void TrackCurrentDetections(ViewerState & state)
   lidar_viewer::TrackingFrame frame;frame.session=state.tracking_session;
   frame.sequence=state.live_mode ? state.live_display_sequence : state.current_index;
   frame.allow_skipped_frames=state.live_mode;
-  frame.timestamp_ns=state.base_frame.timestamp_ns && *state.base_frame.timestamp_ns>=0 ? *state.base_frame.timestamp_ns :
-    static_cast<std::int64_t>(static_cast<long double>(frame.sequence)*1000000000.L/state.input_fps_estimate.value_or(10.));
+  const double nominal_fps=std::clamp(state.input_fps_estimate.value_or(10.),.5,200.);
+  const auto fallback=state.base_frame.receipt_timestamp_ns ? state.base_frame.receipt_timestamp_ns : state.base_frame.timestamp_ns;
+  const bool has_recording_time=fallback && *fallback>=0;
+  const auto recording_ns=has_recording_time ? *fallback :
+    static_cast<std::int64_t>(static_cast<long double>(frame.sequence)*1000000000.L/nominal_fps);
+  auto clock=ViewerState::TrackingClock{frame.sequence,recording_ns,recording_ns,state.base_frame.acquisition_timestamp_ns};
+  const auto & last=state.tracking_clock;
+  const char * timing_source=has_recording_time ? "recording" : "assumed";
+  if (last && frame.sequence==last->sequence) {
+    clock=*last;
+  } else if (last && frame.sequence>last->sequence && (frame.allow_skipped_frames || frame.sequence-last->sequence==1)) {
+    const auto scans=static_cast<long double>(frame.sequence-last->sequence);
+    clock.scan_period_ns=last->scan_period_ns;
+    clock.period_samples=last->period_samples;
+    auto step=clock.recording_ns-last->recording_ns;
+    bool used_acquisition=false;
+    if (last->acquisition_ns && clock.acquisition_ns) {
+      const auto sensor_step=*clock.acquisition_ns-*last->acquisition_ns;
+      // Compare deltas, since the acquisition and recorder timestamps can
+      // have unrelated epochs. Reject repeated stamps and device clock jumps.
+      const auto maximum_gap=static_cast<std::int64_t>(std::max(2.f,2*state.tracking_params.max_missed_s)*1e9);
+      if (sensor_step>=1000000 && sensor_step<=maximum_gap) {
+        step=sensor_step;
+        used_acquisition=true;
+        timing_source="sensor";
+        const auto period=static_cast<double>(sensor_step/scans);
+        if (clock.period_samples==0) clock.scan_period_ns=period;
+        if (period>=clock.scan_period_ns*.5 && period<=clock.scan_period_ns*1.5) {
+          clock.scan_period_ns+=.2*(period-clock.scan_period_ns);
+          if (clock.period_samples<4) ++clock.period_samples;
+        }
+      } else clock.acquisition_ns.reset();
+    }
+    // Short delivery bursts and repeated timestamps are poor speed samples.
+    // Estimate a brief gap using the recent sensor cadence. A longer receipt
+    // gap still ages tracks, including when the device stops transmitting.
+    const auto cadence=scans*clock.scan_period_ns;
+    if (!used_acquisition && clock.period_samples>=2 && step>=0 && step<=std::min(60e9L,3*cadence)) {
+      step=static_cast<std::int64_t>(std::min(60e9L,cadence));
+      timing_source="cadence";
+    }
+    if (step==0) {
+      step=static_cast<std::int64_t>(std::min(60.L,scans/nominal_fps)*1000000000.L);
+      timing_source="assumed";
+    }
+    if (step>0 && step<=std::numeric_limits<std::int64_t>::max()-last->tracking_ns)
+      clock.tracking_ns=last->tracking_ns+step;
+    else if (step<=0)
+      clock.tracking_ns=last->tracking_ns;
+  }
+  state.tracking_clock=clock;
+  frame.timestamp_ns=clock.tracking_ns;
   try {
     state.tracker->Update(state.full_detections,frame,state.tracking_params,state.algorithm_config.detection.min_confidence);
     state.tracking_error.clear();
-  } catch (const std::exception & error) {state.tracker->Reset();state.tracking_error=error.what();}
+  } catch (const std::exception & error) {state.tracker->Reset();state.tracking_clock.reset();state.tracking_error=error.what();}
   state.tracking_revision=state.detector_revision;
   if (std::getenv("LIDAR_VIEWER_TRACKING_TRACE")) {
+    std::cout<<"Tracking clock frame "<<frame.sequence<<' '<<timing_source<<std::endl;
     for (const auto & track:state.tracker->Tracks())
       std::cout<<"Track frame "<<frame.sequence<<" id "<<track.id<<" class "<<track.detection.class_id
         <<" confirmed "<<track.confirmed<<" predicted "<<track.predicted<<" speed "
-        <<std::hypot(track.velocity.x,track.velocity.y)<<" x "<<track.detection.oriented_bounds.center.x<<std::endl;
+        <<std::hypot(track.velocity.x,track.velocity.y)<<" x "<<track.detection.oriented_bounds.center.x
+        <<" weak "<<track.low_confidence_update<<std::endl;
     if (!state.tracker->Stats().reset_reason.empty()) std::cout<<"Track reset: "<<state.tracker->Stats().reset_reason<<std::endl;
   }
 }
@@ -1265,10 +1333,12 @@ void ApplyDetectorResult(ViewerState & state, lidar_viewer::DetectorResult resul
   state.detector_error = std::move(result.error);
   if (state.detector_error.empty()) {
     state.object_average.Add(result.processing_ms);
-    TrackCurrentDetections(state);
   } else {
-    ResetTracking(state);
+    // A reply error can be limited to one scan. Treat it like a missing
+    // observation while the object model and coordinate frame stay valid.
+    state.full_detections.clear();
   }
+  TrackCurrentDetections(state);
   FilterDetections(state);
   if (std::getenv("LIDAR_VIEWER_DETECTOR_TRACE"))
     std::cout<<"Detector frame "<<state.current_index<<" revision "<<state.detector_revision<<" boxes "<<state.detections.size()<<" full "<<state.full_detections.size()<<std::endl;
@@ -1293,8 +1363,9 @@ bool UpdateDetector(ViewerState & state)
   if (state.detector_submitted!=state.detector_revision) {
     try {state.detector->Submit(state.detector_revision,state.detector_input,kDetectorCandidateThreshold,state.detector_yaw);}
     catch (const std::exception & error) {
-      state.detector_error=error.what();state.detector_completed=state.detector_revision;
-      state.full_detections.clear();FilterDetections(state);return false;
+      lidar_viewer::DetectorResult result;
+      result.revision=state.detector_revision;result.error=error.what();
+      ApplyDetectorResult(state,std::move(result));return false;
     }
     state.detector_submitted=state.detector_revision;state.detector_submitted_at=DetectorClock();
   }
@@ -1531,7 +1602,8 @@ void ApplyRoiResult(ViewerState & state, const FrameData & processed, std::size_
   const auto started=std::chrono::steady_clock::now();
   FrameData frame;
   frame.frame_id=processed.frame_id; frame.imu=processed.imu; frame.ground_z=processed.ground_z;
-  frame.timestamp_ns=processed.timestamp_ns;
+  frame.timestamp_ns=processed.timestamp_ns;frame.acquisition_timestamp_ns=processed.acquisition_timestamp_ns;
+  frame.receipt_timestamp_ns=processed.receipt_timestamp_ns;
   std::vector<lidar_viewer::algorithms::Cluster> clusters;
   state.clustering_stage_ms.reset();
   if(state.ground_removal_enabled && state.algorithm_config.clustering.enabled && obstacles) {
@@ -6018,12 +6090,12 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         const bool tracking_options=ImGui::CollapsingHeader("Tracking options");TraceUi("tracking_options");
         if (tracking_options) {
           ImGui::TextDisabled("Sensor-relative position and speed");
-          Tip("No odometry is recorded in the current sensor bags. Motion is relative to the leveled LiDAR; these are not world-frame velocities.");
+          Tip("Motion is relative to the leveled LiDAR. Sensor movement affects the speed and trail. Tracking uses acquisition times when available.");
           bool reset=false;
           ImGui::SetNextItemWidth(-1);
-          ImGui::SliderFloat("##TrackHold",&state.tracking_params.max_missed_s,.1f,2.f,"Keep missing: %.1f s");
+          ImGui::SliderFloat("##TrackHold",&state.tracking_params.max_missed_s,.1f,2.f,"Keep ID for: %.1f s");
           TraceUi("tracking_hold");
-          Tip("Keep confirmed tracks visible during a short detection gap. The est. label marks a predicted position.");
+          Tip("Retain the ID when detections disappear. Newly confirmed IDs show shorter predictions. The est. label marks a predicted position.");
           ImGui::SetNextItemWidth(-1);
           ImGui::SliderInt("##TrackConfirm",&state.tracking_params.confirmation_hits,1,10,"Confirm after: %d hits");
           TraceUi("tracking_confirm");
@@ -6594,7 +6666,7 @@ void RenderDetectionLabels(const ViewerState & state,const Mat4 & mvp)
       if (track->predicted) std::snprintf(text,sizeof(text),"%s #%llu est.",
         lidar_viewer::algorithms::DetectionClassName(detection.class_id),static_cast<unsigned long long>(track->id));
       else std::snprintf(text,sizeof(text),"%s #%llu %.2f%s",lidar_viewer::algorithms::DetectionClassName(detection.class_id),
-        static_cast<unsigned long long>(track->id),detection.confidence,track->confirmed ? "" : " new");
+        static_cast<unsigned long long>(track->id),detection.confidence,track->low_confidence_update ? " weak" : track->confirmed ? "" : " new");
       const auto length=std::strlen(text);
       if (state.tracking_params.show_speed && track->confirmed)
         std::snprintf(text+length,sizeof(text)-length," | %.1f m/s",std::hypot(track->velocity.x,track->velocity.y));

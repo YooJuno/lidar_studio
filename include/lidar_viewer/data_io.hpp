@@ -91,6 +91,10 @@ struct FrameData
   float ground_z{0.0f};
   std::string frame_id;
   std::optional<std::int64_t> timestamp_ns;
+  // Valid, nonzero ROS Header scan stamp. Bag playback still uses the receipt time above.
+  std::optional<std::int64_t> acquisition_timestamp_ns;
+  // Stable fallback clock for live ROS clouds, whose timestamp_ns may be device time.
+  std::optional<std::int64_t> receipt_timestamp_ns;
   std::optional<lidar_viewer::FrameImuData> imu;
   std::shared_ptr<const lidar_viewer::DatasetAnnotations> annotations;
 };

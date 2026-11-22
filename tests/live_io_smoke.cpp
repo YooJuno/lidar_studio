@@ -79,6 +79,10 @@ int main()
     });
     Check(frozen->frame.points.size()==2 && frozen->frame.points[0].intensity==0 && frozen->frame.points[1].intensity==1,
       "Live PointCloud2 decode/normalization failed");
+    Check(frozen->frame.acquisition_timestamp_ns && frozen->frame.acquisition_timestamp_ns == frozen->frame.timestamp_ns &&
+      frozen->frame.receipt_timestamp_ns &&
+      *frozen->frame.receipt_timestamp_ns >= *frozen->frame.acquisition_timestamp_ns,
+      "Live tracking lost the sensor or receipt clock");
     Check(lidar_viewer::ComputeImuLeveling(frozen->frame.imu, {}).applied, "Live IMU/static TF alignment missing");
     const auto frozen_sequence=frozen->sequence;
     const float frozen_x=frozen->frame.points[0].x;

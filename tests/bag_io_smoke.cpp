@@ -132,6 +132,30 @@ Cloud Xt32Cloud(std::uint32_t width = 2, std::uint32_t height = 1, std::uint32_t
   return cloud;
 }
 
+void TestPointTimestamps()
+{
+  auto cloud = Xt32Cloud();
+  const auto unset = DecodePointCloud2(cloud);
+  Check(unset.timestamp_ns == 0 && !unset.acquisition_timestamp_ns,
+    "A default live PointCloud2 stamp must retain the legacy timestamp but not supply acquisition time");
+
+  cloud.header.stamp.sec = 1700000000;
+  cloud.header.stamp.nanosec = 987000000;
+  const auto stamped = DecodePointCloud2(cloud);
+  Check(stamped.timestamp_ns == 1700000000987000000LL && stamped.acquisition_timestamp_ns == stamped.timestamp_ns,
+    "Live PointCloud2 decoding did not retain a valid header stamp");
+
+  cloud.header.stamp.nanosec = 1000000000;
+  const auto malformed = DecodePointCloud2(cloud);
+  Check(!malformed.timestamp_ns && !malformed.acquisition_timestamp_ns,
+    "Out-of-range PointCloud2 nanoseconds supplied a scan stamp");
+  cloud.header.stamp.sec = -1;
+  cloud.header.stamp.nanosec = 999999999;
+  const auto negative = DecodePointCloud2(cloud);
+  Check(!negative.timestamp_ns && !negative.acquisition_timestamp_ns,
+    "Negative PointCloud2 seconds supplied a scan stamp");
+}
+
 void TestPointLayouts()
 {
   const auto cloud = Xt32Cloud(2, 2, 7);
@@ -304,7 +328,10 @@ void TestLivoxStorage(bool acceleration_in_g)
     Store(bad, sequence_length, std::numeric_limits<std::uint32_t>::max(), true);
     Store(bad, sequence_length - 8, std::numeric_limits<std::uint32_t>::max(), true);
     WriteLivox(writer, bad, 9000000);
-    WriteLivox(writer, LivoxRecord({}), 10000000);
+    auto empty = LivoxRecord({});
+    Store(empty, 4, std::int32_t{0});
+    Store(empty, 8, std::uint32_t{0});
+    WriteLivox(writer, empty, 10000000);
     writer.close();
   }
 
@@ -315,6 +342,7 @@ void TestLivoxStorage(bool acceleration_in_g)
   Check(big.frame_id == "livox_sensor" && big.points.size() == 1 && big.points[0].x == -4.5f && big.points[0].y == .25f &&
     big.points[0].z == 8 && big.points[0].intensity == 128,
     "Big-endian Livox frame or independent seek decoded incorrectly");
+  Check(big.acquisition_timestamp_ns == 1700000000987000000LL, "Big-endian Livox header stamp changed");
   const auto little = LoadBagFrame(handles[0]);
   Check(little.points.size() == 2 && little.points[0].x == 1.25f && little.points[0].y == -2.5f &&
     little.points[0].z == 3.75f && little.points[0].intensity == 255 &&
@@ -325,11 +353,16 @@ void TestLivoxStorage(bool acceleration_in_g)
     little.imu->source == lidar_viewer::ImuGravitySource::AccelGyro &&
     std::abs(little.imu->up->x - .6) < 1e-6 && std::abs(little.imu->up->z - .8) < 1e-6,
     "Livox playback lost the bag timestamp, frame ID or IMU pairing");
+  Check(little.acquisition_timestamp_ns == 1700000000987000000LL,
+    "Little-endian Livox scan stamp was lost or replaced by bag receipt time");
   Check(LoadBagFrame(handles[1]).points[0].x == -4.5f, "Livox duplicate timestamp lookup failed");
   for (std::size_t i = 2; i < 7; ++i)
     Throws([&] {LoadBagFrame(handles[i]);}, "An invalid Livox payload was accepted");
-  Check(LoadBagFrame(handles[7]).points.empty() && LoadBagFrame(handles[0]).points.size() == 2,
+  const auto empty = LoadBagFrame(handles[7]);
+  Check(empty.points.empty() && LoadBagFrame(handles[0]).points.size() == 2,
     "Livox reader did not recover from malformed input or lost a valid empty scan");
+  Check(empty.timestamp_ns == 10000000 && !empty.acquisition_timestamp_ns,
+    "Livox with an unset header stamp must use receipt time, without substituting the timebase");
 }
 
 void TestStorage(const std::string & storage_id)
@@ -345,7 +378,10 @@ void TestStorage(const std::string & storage_id)
       options.storage_id = storage_id;
       writer.open(options);
       auto first = Xt32Cloud(1);
+      first.header.stamp.sec = 22;
+      first.header.stamp.nanosec = 200000000;
       auto second = first;
+      second.header.stamp.nanosec = 300000000;
       Store(second.data, 0, 9.0f);
       writer.write(first, "/b2/points", rclcpp::Time(1000000));
       writer.write(second, "/b2/points", rclcpp::Time(1000000));
@@ -400,6 +436,10 @@ void TestStorage(const std::string & storage_id)
     Check(canceled,"Canceled indexing continued or was reported as an input error");
     Check(handles.size() == 3, "Topic filtering lost or included other messages");
     const auto matched = LoadBagFrame(handles[0]);
+    const auto adjacent = LoadBagFrame(handles[1]);
+    Check(matched.timestamp_ns == 1000000 && adjacent.timestamp_ns == matched.timestamp_ns &&
+      matched.acquisition_timestamp_ns == 22200000000LL && adjacent.acquisition_timestamp_ns == 22300000000LL,
+      "PointCloud2 playback or acquisition clocks changed for duplicate receipt times");
     Check(matched.imu && matched.imu->up && matched.imu->topic == "/fixture/imu" &&
       matched.imu->source == lidar_viewer::ImuGravitySource::Orientation, "Recorded IMU was not paired with LiDAR");
 #ifdef LIDAR_VIEWER_HAS_STATIC_TF
@@ -461,6 +501,7 @@ int main(int argc, char ** argv)
     TestSummaryDuration();
 #ifdef LIDAR_VIEWER_HAS_ROSBAG
     Check(RosbagInputAvailable(), "Bag-enabled build reports unavailable");
+    TestPointTimestamps();
     TestPointLayouts();
     TestMalformedLayouts();
     TestLivoxStorage(true);
