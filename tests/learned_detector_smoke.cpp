@@ -153,14 +153,16 @@ while header:=src.read(request.size):
     {
       TerraSeg ground(temporary);
       const std::vector<KittiPoint> points{{0,2,.5f,83},{0,3,1.5f,17},{0,1,.5f,0}};
+      double classification_ms=0;
       for (int i=0;i<2;++i) {
-        const auto partitions=ground.Segment(points,.5f,1.5707963268f,{0,1,.5f});
+        const auto partitions=ground.Segment(points,.5f,1.5707963268f,{0,1,.5f},classification_ms);
         Check(partitions && partitions->ground_points.size()==1 && partitions->ground_points[0].intensity==83 &&
           partitions->non_ground_points.size()==2 && partitions->non_ground_points.back().intensity==0,
           "TerraSeg did not preserve source point order, missing returns or ground reference");
+        Check(classification_ms>0,"TerraSeg classification time missing");
       }
       ground.Cancel();
-      Check(!ground.Segment(points,0,0,{}),"Canceled TerraSeg accepted another scan");
+      Check(!ground.Segment(points,0,0,{},classification_ms),"Canceled TerraSeg accepted another scan");
     }
 #endif
     ConfigEnvironment(previous);std::filesystem::remove_all(temporary.parent_path());

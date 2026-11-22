@@ -286,8 +286,10 @@ void TerraSeg::Cancel()
 }
 
 std::optional<algorithms::GroundRemovalResult> TerraSeg::Segment(
-  const std::vector<KittiPoint> & points, float ground_height, float display_yaw, const Vec3 & sensor_origin)
+  const std::vector<KittiPoint> & points, float ground_height, float display_yaw, const Vec3 & sensor_origin,
+  double & classification_ms)
 {
+  classification_ms=0;
 #ifdef __linux__
   auto & model=*impl_;
   std::lock_guard<std::mutex> lock(model.request_lock);
@@ -311,6 +313,7 @@ std::optional<algorithms::GroundRemovalResult> TerraSeg::Segment(
       if (ready.revision || ready.error) throw std::runtime_error(ready.message.empty() ? "Invalid TerraSeg startup reply" : ready.message);
       model.ready_message=ready.message.empty() ? "Ready · CUDA" : "Ready · "+ready.message;
     }
+    const auto started=std::chrono::steady_clock::now();
     const float cosine=std::cos(display_yaw),sine=std::sin(display_yaw);
     model.xyz.clear();model.xyz.reserve(points.size()*3);
     for (const auto & point : points) {
@@ -336,7 +339,9 @@ std::optional<algorithms::GroundRemovalResult> TerraSeg::Segment(
     if (reply.revision!=revision) throw std::runtime_error("TerraSeg frame revision mismatch");
     model.SetStatus(true,false,reply.error ? reply.message : model.ready_message);
     if (reply.error) return std::nullopt;
-    return algorithms::PartitionGround(points,reply.mask);
+    auto segments=algorithms::PartitionGround(points,reply.mask);
+    classification_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
+    return segments;
   } catch (const std::exception & error) {
     {
       std::lock_guard<std::mutex> process(model.process_lock);

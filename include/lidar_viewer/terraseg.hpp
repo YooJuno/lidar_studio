@@ -24,7 +24,8 @@ public:
   TerraSegStatus Status() const;
   void Cancel();
   std::optional<algorithms::GroundRemovalResult> Segment(
-    const std::vector<KittiPoint> & points, float ground_height, float display_yaw, const Vec3 & sensor_origin);
+    const std::vector<KittiPoint> & points, float ground_height, float display_yaw, const Vec3 & sensor_origin,
+    double & classification_ms);
 private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

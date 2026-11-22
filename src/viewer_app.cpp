@@ -1647,14 +1647,18 @@ void ApplyCalibration(ViewerState & state, const FrameData * source = nullptr,
     params.sequence_id=state.ground_sequence;
     std::optional<lidar_viewer::algorithms::GroundRemovalResult> result;
     if(!frame.points.empty()) {
-      const auto ground_started=std::chrono::steady_clock::now();
+      double ground_ms=0;
       if (params.mode=="terraseg") {
         const auto origin=ApplyCalibrationTransform({0,0,-source_ground_offset.value_or(state.global_ground_offset)},transform);
-        result=EnsureTerraSeg(state).Segment(frame.points,params.gseg3d_ground_height_m,resolved.effective.yaw_deg*kPi/180.f,origin);
-      } else
+        result=EnsureTerraSeg(state).Segment(frame.points,params.gseg3d_ground_height_m,
+          resolved.effective.yaw_deg*kPi/180.f,origin,ground_ms);
+      } else {
+        const auto ground_started=std::chrono::steady_clock::now();
         result=lidar_viewer::algorithms::RunGroundSegmentation(frame.points,params);
+        ground_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-ground_started).count();
+      }
       if (result) {
-        state.ground_stage_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-ground_started).count();
+        state.ground_stage_ms=ground_ms;
         state.ground_average.Add(*state.ground_stage_ms);
       }
     }
