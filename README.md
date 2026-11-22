@@ -15,6 +15,7 @@ A desktop workspace for LiDAR playback, ground segmentation, clustering, object 
 - **Visual ground segmentation.** Choose **FugSeg, GSeg3D, Patchwork++, Patchwork, Fast grid, Grid, RANSAC or TerraSeg Small**. Tune parameters and show all points, ground only or obstacles only. Align scans manually or use IMU leveling.
 - **Clustering for obstacle analysis.** Group points with **Euclidean 3D** or **Projected XY** clustering, adjust distance and vertical separation, and inspect cluster boxes.
 - **Learned object detection.** Use **AWML ShortRange**, **CenterPoint tiny**, **CenterPoint base** or **TransFusion LiDAR** for people, bicycles, cars, trucks and buses. Filter classes and confidence, and follow persistent object IDs with Kalman tracking.
+- **Perception benchmark.** Compare ground segmentation, learned detectors and tracking profiles on labelled nuScenes recordings. Review accuracy, latency and failure frames. [Benchmark guide](docs/benchmark.md)
 - **ROI labeling and dataset export.** Draw, move, resize and rotate 3D boxes. Name and color regions, attach class-name hints and export cropped points with frame, ROI and coordinate metadata.
 
 Background loading and analysis keep the interface usable. Separate **Ground avg / Objects avg** indicators show recent processing times without rapidly changing labels.

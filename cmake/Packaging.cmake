@@ -89,7 +89,10 @@ install(TARGETS lidar_viewer_native
   LIBRARY DESTINATION "${resource_destination}/python/lidar_detection")
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/tools/setup_detector.py"
   "${CMAKE_CURRENT_SOURCE_DIR}/tools/setup_terraseg.py"
-  "${CMAKE_CURRENT_SOURCE_DIR}/tools/setup_centerpoint_training.py" DESTINATION "${resource_destination}/tools")
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/setup_centerpoint_training.py"
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/benchmark_perception.py"
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/nuscenes_benchmark_data.py"
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/nuscenes_benchmark_metrics.py" DESTINATION "${resource_destination}/tools")
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/README.md" DESTINATION "${resource_destination}")
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE" "${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_NOTICES.md"
   DESTINATION "${resource_destination}")

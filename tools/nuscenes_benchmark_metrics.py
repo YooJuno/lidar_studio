@@ -364,16 +364,32 @@ def _tracking_timing(dataset, run_dir):
     return {profile: _timing_summary(list(profile_times.values())) for profile, profile_times in times.items()}
 
 
-def _track_matches(candidates, targets):
+def _track_matches(candidates, targets, previous_matches):
     if not candidates or not targets:
         return []
     a = np.array([candidate.location for candidate in candidates])
     b = np.array([target.location for target in targets])
     distances = np.linalg.norm(a[:, None, :] - b[None, :, :], axis=2)
+    # Keep the prior labelled frame's valid identity matches through crowded
+    # crossings. A nearer centre alone does not establish an ID switch.
+    candidate_ids = {candidate.identity: i for i, candidate in enumerate(candidates)}
+    matches = []
+    used_candidates, used_targets = set(), set()
+    for j, target in enumerate(targets):
+        i = candidate_ids.get(previous_matches.get(target.identity))
+        if i is not None and i not in used_candidates and distances[i, j] < CENTER_GATE_M:
+            matches.append((i, j, float(distances[i, j])))
+            used_candidates.add(i)
+            used_targets.add(j)
+    remaining_candidates = [i for i in range(len(candidates)) if i not in used_candidates]
+    remaining_targets = [j for j in range(len(targets)) if j not in used_targets]
+    remaining_distances = distances[np.ix_(remaining_candidates, remaining_targets)]
     # Prioritize the number of in-gate matches, then minimize total distance.
     outside = (min(len(candidates), len(targets)) + 1) * CENTER_GATE_M
-    rows, cols = linear_sum_assignment(np.where(distances < CENTER_GATE_M, distances, outside))
-    return [(i, j, float(distances[i, j])) for i, j in zip(rows, cols) if distances[i, j] < CENTER_GATE_M]
+    rows, cols = linear_sum_assignment(np.where(remaining_distances < CENTER_GATE_M, remaining_distances, outside))
+    matches.extend((remaining_candidates[i], remaining_targets[j], float(remaining_distances[i, j]))
+                   for i, j in zip(rows, cols) if remaining_distances[i, j] < CENTER_GATE_M)
+    return matches
 
 
 def _tracking_summary(counts):
@@ -393,12 +409,15 @@ def _score_tracks(dataset, run_dir, tracks, truth, score_threshold):
     for profile, timing in timings.items():
         classes = {category: Counter() for category in CLASS_RANGES}
         last_match = {}
+        previous_frame_matches = {}
         missed = set()
         for frame in dataset.keyframes:
             for category in CLASS_RANGES:
                 candidates = [box for box in tracks[frame.frame, profile, category] if box.score >= score_threshold]
                 targets = truth[frame.frame, category]
-                matches = _track_matches(candidates, targets)
+                context = (frame.scene, category)
+                matches = _track_matches(candidates, targets, previous_frame_matches.get(context, {}))
+                previous_frame_matches[context] = {targets[j].identity: candidates[i].identity for i, j, _ in matches}
                 matched_candidates = {i for i, _, _ in matches}
                 matched_targets = {j for _, j, _ in matches}
                 counts = Counter(
@@ -457,7 +476,7 @@ def evaluate_objects(dataset, run_dir, score_threshold):
         "detection_ap_match_distances_m": list(AP_DISTANCES_M),
         "operating_score_threshold": score_threshold,
         "operating_match_distance_m": CENTER_GATE_M,
-        "tracking_policy": "Confirmed tracks including predictions; maximize in-gate matches then minimize distance",
+        "tracking_policy": "Confirmed tracks including predictions; preserve prior valid matches, then maximize remaining in-gate matches and minimize distance",
         "detection": _score_detections(dataset, run_dir, detections, truth, score_threshold),
         "tracking": _score_tracks(dataset, run_dir, tracks, truth, score_threshold),
         "timing": timing,

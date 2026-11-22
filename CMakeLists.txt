@@ -195,10 +195,15 @@ target_link_libraries(lidar_viewer_geometry PRIVATE
   lidar_viewer_gseg3d lidar_viewer_patchworkpp lidar_viewer_fugseg)
 lidar_warnings(lidar_viewer_geometry)
 
-add_executable(lidar_studio_benchmark src/perception_benchmark.cpp)
-target_compile_definitions(lidar_studio_benchmark PRIVATE LIDAR_VIEWER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(lidar_studio_benchmark PRIVATE
+add_library(lidar_viewer_benchmark STATIC src/perception_benchmark.cpp)
+target_compile_definitions(lidar_viewer_benchmark PRIVATE LIDAR_VIEWER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(lidar_viewer_benchmark PRIVATE
   lidar_viewer_geometry lidar_viewer_detector lidar_viewer_tracking)
+lidar_warnings(lidar_viewer_benchmark)
+
+add_executable(lidar_studio_benchmark src/perception_benchmark_main.cpp)
+target_include_directories(lidar_studio_benchmark PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(lidar_studio_benchmark PRIVATE lidar_viewer_benchmark)
 add_dependencies(lidar_studio_benchmark lidar_viewer_native)
 lidar_warnings(lidar_studio_benchmark)
 
@@ -213,6 +218,7 @@ add_executable(lidar_studio
   src/main.cpp
   src/viewer_app.cpp
   src/about_ui.cpp
+  src/benchmark_ui.cpp
   src/training_ui.cpp
   src/config.cpp
   src/algorithms/pipeline.cpp
@@ -251,6 +257,7 @@ target_link_libraries(lidar_studio PRIVATE
   lidar_viewer_file_dialog
   lidar_viewer_live
   lidar_viewer_detector
+  lidar_viewer_benchmark
   lidar_viewer_tracking
   lidar_viewer_export
 )

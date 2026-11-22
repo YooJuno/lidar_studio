@@ -1,6 +1,7 @@
 #include "lidar_viewer/algorithms/ground_removal.hpp"
 #include "lidar_viewer/learned_detector.hpp"
 #include "lidar_viewer/object_tracker.hpp"
+#include "lidar_viewer/perception_benchmark.hpp"
 #include "lidar_viewer/terraseg.hpp"
 
 #include <algorithm>
@@ -488,7 +489,9 @@ void RunDetector(Options & options, const std::vector<Scan> & scans, std::ostrea
   tracker_timings.close();
 }
 
-int Benchmark(const std::vector<std::string> & arguments)
+}  // namespace
+
+int lidar_viewer::RunPerceptionBenchmark(const std::vector<std::string> & arguments)
 {
   try {
     if (arguments.size() == 1 && (arguments.front() == "--help" || arguments.front() == "-h")) {
@@ -511,18 +514,3 @@ int Benchmark(const std::vector<std::string> & arguments)
     return 1;
   }
 }
-}  // namespace
-
-#ifdef _WIN32
-int wmain(int argc, wchar_t ** argv)
-{
-  std::vector<std::string> arguments;
-  for (int i = 1; i < argc; ++i) arguments.push_back(fs::path(argv[i]).u8string());
-  return Benchmark(arguments);
-}
-#else
-int main(int argc, char ** argv)
-{
-  return Benchmark(std::vector<std::string>(argv + 1, argv + argc));
-}
-#endif

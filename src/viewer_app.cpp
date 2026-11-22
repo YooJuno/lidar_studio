@@ -38,6 +38,7 @@
 #include "lidar_viewer/dataset.hpp"
 #include "lidar_viewer/dataset_curation.hpp"
 #include "lidar_viewer/training_ui.hpp"
+#include "lidar_viewer/benchmark_ui.hpp"
 #include "panorama_render_cache.hpp"
 
 #include <algorithm>
@@ -705,6 +706,8 @@ struct ViewerState
   bool dataset_fit_pending{true};
   std::optional<std::size_t> dataset_list_index;
   std::unique_ptr<lidar_viewer::TrainingWorkspace> training_workspace;
+  std::unique_ptr<lidar_viewer::BenchmarkWorkspace> benchmark_workspace;
+  bool open_benchmark{false};
   bool export_folder_loaded{false};
   bool export_aligned{false};
   int export_scope{0},export_first{1},export_last{1},export_stride{1};
@@ -5249,6 +5252,8 @@ void BuildViewerHeader(ViewerState & state, ViewerState & studio, bool dataset_i
     ImGui::Separator();
     if (ImGui::MenuItem("Driving examples...", nullptr, false, !example_busy && !state.live.Active())) state.example_panel = true;
     TraceUi("open_example");
+    if (ImGui::MenuItem("Perception benchmark...")) studio.open_benchmark = true;
+    TraceUi("open_benchmark");
     ImGui::EndPopup();
   }
   ImGui::SameLine();
@@ -6400,6 +6405,8 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   BuildDatasetReviewDialog(state);
   if(studio.open_training && !studio.training_workspace) studio.training_workspace=std::make_unique<lidar_viewer::TrainingWorkspace>();
   if(studio.training_workspace) studio.training_workspace->Draw(studio.open_training,CurrentDatasetRoot(state),s);
+  if (studio.open_benchmark && !studio.benchmark_workspace) studio.benchmark_workspace=std::make_unique<lidar_viewer::BenchmarkWorkspace>();
+  if (studio.benchmark_workspace) studio.benchmark_workspace->Draw(studio.open_benchmark,s);
   if (has_input && state.imu_level_enabled && !panorama) {
     const bool applied = state.imu_level_result.applied;
     const bool estimated = state.base_frame.imu &&
