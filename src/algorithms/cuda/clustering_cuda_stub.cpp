@@ -3,7 +3,7 @@
 namespace lidar_viewer::algorithms
 {
 bool BuildCellAssignmentsCuda(
-  const std::vector<KittiPoint> &,
+  const std::vector<KittiPoint> &, std::size_t,
   const ClusteringParams &,
   std::vector<CudaCellAssignment> &)
 {

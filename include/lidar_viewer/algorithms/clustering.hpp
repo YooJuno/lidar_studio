@@ -42,6 +42,11 @@ std::vector<Cluster> RunClustering(
   const std::vector<KittiPoint> & input,
   const ClusteringParams & params);
 
+// Process only the first point_count points. Cluster indices still address input.
+std::vector<Cluster> RunClusteringPrefix(
+  const std::vector<KittiPoint> & input, std::size_t point_count,
+  const ClusteringParams & params);
+
 std::vector<Cluster> RunClusteringEuclidean(
   const std::vector<KittiPoint> & input,
   const ClusteringParams & params);

@@ -14,7 +14,7 @@ struct CudaCellAssignment
 };
 
 bool BuildCellAssignmentsCuda(
-  const std::vector<KittiPoint> & input,
+  const std::vector<KittiPoint> & input, std::size_t point_count,
   const ClusteringParams & params,
   std::vector<CudaCellAssignment> & assignments);
 }  // namespace lidar_viewer::algorithms

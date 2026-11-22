@@ -22,20 +22,7 @@ UI는 고정 버전의 [Dear ImGui](https://github.com/ocornut/imgui/tree/f5befd
 
 ## Structure
 
-- `src/main.cpp`: 최소 엔트리포인트
-- `src/viewer_app.cpp`: OpenGL 렌더링, 입력, ImGui 인터페이스
-- `include/lidar_viewer/ui_layout.hpp`: 창 크기·DPI별 패널 배치
-- `include/lidar_viewer/settings_io.hpp`: 설정값 검증·원자적 저장
-- `src/bag_io.cpp`: ROS 2 bag 직접 읽기·프레임 탐색
-- `src/imu_alignment.cpp`: IMU 중력 추정·시각 대응·센서 축 변환
-- `src/file_dialog.cpp`: 시스템 파일 선택 창과 비동기 결과 수신
-- `include/lidar_viewer/camera_2d.hpp`: 회전한 2D 시점의 카메라·이동 좌표계
-- `src/data_io.cpp`: KITTI / Ouster `.bin` 로딩
-- `include/lidar_viewer/data_io.hpp`: 로더가 공유하는 데이터 구조
-- `src/algorithms/`: 노면 제거, 3D/XY 클러스터링, 학습 모델 박스 변환
-- `src/learned_detector.cpp`, `python/lidar_detection/`: 비동기 CenterPoint ONNX 추론
-- `include/lidar_viewer/app.hpp`: 앱 진입 선언
-- `include/lidar_viewer/algorithms/`: 알고리즘 인터페이스와 공통 타입
+센서 입력, 뷰어, 검출·추적, 벤치마크 소스와 외부 알고리즘의 연결 위치는 [코드 구조](code-structure.md)에 정리했습니다.
 
 ## Run
 

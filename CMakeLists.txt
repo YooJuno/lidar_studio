@@ -26,8 +26,8 @@ set(LIDAR_VIEWER_CUDA_ARCHITECTURES "89" CACHE STRING
   "Semicolon-separated CUDA architectures (89 is native for the RTX 4060)")
 
 set(LIDAR_VIEWER_CUDA_SOURCES
-  src/algorithms/clustering_cuda_stub.cpp
-  src/algorithms/ground_removal_cuda_stub.cpp
+  src/algorithms/cuda/clustering_cuda_stub.cpp
+  src/algorithms/cuda/ground_removal_cuda_stub.cpp
 )
 if(LIDAR_VIEWER_ENABLE_CUDA)
   check_language(CUDA)
@@ -37,8 +37,8 @@ if(LIDAR_VIEWER_ENABLE_CUDA)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
     set(CMAKE_CUDA_ARCHITECTURES ${LIDAR_VIEWER_CUDA_ARCHITECTURES})
     set(LIDAR_VIEWER_CUDA_SOURCES
-      src/algorithms/clustering_cuda.cu
-      src/algorithms/ground_removal_cuda.cu
+      src/algorithms/cuda/clustering_cuda.cu
+      src/algorithms/cuda/ground_removal_cuda.cu
     )
     add_compile_definitions(LIDAR_VIEWER_HAS_CUDA=1)
     # Older nvcc frontends cannot parse glibc's fortified level-3 builtins.
@@ -57,25 +57,7 @@ endif()
 find_package(glfw3 CONFIG REQUIRED)
 find_package(GLEW REQUIRED)
 find_package(OpenGL REQUIRED)
-include(FetchContent)
-if(POLICY CMP0135)
-  cmake_policy(SET CMP0135 NEW)
-endif()
-FetchContent_Declare(dear_imgui
-  URL https://codeload.github.com/ocornut/imgui/tar.gz/f5befd2d29e66809cd1110a152e375a7f1981f06
-  URL_HASH SHA256=85f4ce357df05bcc331b587f01976f47fb55f19fadf477a7907289686bc3f4c8
-)
-FetchContent_MakeAvailable(dear_imgui)
-add_library(lidar_viewer_imgui STATIC
-  ${dear_imgui_SOURCE_DIR}/imgui.cpp
-  ${dear_imgui_SOURCE_DIR}/imgui_draw.cpp
-  ${dear_imgui_SOURCE_DIR}/imgui_tables.cpp
-  ${dear_imgui_SOURCE_DIR}/imgui_widgets.cpp
-  ${dear_imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
-  ${dear_imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp)
-target_include_directories(lidar_viewer_imgui PUBLIC
-  ${dear_imgui_SOURCE_DIR} ${dear_imgui_SOURCE_DIR}/backends)
-target_link_libraries(lidar_viewer_imgui PUBLIC glfw ${CMAKE_DL_LIBS})
+include(cmake/third_party/ImGui.cmake)
 find_package(PCL REQUIRED COMPONENTS common filters kdtree segmentation)
 find_package(Boost REQUIRED)
 
@@ -89,12 +71,18 @@ if(LIDAR_VIEWER_ENABLE_ROSBAG)
   find_package(rclcpp QUIET)
 endif()
 find_package(Threads REQUIRED)
-add_library(lidar_viewer_packets STATIC src/lidar_packets.cpp src/ouster_packets.cpp src/pcap_io.cpp)
+add_library(lidar_viewer_packets STATIC
+  src/io/ethernet/lidar_packets.cpp
+  src/io/ethernet/ouster_packets.cpp
+  src/io/ethernet/pcap_io.cpp)
 target_include_directories(lidar_viewer_packets PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(lidar_viewer_packets PRIVATE Boost::headers)
 lidar_warnings(lidar_viewer_packets)
 
-add_library(lidar_viewer_bag STATIC src/bag_io.cpp src/bag_catalog.cpp src/imu_alignment.cpp)
+add_library(lidar_viewer_bag STATIC
+  src/io/bag/bag_io.cpp
+  src/io/bag/bag_catalog.cpp
+  src/alignment/imu_alignment.cpp)
 target_include_directories(lidar_viewer_bag PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(lidar_viewer_bag PUBLIC lidar_viewer_packets)
 lidar_warnings(lidar_viewer_bag)
@@ -115,20 +103,20 @@ endif()
 # A requested 3.x version rejects compatible Eigen 5 installations.
 find_package(Eigen3 REQUIRED NO_MODULE)
 
-add_library(lidar_viewer_roi STATIC src/roi.cpp)
+add_library(lidar_viewer_roi STATIC src/roi/roi.cpp)
 target_include_directories(lidar_viewer_roi PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 lidar_warnings(lidar_viewer_roi)
 
 if(WIN32)
-  add_library(lidar_viewer_file_dialog STATIC src/file_dialog_win.cpp)
+  add_library(lidar_viewer_file_dialog STATIC src/platform/file_dialog_win.cpp)
   target_link_libraries(lidar_viewer_file_dialog PUBLIC comdlg32 ole32 shell32)
 else()
-  add_library(lidar_viewer_file_dialog STATIC src/file_dialog.cpp)
+  add_library(lidar_viewer_file_dialog STATIC src/platform/file_dialog.cpp)
 endif()
 target_include_directories(lidar_viewer_file_dialog PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 lidar_warnings(lidar_viewer_file_dialog)
 
-add_library(lidar_viewer_live STATIC src/live_io.cpp src/direct_live.cpp)
+add_library(lidar_viewer_live STATIC src/io/live_io.cpp src/io/ethernet/direct_live.cpp)
 target_include_directories(lidar_viewer_live PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(lidar_viewer_live PUBLIC lidar_viewer_bag Threads::Threads)
 if(WIN32)
@@ -141,7 +129,7 @@ if(LIDAR_VIEWER_ENABLE_ROSBAG AND rosbag2_cpp_FOUND AND sensor_msgs_FOUND AND tf
   message(STATUS "Live ROS 2 input and raw MCAP recording enabled")
 endif()
 
-add_library(lidar_viewer_native SHARED src/detector_native.cpp)
+add_library(lidar_viewer_native SHARED src/inference/detector_native.cpp)
 lidar_warnings(lidar_viewer_native)
 # Do not fuse or reassociate float32 feature operations: preserve NumPy bits.
 if(MSVC)
@@ -153,31 +141,36 @@ add_library(lidar_viewer_detector STATIC
   src/inference/learned_detector.cpp
   src/inference/terraseg.cpp
   src/inference/model_process.cpp
-  src/algorithms/detection.cpp)
+  src/inference/detection.cpp)
 target_include_directories(lidar_viewer_detector PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(lidar_viewer_detector PUBLIC Threads::Threads)
 lidar_warnings(lidar_viewer_detector)
 
-add_library(lidar_viewer_tracking STATIC src/object_tracker.cpp)
+add_library(lidar_viewer_tracking STATIC src/algorithms/tracking/object_tracker.cpp)
 target_include_directories(lidar_viewer_tracking PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(lidar_viewer_tracking PRIVATE Eigen3::Eigen)
 lidar_warnings(lidar_viewer_tracking)
 
 include(cmake/GroundAlgorithms.cmake)
 
-add_library(lidar_viewer_benchmark STATIC src/perception_benchmark.cpp)
+add_library(lidar_viewer_benchmark STATIC src/benchmark/perception_benchmark.cpp)
 target_compile_definitions(lidar_viewer_benchmark PRIVATE LIDAR_VIEWER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(lidar_viewer_benchmark PRIVATE
   lidar_viewer_geometry lidar_viewer_detector lidar_viewer_tracking)
 lidar_warnings(lidar_viewer_benchmark)
 
-add_executable(lidar_studio_benchmark src/perception_benchmark_main.cpp)
+add_executable(lidar_studio_benchmark src/benchmark/perception_benchmark_main.cpp)
 target_include_directories(lidar_studio_benchmark PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(lidar_studio_benchmark PRIVATE lidar_viewer_benchmark)
 add_dependencies(lidar_studio_benchmark lidar_viewer_native)
 lidar_warnings(lidar_studio_benchmark)
 
-add_library(lidar_viewer_export STATIC src/roi_export.cpp src/data_io.cpp src/dataset.cpp src/dataset_curation.cpp src/training_job.cpp)
+add_library(lidar_viewer_export STATIC
+  src/roi/roi_export.cpp
+  src/io/pointcloud/data_io.cpp
+  src/datasets/dataset.cpp
+  src/datasets/dataset_curation.cpp
+  src/training/training_job.cpp)
 target_include_directories(lidar_viewer_export PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(lidar_viewer_export SYSTEM PRIVATE ${PCL_INCLUDE_DIRS})
 target_link_libraries(lidar_viewer_export PRIVATE Boost::headers)
@@ -186,12 +179,14 @@ lidar_warnings(lidar_viewer_export)
 
 add_executable(lidar_studio
   src/main.cpp
-  src/viewer_app.cpp
+  src/viewer/viewer_app.cpp
+  src/viewer/camera.cpp
   src/viewer/frame_processing.cpp
-  src/about_ui.cpp
-  src/benchmark_ui.cpp
-  src/training_ui.cpp
-  src/config.cpp
+  src/viewer/render/gl_programs.cpp
+  src/viewer/panels/about_ui.cpp
+  src/viewer/panels/benchmark_ui.cpp
+  src/viewer/panels/training_ui.cpp
+  src/settings/config.cpp
   src/algorithms/pipeline.cpp
 )
 
@@ -213,7 +208,6 @@ endif()
 
 target_include_directories(lidar_studio PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
-  ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
 target_link_libraries(lidar_studio PRIVATE
@@ -291,7 +285,7 @@ if(BUILD_TESTING)
   set_tests_properties(live_io_smoke_test PROPERTIES TIMEOUT 45
     ENVIRONMENT "ROS_DOMAIN_ID=187;ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST")
   add_executable(direct_live_smoke_test tests/direct_live_smoke.cpp)
-  target_include_directories(direct_live_smoke_test PRIVATE src)
+  target_include_directories(direct_live_smoke_test PRIVATE src/io/ethernet)
   target_link_libraries(direct_live_smoke_test PRIVATE lidar_viewer_live)
   if(WIN32)
     target_link_libraries(direct_live_smoke_test PRIVATE ws2_32)
@@ -317,7 +311,7 @@ if(BUILD_TESTING)
   add_executable(imu_alignment_smoke_test tests/imu_alignment_smoke.cpp)
   target_link_libraries(imu_alignment_smoke_test PRIVATE lidar_viewer_bag)
   add_test(NAME imu_alignment_smoke_test COMMAND imu_alignment_smoke_test)
-  add_executable(config_data_smoke_test tests/config_data_smoke.cpp src/config.cpp)
+  add_executable(config_data_smoke_test tests/config_data_smoke.cpp src/settings/config.cpp)
   target_include_directories(config_data_smoke_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_compile_definitions(config_data_smoke_test PRIVATE LIDAR_VIEWER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(config_data_smoke_test PRIVATE lidar_viewer_export)
@@ -331,7 +325,7 @@ if(BUILD_TESTING)
   add_executable(bag_io_smoke_test tests/bag_io_smoke.cpp)
   target_link_libraries(bag_io_smoke_test PRIVATE lidar_viewer_bag)
   add_test(NAME bag_io_smoke_test COMMAND bag_io_smoke_test)
-  add_executable(bag_catalog_smoke_test tests/bag_catalog_smoke.cpp src/bag_catalog.cpp)
+  add_executable(bag_catalog_smoke_test tests/bag_catalog_smoke.cpp src/io/bag/bag_catalog.cpp)
   target_include_directories(bag_catalog_smoke_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(bag_catalog_smoke_test PRIVATE lidar_viewer_packets)
   add_test(NAME bag_catalog_smoke_test COMMAND bag_catalog_smoke_test)

@@ -185,10 +185,8 @@ DisplayFrame BuildDisplayFrame(const FrameData & processed, std::size_t obstacle
   frame.receipt_timestamp_ns = processed.receipt_timestamp_ns;
   if (ground_enabled && clustering.enabled && obstacles) {
     // Clustering sees the obstacle prefix before the visual crop.
-    const std::vector<KittiPoint> input(processed.points.begin(),
-      processed.points.begin()+static_cast<std::ptrdiff_t>(obstacles));
     const auto clustering_started = Clock::now();
-    result.clusters = algorithms::RunClustering(input, clustering);
+    result.clusters = algorithms::RunClusteringPrefix(processed.points, obstacles, clustering);
     result.clustering_ms = Elapsed(clustering_started);
   }
   std::size_t visible_obstacles = obstacles;

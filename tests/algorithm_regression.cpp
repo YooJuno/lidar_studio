@@ -194,6 +194,15 @@ void TestThreeDimensionalClusters()
   Check(Canonical(RunClustering(points,params))==Membership{{0,1,2,3}},"Explicit projected XY mode changed its documented connectivity");
   params.mode="euclidean_3d";points={{0,0,0,0},{.4f,0,.4f,0},{.7f,0,.4f,0}};
   Check(Canonical(RunClustering(points,params))==Membership{{0},{1,2}},"XYZ clustering used separate per-axis limits instead of Euclidean distance");
+
+  // The ground suffix would bridge the two obstacles if clustering copied or
+  // read beyond the obstacle prefix.
+  points={{0,0,0,0},{.8f,0,0,0},{.4f,0,0,-1}};
+  for (const bool use_cuda : {false,true}) {
+    params.use_cuda=use_cuda;
+    Check(Canonical(RunClusteringPrefix(points,2,params))==Membership{{0},{1}},
+      "Clustering connected obstacles through a ground point outside the prefix");
+  }
 }
 
 void TestFugSegSensorContract()

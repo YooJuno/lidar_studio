@@ -98,7 +98,9 @@ OrientedBox3D ComputeOrientedBounds(const std::vector<KittiPoint> & input, const
   constexpr float kMinStableFootprintSideM = 0.35f;
 
   OrientedBox3D oriented;
-  if (cluster.indices.size() < 2) {
+  // Small clusters always fall back to an axis-aligned box. Skip their
+  // footprint allocation, sort and hull calculations entirely.
+  if (cluster.indices.size() < kMinStableOrientedPointCount) {
     return oriented;
   }
 
@@ -167,13 +169,8 @@ OrientedBox3D ComputeOrientedBounds(const std::vector<KittiPoint> & input, const
   const float shorter_side = std::max(std::min(length, width), 1e-4f);
   const float aspect_ratio = longer_side / shorter_side;
 
-  // Small or near-square clusters do not have a stable heading, so falling back
-  // to the axis-aligned box avoids jittery, unintuitive rotations.
-  if (
-    cluster.indices.size() < kMinStableOrientedPointCount ||
-    shorter_side < kMinStableFootprintSideM ||
-    aspect_ratio < kMinStableAspectRatio)
-  {
+  // Narrow or near-square footprints do not have a stable heading.
+  if (shorter_side < kMinStableFootprintSideM || aspect_ratio < kMinStableAspectRatio) {
     return oriented;
   }
 
@@ -225,13 +222,12 @@ void LogCudaBackendStatus(bool requested, bool used)
     std::cout << "Clustering CUDA backend unavailable; using CPU fallback\n";
   }
 }
-}  // namespace
 
-std::vector<Cluster> RunClusteringEuclidean(
-  const std::vector<KittiPoint> & input,
+std::vector<Cluster> RunEuclideanPrefix(
+  const std::vector<KittiPoint> & input, std::size_t point_count,
   const ClusteringParams & params)
 {
-  if (!params.enabled || input.empty()) {
+  if (!params.enabled || point_count == 0) {
     return {};
   }
 
@@ -243,15 +239,15 @@ std::vector<Cluster> RunClusteringEuclidean(
   const float cell_size = std::max({0.05f, max_tolerance / 8.0f,
     std::min(params.grid_cell_m, base_tolerance)});
   std::unordered_map<std::uint64_t, std::vector<std::size_t>> cells;
-  cells.reserve(input.size() / 12);
+  cells.reserve(point_count / 12);
 
-  std::vector<std::pair<int, int>> coordinates(input.size());
-  std::vector<unsigned char> visited(input.size(), 0);
-  std::vector<float> tolerance_squared(input.size(), 0.0f);
-  std::vector<float> query_radius(input.size(), 0.0f);
+  std::vector<std::pair<int, int>> coordinates(point_count);
+  std::vector<unsigned char> visited(point_count, 0);
+  std::vector<float> tolerance_squared(point_count, 0.0f);
+  std::vector<float> query_radius(point_count, 0.0f);
   const float range_scale = std::max(params.range_tolerance_scale, 0.0f);
   bool all_indexable = true;
-  for (std::size_t i = 0; i < input.size(); ++i) {
+  for (std::size_t i = 0; i < point_count; ++i) {
     const auto & point = input[i];
     // Leave room for neighbouring cells and reject invalid input before any
     // floating-to-integer conversion (including the optional CUDA kernel).
@@ -278,14 +274,14 @@ std::vector<Cluster> RunClusteringEuclidean(
   ClusteringParams cuda_params = params;
   cuda_params.grid_cell_m = cell_size;
   const bool used_cuda = params.use_cuda && all_indexable &&
-    BuildCellAssignmentsCuda(input, cuda_params, cuda_assignments);
+    BuildCellAssignmentsCuda(input, point_count, cuda_params, cuda_assignments);
   LogCudaBackendStatus(params.use_cuda, used_cuda);
   if (used_cuda) {
     for (const auto & assignment : cuda_assignments) {
       cells[assignment.key].push_back(assignment.point_index);
     }
   } else {
-    for (std::size_t i = 0; i < input.size(); ++i) {
+    for (std::size_t i = 0; i < point_count; ++i) {
       if (visited[i] != 0) continue;
       const auto [cx, cy] = coordinates[i];
       cells[GridKey(cx, cy)].push_back(i);
@@ -297,12 +293,14 @@ std::vector<Cluster> RunClusteringEuclidean(
   std::vector<Cluster> clusters;
   clusters.reserve(cells.size() / 8);
 
-  for (std::size_t start_index = 0; start_index < input.size(); ++start_index) {
+  // Keep the BFS allocation when a component fails the size filters. Only
+  // accepted clusters transfer their index buffers to the caller.
+  Cluster cluster;
+  for (std::size_t start_index = 0; start_index < point_count; ++start_index) {
     if (visited[start_index] != 0) {
       continue;
     }
 
-    Cluster cluster;
     cluster.bounds.min = {
       std::numeric_limits<float>::max(),
       std::numeric_limits<float>::max(),
@@ -314,6 +312,7 @@ std::vector<Cluster> RunClusteringEuclidean(
       std::numeric_limits<float>::lowest()
     };
 
+    cluster.indices.clear();
     cluster.indices.reserve(64);
     cluster.indices.push_back(start_index);
     visited[start_index] = 1;
@@ -388,13 +387,28 @@ std::vector<Cluster> RunClusteringEuclidean(
 
   return clusters;
 }
+}  // namespace
+
+std::vector<Cluster> RunClusteringEuclidean(
+  const std::vector<KittiPoint> & input, const ClusteringParams & params)
+{
+  return RunEuclideanPrefix(input, input.size(), params);
+}
 
 std::vector<Cluster> RunClustering(
   const std::vector<KittiPoint> & input,
   const ClusteringParams & params)
 {
+  return RunClusteringPrefix(input, input.size(), params);
+}
+
+std::vector<Cluster> RunClusteringPrefix(
+  const std::vector<KittiPoint> & input, std::size_t point_count,
+  const ClusteringParams & params)
+{
+  if (point_count > input.size()) throw std::out_of_range("Clustering point count exceeds the input");
   if (params.enabled && params.mode!="euclidean" && params.mode!="euclidean_3d")
     throw std::invalid_argument("Unknown clustering mode: "+params.mode);
-  return RunClusteringEuclidean(input, params);
+  return RunEuclideanPrefix(input, point_count, params);
 }
 }  // namespace lidar_viewer::algorithms

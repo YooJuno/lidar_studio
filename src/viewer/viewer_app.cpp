@@ -39,8 +39,11 @@
 #include "lidar_viewer/dataset_curation.hpp"
 #include "lidar_viewer/training_ui.hpp"
 #include "lidar_viewer/benchmark_ui.hpp"
-#include "panorama_render_cache.hpp"
-#include "viewer/frame_processing.hpp"
+#include "render/panorama_render_cache.hpp"
+#include "camera.hpp"
+#include "frame_processing.hpp"
+#include "render/gl_programs.hpp"
+#include "render/panorama_palette.hpp"
 
 #include <algorithm>
 #include <array>
@@ -76,6 +79,15 @@ namespace
 {
 namespace ui=lidar_viewer::ui;
 namespace frames = lidar_viewer::frame_processing;
+using lidar_viewer::rendering::kPanoramaRangeColors;
+using lidar_viewer::viewer::CameraState;
+using lidar_viewer::viewer::Cross;
+using lidar_viewer::viewer::LookAt;
+using lidar_viewer::viewer::Mat4;
+using lidar_viewer::viewer::Multiply;
+using lidar_viewer::viewer::Normalize;
+using lidar_viewer::viewer::Orthographic;
+using lidar_viewer::viewer::Perspective;
 constexpr int kWindowWidth = 1600;
 constexpr int kWindowHeight = 960;
 constexpr float kOrbitSensitivity = 0.0045f;
@@ -100,16 +112,6 @@ float DetectorPresetScore(std::string_view model)
   if (model=="transfusion") return .25f;
   return .5f;
 }
-// Viridis by Nathaniel J. Smith, Stefan van der Walt, and Eric Firing (CC0).
-// https://github.com/BIDS/colormap/blob/master/colormaps.py
-constexpr ImU32 kPanoramaRangeColors[] = {
-  IM_COL32(68, 1, 84, 255), IM_COL32(72, 26, 108, 255), IM_COL32(71, 47, 125, 255),
-  IM_COL32(65, 68, 135, 255), IM_COL32(57, 86, 140, 255), IM_COL32(49, 104, 142, 255),
-  IM_COL32(42, 120, 142, 255), IM_COL32(35, 136, 142, 255), IM_COL32(31, 152, 139, 255),
-  IM_COL32(34, 168, 132, 255), IM_COL32(53, 183, 121, 255), IM_COL32(84, 197, 104, 255),
-  IM_COL32(122, 209, 81, 255), IM_COL32(165, 219, 54, 255), IM_COL32(210, 226, 27, 255),
-  IM_COL32(253, 231, 37, 255),
-};
 using LidarModel = lidar_viewer::DirectLidarModel;
 constexpr std::pair<LidarModel, const char *> kDirectModels[] = {
   {LidarModel::Auto, "auto"},
@@ -129,308 +131,6 @@ constexpr std::pair<LidarModel, const char *> kDirectModels[] = {
 };
 
 bool IsPcapCapture(const fs::path & path) {return !lidar_viewer::FindLidarPcap(path).empty();}
-
-float Dot(const Vec3 & a, const Vec3 & b)
-{
-  return a.x * b.x + a.y * b.y + a.z * b.z;
-}
-
-Vec3 Cross(const Vec3 & a, const Vec3 & b)
-{
-  return {
-    a.y * b.z - a.z * b.y,
-    a.z * b.x - a.x * b.z,
-    a.x * b.y - a.y * b.x
-  };
-}
-
-float Length(const Vec3 & v)
-{
-  return std::sqrt(Dot(v, v));
-}
-
-Vec3 Normalize(const Vec3 & v)
-{
-  const float len = Length(v);
-  if (len < 1e-6f) {
-    return {0.0f, 0.0f, 0.0f};
-  }
-  return v * (1.0f / len);
-}
-
-struct Mat4
-{
-  std::array<float, 16> m{};
-};
-
-Mat4 Identity()
-{
-  return Mat4{{{
-    1.0f, 0.0f, 0.0f, 0.0f,
-    0.0f, 1.0f, 0.0f, 0.0f,
-    0.0f, 0.0f, 1.0f, 0.0f,
-    0.0f, 0.0f, 0.0f, 1.0f
-  }}};
-}
-
-Mat4 Multiply(const Mat4 & a, const Mat4 & b)
-{
-  Mat4 out{};
-  for (int col = 0; col < 4; ++col) {
-    for (int row = 0; row < 4; ++row) {
-      float value = 0.0f;
-      for (int k = 0; k < 4; ++k) {
-        value += a.m[k * 4 + row] * b.m[col * 4 + k];
-      }
-      out.m[col * 4 + row] = value;
-    }
-  }
-  return out;
-}
-
-Mat4 Perspective(float fov_y_rad, float aspect, float z_near, float z_far)
-{
-  const float f = 1.0f / std::tan(fov_y_rad * 0.5f);
-  return Mat4{{{
-    f / aspect, 0.0f, 0.0f, 0.0f,
-    0.0f, f, 0.0f, 0.0f,
-    0.0f, 0.0f, (z_far + z_near) / (z_near - z_far), -1.0f,
-    0.0f, 0.0f, (2.0f * z_far * z_near) / (z_near - z_far), 0.0f
-  }}};
-}
-
-Mat4 Orthographic(float left, float right, float bottom, float top, float z_near, float z_far)
-{
-  Mat4 out = Identity();
-  out.m[0] = 2.0f / (right - left);
-  out.m[5] = 2.0f / (top - bottom);
-  out.m[10] = -2.0f / (z_far - z_near);
-  out.m[12] = -(right + left) / (right - left);
-  out.m[13] = -(top + bottom) / (top - bottom);
-  out.m[14] = -(z_far + z_near) / (z_far - z_near);
-  return out;
-}
-
-Mat4 LookAt(const Vec3 & eye, const Vec3 & center, const Vec3 & up)
-{
-  const Vec3 forward = Normalize(center - eye);
-  const Vec3 right = Normalize(Cross(forward, up));
-  const Vec3 camera_up = Cross(right, forward);
-
-  Mat4 out = Identity();
-  out.m[0] = right.x;
-  out.m[1] = camera_up.x;
-  out.m[2] = -forward.x;
-  out.m[4] = right.y;
-  out.m[5] = camera_up.y;
-  out.m[6] = -forward.y;
-  out.m[8] = right.z;
-  out.m[9] = camera_up.z;
-  out.m[10] = -forward.z;
-  out.m[12] = -Dot(right, eye);
-  out.m[13] = -Dot(camera_up, eye);
-  out.m[14] = Dot(forward, eye);
-  return out;
-}
-
-GLuint CompileShader(GLenum type, const char * source)
-{
-  const GLuint shader = glCreateShader(type);
-  glShaderSource(shader, 1, &source, nullptr);
-  glCompileShader(shader);
-
-  GLint ok = GL_FALSE;
-  glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
-  if (ok == GL_TRUE) {
-    return shader;
-  }
-
-  GLint log_len = 0;
-  glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &log_len);
-  std::string log(static_cast<std::size_t>(log_len), '\0');
-  glGetShaderInfoLog(shader, log_len, nullptr, log.data());
-  throw std::runtime_error("Shader compile failed:\n" + log);
-}
-
-GLuint CreateProgram()
-{
-  constexpr const char * kVertexShader = R"(
-    #version 330 core
-    layout(location = 0) in vec3 a_position;
-    layout(location = 1) in float a_intensity;
-
-    uniform mat4 u_mvp;
-    uniform float u_point_size;
-    uniform bool u_panorama;
-    uniform mat3 u_sensor_rotation;
-    uniform vec3 u_sensor_translation;
-    uniform vec4 u_panorama_view; // bearing/elevation center, horizontal/vertical FOV in degrees
-    out float v_intensity;
-    out float v_height;
-    out float v_range;
-    layout(location = 2) in int a_label;
-    flat out int v_label;
-
-    void main() {
-      gl_PointSize = u_point_size;
-      if(u_panorama) {
-        vec3 sensor=transpose(u_sensor_rotation)*(a_position-u_sensor_translation);
-        v_range=length(sensor);
-        if(isnan(v_range) || isinf(v_range) || v_range<=0.05) {
-          gl_Position=vec4(2,2,2,1);
-          return;
-        }
-        // Same spherical geometry as SemanticKITTI's range projection. The
-        // depth buffer keeps the nearest return; no sort or CPU image copy.
-        float bearing=sensor.x==0.0 ? -90.0*sign(sensor.y) : -degrees(atan(sensor.y,sensor.x));
-        float delta=mod(bearing-u_panorama_view.x+180.0,360.0)-180.0;
-        float horizontal=length(sensor.xy);
-        float elevation=horizontal==0.0 ? 90.0*sign(sensor.z) : degrees(atan(sensor.z,horizontal));
-        gl_Position=vec4(2.0*delta/u_panorama_view.z,
-          2.0*(elevation-u_panorama_view.y)/u_panorama_view.w,
-          2.0*v_range/(v_range+1.0)-1.0,1.0);
-      } else {
-        gl_Position = u_mvp * vec4(a_position, 1.0);
-        v_range=0.0;
-      }
-      v_intensity = a_intensity;
-      v_height = a_position.z;
-      v_label = a_label;
-    }
-  )";
-
-  constexpr const char * kFragmentShader = R"(
-    #version 330 core
-    in float v_intensity;
-    in float v_height;
-    in float v_range;
-    flat in int v_label;
-    out vec4 frag_color;
-
-    uniform int u_color_mode;
-    uniform float u_min_height;
-    uniform float u_max_height;
-    uniform float u_range_max;
-    uniform vec3 u_range_colors[16];
-    uniform vec4 u_label_colors[8];
-    uniform vec4 u_unlabeled_color;
-    uniform vec4 u_background_color;
-    uniform vec4 u_plain_color;
-
-    vec3 turbo(float x) {
-      x = clamp(x, 0.0, 1.0);
-      return vec3(
-        0.13572138 + 4.61539260 * x - 42.66032258 * x * x + 132.13108234 * x * x * x - 152.94239396 * x * x * x * x + 59.28637943 * x * x * x * x * x,
-        0.09140261 + 2.19418839 * x + 4.84296658 * x * x - 14.18503333 * x * x * x + 4.27729857 * x * x * x * x + 2.82956604 * x * x * x * x * x,
-        0.10667330 + 12.64194608 * x - 60.58204836 * x * x + 110.36276771 * x * x * x - 89.90310912 * x * x * x * x + 27.34824973 * x * x * x * x * x
-      );
-    }
-
-    void main() {
-      if (u_color_mode == 4) {
-        const int last = u_range_colors.length() - 1;
-        float segment = clamp(v_range / max(u_range_max, 0.1), 0.0, 1.0) * float(last);
-        int left = min(int(segment), last - 1);
-        frag_color = vec4(mix(u_range_colors[left], u_range_colors[left + 1], segment - float(left)), 1.0);
-        return;
-      }
-      if (u_color_mode == 3) {
-        frag_color=v_label<0 ? u_unlabeled_color : v_label==0 ? u_background_color : u_label_colors[(v_label-1)%8];
-        return;
-      }
-      if (v_intensity < -0.5) {
-        frag_color = vec4(1.0, 0.12, 0.08, 1.0);
-        return;
-      }
-      if (u_color_mode == 2) {
-        frag_color = u_plain_color;
-        return;
-      }
-      float value = v_intensity;
-      if (u_color_mode == 1) {
-        float denom = max(1e-6, u_max_height - u_min_height);
-        value = (v_height - u_min_height) / denom;
-      }
-      frag_color = vec4(clamp(turbo(value), 0.0, 1.0), 1.0);
-    }
-  )";
-
-  const GLuint vs = CompileShader(GL_VERTEX_SHADER, kVertexShader);
-  const GLuint fs = CompileShader(GL_FRAGMENT_SHADER, kFragmentShader);
-  const GLuint program = glCreateProgram();
-  glAttachShader(program, vs);
-  glAttachShader(program, fs);
-  glLinkProgram(program);
-
-  GLint ok = GL_FALSE;
-  glGetProgramiv(program, GL_LINK_STATUS, &ok);
-  if (ok != GL_TRUE) {
-    GLint log_len = 0;
-    glGetProgramiv(program, GL_INFO_LOG_LENGTH, &log_len);
-    std::string log(static_cast<std::size_t>(log_len), '\0');
-    glGetProgramInfoLog(program, log_len, nullptr, log.data());
-    throw std::runtime_error("Program link failed:\n" + log);
-  }
-
-  glDeleteShader(vs);
-  glDeleteShader(fs);
-  glUseProgram(program);
-  constexpr int count = IM_ARRAYSIZE(kPanoramaRangeColors);
-  static_assert(count == 16, "Match u_range_colors in the point shader");
-  std::array<float, count * 3> range_colors{};
-  for (int i = 0; i < count; ++i) {
-    const auto color = ImGui::ColorConvertU32ToFloat4(kPanoramaRangeColors[i]);
-    range_colors[i * 3] = color.x;
-    range_colors[i * 3 + 1] = color.y;
-    range_colors[i * 3 + 2] = color.z;
-  }
-  glUniform3fv(glGetUniformLocation(program, "u_range_colors[0]"), count, range_colors.data());
-  return program;
-}
-
-
-GLuint CreateGridProgram()
-{
-  constexpr const char * kVertexShader = R"(
-    #version 330 core
-    layout(location = 0) in vec3 a_position;
-    uniform mat4 u_mvp;
-    void main() {
-      gl_Position = u_mvp * vec4(a_position, 1.0);
-    }
-  )";
-
-  constexpr const char * kFragmentShader = R"(
-    #version 330 core
-    uniform vec4 u_color;
-    out vec4 frag_color;
-    void main() {
-      frag_color = u_color;
-    }
-  )";
-
-  const GLuint vs = CompileShader(GL_VERTEX_SHADER, kVertexShader);
-  const GLuint fs = CompileShader(GL_FRAGMENT_SHADER, kFragmentShader);
-  const GLuint program = glCreateProgram();
-  glAttachShader(program, vs);
-  glAttachShader(program, fs);
-  glLinkProgram(program);
-
-  GLint ok = GL_FALSE;
-  glGetProgramiv(program, GL_LINK_STATUS, &ok);
-  if (ok != GL_TRUE) {
-    GLint log_len = 0;
-    glGetProgramiv(program, GL_INFO_LOG_LENGTH, &log_len);
-    std::string log(static_cast<std::size_t>(log_len), '\0');
-    glGetProgramInfoLog(program, log_len, nullptr, log.data());
-    throw std::runtime_error("Grid program link failed:\n" + log);
-  }
-
-  glDeleteShader(vs);
-  glDeleteShader(fs);
-  return program;
-}
-
 
 struct Color
 {
@@ -483,40 +183,6 @@ std::string FileDisplayName(const fs::path & path)
 {
   return path.has_filename() ? path.filename().u8string() : path.u8string();
 }
-
-struct CameraState
-{
-  enum class ProjectionMode
-  {
-    View3D,
-    View2D,
-    Panorama,
-  };
-
-  struct ViewBookmark
-  {
-    Vec3 target{};
-    float yaw{0.0f};
-    float pitch{0.0f};
-    float distance{40.0f};
-    bool valid{false};
-  };
-
-  Vec3 target{};
-  float yaw{0.2f};
-  float pitch{-0.35f};
-  float distance{40.0f};
-  float point_size{2.0f};
-  ProjectionMode projection_mode{ProjectionMode::View3D};
-  lidar_viewer::PanoramaView panorama;
-  bool has_saved_view{false};
-  ViewBookmark saved_3d_view{{}, 0.2f, -0.35f, 40.0f, false};
-  ViewBookmark saved_2d_view{{}, 0.0f, -1.5707f, 40.0f, false};
-  bool dragging_left{false};
-  bool dragging_right{false};
-  double last_x{0.0};
-  double last_y{0.0};
-};
 
 struct GeometryWork
 {
@@ -893,47 +559,9 @@ const char * GroundViewKey(ViewerState::GroundView mode)
     mode==ViewerState::GroundView::Obstacles ? "obstacles" : "all";
 }
 
-Vec3 CameraPosition(const CameraState & camera)
-{
-  const float cp = std::cos(camera.pitch);
-  return {
-    camera.target.x + camera.distance * cp * std::sin(camera.yaw),
-    camera.target.y + camera.distance * cp * std::cos(camera.yaw),
-    camera.target.z + camera.distance * std::sin(camera.pitch)
-  };
-}
-
-void StoreCurrentProjectionView(CameraState & camera)
-{
-  if(camera.projection_mode==CameraState::ProjectionMode::Panorama) return;
-  auto & bookmark =
-    (camera.projection_mode == CameraState::ProjectionMode::View2D)
-    ? camera.saved_2d_view
-    : camera.saved_3d_view;
-  bookmark.target = camera.target;
-  bookmark.yaw = camera.yaw;
-  bookmark.pitch = camera.pitch;
-  bookmark.distance = camera.distance;
-  bookmark.valid = true;
-}
-
 void ResetCameraToFrame(ViewerState & state)
 {
-  if(state.camera.projection_mode==CameraState::ProjectionMode::Panorama) {
-    lidar_viewer::FitPanorama(state.camera.panorama,state.base_frame.points,state.global_ground_offset);return;
-  }
-  state.camera.target = state.frame.center;
-  if (state.camera.projection_mode == CameraState::ProjectionMode::View2D) {
-    state.camera.target.z = 0.0f;
-    state.camera.distance = std::max(state.frame.radius * 1.15f, 12.0f);
-    state.camera.pitch = -1.5707f;
-    state.camera.yaw = 0.0f;
-  } else {
-    state.camera.distance = state.frame.radius * 2.2f;
-    state.camera.pitch = 0.55f;
-    state.camera.yaw = -0.8f;
-  }
-  StoreCurrentProjectionView(state.camera);
+  lidar_viewer::viewer::ResetCameraToFrame(state.camera, state.frame, state.base_frame, state.global_ground_offset);
 }
 
 void FitDatasetSample(ViewerState & state)
@@ -962,38 +590,7 @@ void TraceReviewCamera(const ViewerState & state)
 
 void SetProjectionMode(ViewerState & state, CameraState::ProjectionMode mode)
 {
-  if (state.camera.projection_mode == mode) {
-    return;
-  }
-
-  StoreCurrentProjectionView(state.camera);
-  state.camera.projection_mode = mode;
-  if(mode==CameraState::ProjectionMode::Panorama) {
-    if(!state.camera.panorama.initialized) ResetCameraToFrame(state);
-    return;
-  }
-  const auto & bookmark =
-    (mode == CameraState::ProjectionMode::View2D)
-    ? state.camera.saved_2d_view
-    : state.camera.saved_3d_view;
-
-  if (bookmark.valid) {
-    state.camera.target = bookmark.target;
-    state.camera.yaw = bookmark.yaw;
-    state.camera.pitch = bookmark.pitch;
-    state.camera.distance = mode==CameraState::ProjectionMode::View2D ?
-      lidar_viewer::TopViewHalfHeight(bookmark.distance) : std::max(bookmark.distance,1.f);
-  } else if (mode == CameraState::ProjectionMode::View2D) {
-    state.camera.target.z = 0.0f;
-    state.camera.distance = lidar_viewer::TopViewHalfHeight(state.camera.distance);
-    state.camera.pitch = -1.5707f;
-    state.camera.yaw = 0.0f;
-  } else {
-    state.camera.distance = std::max(state.camera.distance, 2.0f);
-    state.camera.pitch = 0.55f;
-    state.camera.yaw = -0.8f;
-  }
-  StoreCurrentProjectionView(state.camera);
+  lidar_viewer::viewer::SetProjectionMode(state.camera, mode, state.frame, state.base_frame, state.global_ground_offset);
 }
 
 void UploadFrame(ViewerState & state)
@@ -6993,7 +6590,7 @@ int RunViewer(int argc, char ** argv)
     glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, sizeof(KittiPoint), reinterpret_cast<void *>(offsetof(KittiPoint, intensity)));
 
 
-    state.grid.program = CreateGridProgram();
+    state.grid.program = lidar_viewer::rendering::CreateGridProgram();
     state.grid.mvp_loc = glGetUniformLocation(state.grid.program, "u_mvp");
     state.grid.color_loc = glGetUniformLocation(state.grid.program, "u_color");
     glGenVertexArrays(1, &state.grid.vao);
@@ -7030,7 +6627,7 @@ int RunViewer(int argc, char ** argv)
     }
     RebuildGrid(state);
 
-    const GLuint program = CreateProgram();
+    const GLuint program = lidar_viewer::rendering::CreatePointProgram();
     const GLint mvp_loc = glGetUniformLocation(program, "u_mvp");
     const GLint point_size_loc = glGetUniformLocation(program, "u_point_size");
     const GLint color_mode_loc = glGetUniformLocation(program, "u_color_mode");

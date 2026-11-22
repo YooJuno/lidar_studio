@@ -52,22 +52,22 @@ bool HasCudaDevice()
 }  // namespace
 
 bool BuildCellAssignmentsCuda(
-  const std::vector<KittiPoint> & input,
+  const std::vector<KittiPoint> & input, std::size_t point_count,
   const ClusteringParams & params,
   std::vector<CudaCellAssignment> & assignments)
 {
   assignments.clear();
-  if (input.empty() || !HasCudaDevice()) {
+  if (point_count == 0 || point_count > input.size() || !HasCudaDevice()) {
     return false;
   }
 
   const float cell_size = std::max(params.grid_cell_m, 0.05f);
   thread_local CudaBuffer<DevicePoint> points_buffer;
   thread_local CudaBuffer<CudaCellAssignment> assignments_buffer;
-  const std::size_t points_bytes = input.size() * sizeof(DevicePoint);
-  const std::size_t assignments_bytes = input.size() * sizeof(CudaCellAssignment);
+  const std::size_t points_bytes = point_count * sizeof(DevicePoint);
+  const std::size_t assignments_bytes = point_count * sizeof(CudaCellAssignment);
 
-  if (!points_buffer.Reserve(input.size()) || !assignments_buffer.Reserve(input.size())) {
+  if (!points_buffer.Reserve(point_count) || !assignments_buffer.Reserve(point_count)) {
     return false;
   }
   auto * device_points = points_buffer.Get();
@@ -78,18 +78,18 @@ bool BuildCellAssignmentsCuda(
   }
 
   constexpr int kThreadsPerBlock = 256;
-  const int blocks = static_cast<int>((input.size() + kThreadsPerBlock - 1) / kThreadsPerBlock);
+  const int blocks = static_cast<int>((point_count + kThreadsPerBlock - 1) / kThreadsPerBlock);
   BuildAssignmentsKernel<<<blocks, kThreadsPerBlock>>>(
     device_points,
     device_assignments,
-    input.size(),
+    point_count,
     cell_size);
   error = cudaGetLastError();
   if (error != cudaSuccess) {
     return false;
   }
 
-  assignments.resize(input.size());
+  assignments.resize(point_count);
   error = cudaMemcpy(assignments.data(), device_assignments, assignments_bytes, cudaMemcpyDeviceToHost);
   if (error != cudaSuccess) {
     assignments.clear();

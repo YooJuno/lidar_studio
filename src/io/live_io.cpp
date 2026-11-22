@@ -1,6 +1,6 @@
 #include "lidar_viewer/live_io.hpp"
 #include "lidar_viewer/bag_io.hpp"
-#include "direct_live.hpp"
+#include "ethernet/direct_live.hpp"
 
 #include <algorithm>
 #include <chrono>

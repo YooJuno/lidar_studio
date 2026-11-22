@@ -69,6 +69,8 @@ cmake --build build --parallel 2
 
 The core viewer and ground algorithms work without Python or a GPU. Detection and training use optional Python environments.
 
+[Code structure and external dependencies](docs/code-structure.md)
+
 </details>
 
 ## Try a driving recording
