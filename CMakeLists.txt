@@ -171,7 +171,11 @@ if(MSVC)
 else()
   target_compile_options(lidar_viewer_native PRIVATE -ffp-contract=off)
 endif()
-add_library(lidar_viewer_detector STATIC src/learned_detector.cpp src/algorithms/detection.cpp)
+add_library(lidar_viewer_detector STATIC
+  src/inference/learned_detector.cpp
+  src/inference/terraseg.cpp
+  src/inference/model_process.cpp
+  src/algorithms/detection.cpp)
 target_include_directories(lidar_viewer_detector PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(lidar_viewer_detector PUBLIC Threads::Threads)
 lidar_warnings(lidar_viewer_detector)
