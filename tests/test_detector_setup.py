@@ -77,6 +77,7 @@ class InstallerTests(unittest.TestCase):
         config=self.config/'detector.cfg'
         config.write_text(f'python={python}\nmodel_dir={tiny}\nprovider=auto\n')
         with patch.object(sys,'argv',['setup','--model','base']), \
+                patch.object(sys,'version_info',(3,14)), \
                 patch.object(setup.urllib.request,'urlopen',side_effect=self.response):
             setup.main()
         self.assertIn(f'short_range_model_dir={tiny.parent/"short_range-model"}\n',config.read_text())

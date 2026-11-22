@@ -50,11 +50,9 @@ def main():
             temporary=args.progress_file.with_suffix('.tmp')
             temporary.write_text(json.dumps(dict(message=message,bytes=received,total_bytes=total)),encoding='utf-8')
             temporary.replace(args.progress_file)
-    if not args.runtime_python and not (3,10)<=sys.version_info[:2]<=(3,13):
-        parser.error('Use Python 3.10 through 3.13 for the pinned model runtime')
     if args.cuda and (sys.platform=='darwin' or platform.machine().lower() not in ('x86_64','amd64')):
         parser.error('CUDA runtime requires Linux or Windows x64')
-    config,data=directories();data.mkdir(parents=True,exist_ok=True)
+    config,data=directories()
     config_file=config/'detector.cfg'
     previous={}
     if config_file.is_file():
@@ -67,6 +65,9 @@ def main():
     reuse_runtime=(args.model=='base' and not args.cuda and configured_python is not None
         and configured_python.is_file() and requested_python in (None,configured_python))
     runtime_python=configured_python if reuse_runtime else requested_python
+    if not runtime_python and not (3,10)<=sys.version_info[:2]<=(3,13):
+        parser.error('Use Python 3.10 through 3.13 for the pinned model runtime')
+    data.mkdir(parents=True,exist_ok=True)
     provider='auto' if args.cuda or (reuse_runtime and previous.get('provider','auto')!='cpu') else 'cpu'
     managed_runtime=previous.get('managed_runtime')=='1' if reuse_runtime else args.install_packages
     if runtime_python:
