@@ -32,13 +32,13 @@ and shared by Viewer, Point clouds and Train.
 
 **Ground OFF → ON → OFF → ON**, with the camera fixed. OFF shows the complete cloud; ON removes the classified road points and keeps obstacles. [MP4](docs/media/ground-segmentation.mp4).
 
-**Object detection — CenterPoint tiny**
+**Object detection & tracking — AWML ShortRange**
 
-[![CenterPoint tiny vehicle detections and persistent IDs with ground removed on consecutive KITTI scans](docs/media/object-detection.gif)](docs/media/object-detection.mp4)
+[![AWML ShortRange detects cars and a bicycle on consecutive KITTI scans, with persistent IDs and motion trails](docs/media/object-detection.gif)](docs/media/object-detection.mp4)
 
-Cyan boxes show **vehicle predictions and track IDs** at a minimum score of **0.60**. **FugSeg removes ground from the view**, keeping the vehicles and boxes easy to see. Cluster overlays are off. [MP4](docs/media/object-detection.mp4).
+Follow the yellow **Bicycle #4** and the cyan car tracks as their boxes and trails move through consecutive scans. FugSeg hides the ground. `weak` marks a lower-score observation that still supports an existing ID, and `est.` marks a predicted box. [MP4](docs/media/object-detection.mp4).
 
-Both previews use the same **90 consecutive KITTI Raw scans**, shown at the source rate of **10 Hz**. They are frame-by-frame application captures, not runtime benchmarks. [Source and recording details](docs/media/SOURCE.md).
+Both demos play consecutive KITTI Raw scans at **10 Hz**. [Source and recording details](docs/media/SOURCE.md).
 
 ## Get started
 
