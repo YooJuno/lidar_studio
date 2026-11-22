@@ -13,6 +13,8 @@ third-party code, model weights, datasets or dataset-derived media.
 | Patchwork++ | BSD-2-Clause | `third_party/patchwork_plusplus/LICENSE` |
 | Autoware-derived CenterPoint adapters | Apache-2.0 | Existing SPDX headers and `third_party/licenses/Autoware-CenterPoint-*` |
 | AWML ShortRange models and adapter notices | Apache-2.0 | `third_party/licenses/AWML-CenterPoint-*` |
+| Autoware TransFusion LiDAR | Apache-2.0 | [Official model and preprocessing reference](https://huggingface.co/AutowareFoundation/lidar_transfusion) |
+| TerraSeg Small | Apache-2.0 (source), CC BY-NC-SA 4.0 (weights) | [TU Delft source](https://github.com/tudelft-iv/TerraSeg), [official model and training-data terms](https://huggingface.co/TedLentsch/TerraSeg) |
 
 Files marked `SPDX-License-Identifier: Apache-2.0`, including the detection
 preprocessing/postprocessing adapters and native helper, retain that license.
@@ -38,6 +40,10 @@ and legal notices. Weights are not committed to the source repository. Mac
 release bundles include them; the app can also download verified originals
 into user storage. Model cards and training-data terms still apply. The
 project's MIT license grants no additional rights over third-party data.
+
+Autoware TransFusion LiDAR and TerraSeg Small weights are installed separately
+from their pinned official releases. TerraSeg requires explicit acceptance of
+its noncommercial model terms during setup.
 
 ## Examples and media
 

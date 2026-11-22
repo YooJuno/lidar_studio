@@ -322,7 +322,7 @@ private:
   bool swap_{};
 };
 
-FrameData DecodeLivoxCloud(const rcl_serialized_message_t & message)
+FrameData DecodeLivoxCloud(const rcl_serialized_message_t & message, bool preserve_source_intensity)
 {
   // Layout defined by Livox-SDK/livox_ros_driver2 CustomMsg and CustomPoint.
   // Read XYZ and reflectivity directly from the bag without a driver dependency.
@@ -350,14 +350,22 @@ FrameData DecodeLivoxCloud(const rcl_serialized_message_t & message)
   const auto * points = cdr.Take(count ? (count - 1) * stride + point_bytes : 0);
   frame.frame_id.assign(reinterpret_cast<const char *>(frame_id), frame_id_size - 1);
   frame.points.reserve(count);
+  std::shared_ptr<std::vector<float>> original;
+  if (preserve_source_intensity && count) {
+    original = std::make_shared<std::vector<float>>();
+    original->reserve(count);
+  }
   const bool swap = cdr.SwapBytes();
   for (std::size_t i = 0; i < count; ++i) {
     const auto * point = points + i * stride;
     const KittiPoint decoded{ReadNumber<float>(point + 4, swap), ReadNumber<float>(point + 8, swap),
       ReadNumber<float>(point + 12, swap), static_cast<float>(point[16])};
-    if (std::isfinite(decoded.x) && std::isfinite(decoded.y) && std::isfinite(decoded.z))
+    if (std::isfinite(decoded.x) && std::isfinite(decoded.y) && std::isfinite(decoded.z)) {
+      if (original) original->push_back(decoded.intensity);
       frame.points.push_back(decoded);
+    }
   }
+  frame.source_intensities = std::move(original);
   return frame;
 }
 
@@ -398,7 +406,7 @@ struct ReaderCache
 };
 }  // namespace
 
-FrameData DecodePointCloud2(const PointCloud & cloud)
+FrameData DecodePointCloud2(const PointCloud & cloud, bool preserve_source_intensity)
 {
   FrameData frame;
   frame.frame_id = cloud.header.frame_id;
@@ -406,6 +414,7 @@ FrameData DecodePointCloud2(const PointCloud & cloud)
     frame.timestamp_ns=static_cast<std::int64_t>(cloud.header.stamp.sec)*1000000000+cloud.header.stamp.nanosec;
   const std::uint64_t count = static_cast<std::uint64_t>(cloud.width) * cloud.height;
   if (count == 0) {
+    frame.has_source_intensity = false;
     return frame;
   }
   const std::uint64_t packed_row = static_cast<std::uint64_t>(cloud.width) * cloud.point_step;
@@ -420,10 +429,16 @@ FrameData DecodePointCloud2(const PointCloud & cloud)
   if (!intensity) {
     intensity = FindField(cloud, "reflectivity", false);
   }
+  frame.has_source_intensity = intensity != nullptr;
   if (count > frame.points.max_size()) {
     throw std::runtime_error("PointCloud2 point count exceeds addressable memory");
   }
   frame.points.reserve(static_cast<std::size_t>(count));
+  std::shared_ptr<std::vector<float>> original;
+  if (intensity && preserve_source_intensity) {
+    original = std::make_shared<std::vector<float>>();
+    original->reserve(static_cast<std::size_t>(count));
+  }
   const bool swap = cloud.is_bigendian != HostBigEndian();
   for (std::uint32_t row = 0; row < cloud.height; ++row) {
     const auto * row_data = cloud.data.data() + static_cast<std::size_t>(row) * cloud.row_step;
@@ -438,12 +453,14 @@ FrameData DecodePointCloud2(const PointCloud & cloud)
       if (!std::isfinite(decoded.x) || !std::isfinite(decoded.y) || !std::isfinite(decoded.z)) {
         continue;
       }
+      if (original) original->push_back(decoded.intensity);
       if (!std::isfinite(decoded.intensity)) {
         decoded.intensity = 0.0f;
       }
       frame.points.push_back(decoded);
     }
   }
+  frame.source_intensities = std::move(original);
   return frame;
 }
 
@@ -598,7 +615,7 @@ std::vector<FrameHandle> ResolveBagFrames(
   return frames;
 }
 
-static FrameData ReadBagFrame(const FrameHandle & handle,ReaderCache & cache)
+static FrameData ReadBagFrame(const FrameHandle & handle, ReaderCache & cache, bool preserve_source_intensity)
 {
   const fs::path path = BagPath(handle.path);
   if (!cache.reader || cache.path != path || cache.topic != handle.bag_topic) {
@@ -623,12 +640,12 @@ static FrameData ReadBagFrame(const FrameHandle & handle,ReaderCache & cache)
     }
     FrameData frame;
     if (cache.format == PointFormat::Livox) {
-      frame = DecodeLivoxCloud(*message->serialized_data);
+      frame = DecodeLivoxCloud(*message->serialized_data, preserve_source_intensity);
     } else {
       PointCloud cloud;
       rclcpp::SerializedMessage serialized(*message->serialized_data);
       rclcpp::Serialization<PointCloud>().deserialize_message(&serialized, &cloud);
-      frame = DecodePointCloud2(cloud);
+      frame = DecodePointCloud2(cloud, preserve_source_intensity);
     }
     frame.timestamp_ns=handle.bag_timestamp_ns;
     if (handle.imu_timeline)
@@ -637,18 +654,18 @@ static FrameData ReadBagFrame(const FrameHandle & handle,ReaderCache & cache)
   }
   throw std::runtime_error("Indexed bag frame is missing; input bag may have changed: " + handle.label);
 }
-FrameData LoadBagFrame(const FrameHandle & handle,bool independent_reader)
+FrameData LoadBagFrame(const FrameHandle & handle, bool independent_reader, bool preserve_source_intensity)
 {
   if (independent_reader) {
     // One extra reusable reader on the export worker. Batch export must not
     // steal the playback reader's cursor or hold its seek/decode mutex.
     thread_local ReaderCache independent;
-    return ReadBagFrame(handle,independent);
+    return ReadBagFrame(handle, independent, preserve_source_intensity);
   }
   static ReaderCache shared;
   static std::mutex mutex;
   const std::lock_guard<std::mutex> guard(mutex);
-  return ReadBagFrame(handle,shared);
+  return ReadBagFrame(handle, shared, preserve_source_intensity);
 }
 #else
 std::vector<FrameHandle> ResolveBagFrames(const fs::path &, const std::string &, const std::string &,
@@ -659,7 +676,7 @@ std::vector<FrameHandle> ResolveBagFrames(const fs::path &, const std::string &,
     "with ROS bag support enabled; .bin loading remains available without ROS.");
 }
 
-FrameData LoadBagFrame(const FrameHandle &,bool)
+FrameData LoadBagFrame(const FrameHandle &, bool, bool)
 {
   throw std::runtime_error("This viewer was built without ROS 2 bag support");
 }

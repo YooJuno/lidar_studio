@@ -13,7 +13,7 @@ import time
 import numpy as np
 from .native import stable_order,fill_features,backend_name,nms_indices,nms_backend_name
 from .models import get_model,AWML_REVISION,sha256_file
-from .runtime_options import make_session_options
+from .runtime_options import make_session_options,preload_cuda_libraries
 
 MODEL_REVISION='494c8171def40bd36cc2feb323e0a5acbfab132b'
 MODEL_FILES={
@@ -228,29 +228,9 @@ class CenterPoint:
         self.folder=Path(folder);verify_weights(self.folder,model)
         path=self.folder/self.spec.fused_name
         if not path.is_file():fuse_model(self.folder,model)
-        # ORT can preload the NVIDIA wheels directly. Importing all of PyTorch
-        # only to load CUDA libraries wastes startup time and resident memory.
-        available=ort.get_available_providers()
-        if provider!='cpu' and 'CUDAExecutionProvider' in available:
-            # With system-site-packages, NVIDIA wheels may live outside ORT's
-            # own venv. Resolve the actual cuDNN package before ORT's default
-            # relative-directory search; do not import the training framework.
-            import importlib.util
-            import platform
-            try:
-                spec=importlib.util.find_spec('nvidia.cudnn')
-            except ImportError:spec=None
-            try:
-                locations=(spec.submodule_search_locations or []) if spec else []
-                for root in locations:
-                    directory=Path(root)/('bin' if platform.system()=='Windows' else 'lib')
-                    library='cudnn64_9.dll' if platform.system()=='Windows' else 'libcudnn.so.9'
-                    if (directory/library).is_file():
-                        ort.preload_dlls(cuda=False,cudnn=True,directory=str(directory));break
-                ort.preload_dlls()
-            except AttributeError:pass
         providers=['CPUExecutionProvider']
-        if provider!='cpu' and 'CUDAExecutionProvider' in available:
+        if provider!='cpu' and 'CUDAExecutionProvider' in ort.get_available_providers():
+            preload_cuda_libraries(ort)
             # ConvNeXt's depthwise convolutions benefit from ORT's CUDA NHWC
             # layout. Keep the strict numerical comparison on plain FP32 NCHW.
             providers=[('CUDAExecutionProvider',{'cudnn_conv_algo_search':'HEURISTIC',

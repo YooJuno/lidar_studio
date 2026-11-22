@@ -172,7 +172,7 @@ def model_check(folder,cloud,variant,provider):
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser();parser.add_argument('--model-dir');parser.add_argument('--cloud')
-    parser.add_argument('--model',choices=MODELS,default='tiny')
+    parser.add_argument('--model',choices=[name for name in MODELS if name!='transfusion'],default='tiny')
     parser.add_argument('--provider',choices=['auto','cpu'],default='auto')
     parser.add_argument('--require-native',action='store_true');args=parser.parse_args()
     if args.require_native and backend_name()!='native':raise SystemExit('Native preprocessing library was not found')

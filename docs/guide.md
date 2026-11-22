@@ -379,7 +379,7 @@ GSeg3D의 원본 submodule은 그대로 두고 빌드 시 생성하는 헤더에
 
 2026-11-03, 실제 XT32 125,834점에서 같은 초기화 보완을 적용한 연결부끼리 비교한 GSeg3D CPU 처리 p50은 22.95→16.65ms였습니다. 반환한 지면의 XYZ·강도·중복 개수를 바이트 단위로 정렬해 동일함을 확인했습니다. 이 비교는 연결부 최적화 측정이며 모든 데이터의 처리 시간을 보장하지 않습니다.
 - 클러스터링은 실제 점 간 수평 거리와 수직 간격을 검증하는 range-adaptive Euclidean 방식입니다. 작은 공간 해시 셀·거리별 검색 범위를 사용하고, 이미 연결한 점은 후보에서 제거해 고밀도 점군의 반복 검사를 줄입니다. 회전 박스의 긴 축을 길이로 정규화하며 CUDA 작업 버퍼는 프레임 간 재사용합니다.
-- 기하학 클러스터는 장애물 점의 그룹만 표시합니다. 사람·차량 클래스는 학습된 CenterPoint 모델만 제공합니다.
+- 기하학 클러스터는 장애물 점의 그룹을 표시합니다. 사람·차량 클래스는 Objects 탭의 학습 모델에서 확인합니다.
 
 ## Test
 
@@ -462,6 +462,7 @@ xvfb-run -a -s '-screen 0 1920x1200x24' /usr/bin/python3 tests/ui_app_settings_s
 - **AWML ShortRange (quality)** — 기본값: [TIER IV AWML CenterPoint-ShortRange base v2.0.0](https://github.com/tier4/AWML/blob/9e44a974aae03a196003950898dc909cd0c680ad/projects/CenterPoint/docs/CenterPoint-ShortRange/v2/base.md)의 원본 ConvNeXt 모델입니다. 공식 T4 평가 5,703프레임에서 mAP 83.9, 보행자 AP 77.5를 보고합니다. 이 수치는 해당 평가셋 결과이며 XT32 현장 정확도가 아닙니다. 앱은 오검출을 줄이는 시작값으로 Min score 0.50을 사용합니다.
 - **CenterPoint tiny (fast)**: [CenterPoint 논문(CVPR 2021)](https://arxiv.org/abs/2006.11275)에 기반한 [Autoware의 원본 CenterPoint tiny v4.1 모델](https://huggingface.co/AutowareFoundation/lidar_centerpoint)입니다. **Targets**에서 Person·Bicycle·Car·Truck·Bus를 각각 켜고 끌 수 있고 All/Clear로 전체 선택·해제합니다. 대상과 Min score는 저장된 모델 결과를 즉시 필터링하며, 모델 로딩이나 추론을 다시 하지 않습니다. 선택은 프로파일에 저장합니다.
 - **CenterPoint base**는 Autoware가 공개한 v4.1 원본 표준 모델입니다. XY 범위는 ±76.8m이며 시작 점수는 0.50입니다. Method에서 선택한 뒤 **Install CenterPoint base**를 눌러 선택적으로 설치합니다. [Autoware 모델 카드](https://huggingface.co/AutowareFoundation/lidar_centerpoint)
+- **TransFusion LiDAR**는 Autoware의 LiDAR 전용 v2.1 원본 ONNX 모델입니다. **Install TransFusion LiDAR**로 약 165 MB를 추가 설치합니다. 원본 8비트 범위 반사 강도가 보존된 점군을 입력으로 받습니다. 기본 점수는 0.25이며 Targets, 추적 ID와 함께 사용할 수 있습니다. [TransFusion 모델 카드](https://huggingface.co/AutowareFoundation/lidar_transfusion)
 - **Euclidean 3D (clusters)**: 지면분리 후 가까운 장애물 점을 3차원 거리로 묶습니다. 사람·차량 클래스는 만들지 않습니다.
 - **Projected XY (clusters)**: XY 거리와 수직 간격으로 묶습니다. 높이가 떨어진 면을 합칠 수 있으므로 보통 Euclidean 3D부터 사용합니다.
 
@@ -488,7 +489,7 @@ python3 tools/setup_detector.py --cuda
 # Windows에서는 위 python3 대신 py -3.12 사용 가능
 ```
 
-배포본에도 `python/`과 `tools/setup_detector.py`가 포함됩니다. Ubuntu 설치본의 setup 경로는 `/usr/share/lidar_studio/tools/setup_detector.py`, macOS는 앱의 `Contents/Resources/tools/setup_detector.py`입니다. 설치 후 실행 중인 앱에서는 **Retry model**을 누르거나 Enable objects를 켭니다. CUDA가 실행되지 않으면 실제 사용 중인 CPU 백엔드를 표시합니다.
+배포본에도 `python/`과 `tools/setup_detector.py`가 포함됩니다. Ubuntu 설치본의 setup 경로는 `/usr/share/lidar_studio/tools/setup_detector.py`, macOS는 앱의 `Contents/Resources/tools/setup_detector.py`입니다. TransFusion만 설치하려면 `--model transfusion`을 추가합니다. 설치 후 실행 중인 앱에서는 **Retry model**을 누르거나 Enable objects를 켭니다. CUDA가 실행되지 않으면 실제 사용 중인 CPU 백엔드를 표시합니다.
 
 설치기는 ShortRange(약 14 MB)와 tiny(약 20 MB)를 함께 설치하고, 모델별 원본 ONNX·모델 카드의 SHA-256을 검증합니다. ShortRange는 AWML 모델 카드 revision `9e44a974aae03a196003950898dc909cd0c680ad`가 지정한 TIER IV model-zoo v2.0.0 파일을 사용합니다. tiny는 revision `494c8171def40bd36cc2feb323e0a5acbfab132b`에 고정합니다. 한 종류만 필요하면 `--model short_range` 또는 `--model tiny`로 설치할 수 있습니다. 기본 Linux 위치는 `~/.local/share/lidar_viewer/detector/`, 연결 설정은 `~/.config/lidar_viewer/detector.cfg`, 오류 로그는 같은 설정 폴더의 `detector.log`입니다. Windows는 LocalAppData/APPDATA, macOS는 Application Support를 사용합니다. 사용자 모델·가상환경은 Git에 넣지 않으며, Mac 공식 배포에만 검증한 기본 모델과 CPU 실행환경을 함께 담습니다.
 
@@ -574,7 +575,7 @@ python3 tools/install_linux_desktop.py --binary /absolute/path/to/lidar_studio
 
 ## FugSeg 지면분리
 
-**Ground → Method → FugSeg**에서 [FugSeg 원본 구현](https://github.com/Leo-YuLi/FugSeg)을 선택할 수 있습니다. [IEEE TITS 2026 논문](https://doi.org/10.1109/TITS.2026.3682176)의 불확실성 기반 극좌표 격자 방식으로, 반사 잡음·가림 구간을 고려해 지면 높이를 전파한 뒤 점 단위로 분리합니다. CPU에서 실행하며 별도 학습 모델이나 GPU는 필요 없습니다. 기존 방식을 포함해 총 6종을 선택할 수 있습니다.
+**Ground → Method → FugSeg**에서 [FugSeg 원본 구현](https://github.com/Leo-YuLi/FugSeg)을 선택할 수 있습니다. [IEEE TITS 2026 논문](https://doi.org/10.1109/TITS.2026.3682176)의 불확실성 기반 극좌표 격자 방식으로, 반사 잡음·가림 구간을 고려해 지면 높이를 전파한 뒤 점 단위로 분리합니다. CPU에서 실행하며 별도 학습 모델이나 GPU는 필요 없습니다.
 
 원본 commit `623f860cce70ffe0e3f673cd246254938ce8babe`의 코어를 고정하고, ROS 1·데이터셋 파일 I/O를 빌드에서 제외했습니다. 센서 연동은 `cmake/FugSeg.cmake`의 작은 생성 헤더 API로 처리합니다. 원본 분할 소스는 수정하지 않으며 다음을 보완합니다.
 
@@ -585,3 +586,13 @@ python3 tools/install_linux_desktop.py --binary /absolute/path/to/lidar_studio
 정답이 정해진 평지·약 7도 경사와 45cm 이상 높이의 장애물 검사에서 FugSeg의 precision/recall은 모두 1.0이었습니다. 15만 점 이상 입력, 가까운 지면, 센서 높이 0.3/0.57/1.73m 변경, 지면 기준 Z 이동과 전체 점 보존도 검사합니다. 이 제한된 회귀 검사는 실제 XT32 환경 전체의 정확도 점수가 아닙니다.
 
 현재 PC에서 XT32 실제 bag 2개·6개 프레임(각 128,000점)의 FugSeg CPU 처리 시간은 약 3.8–9.0ms였습니다. 센서 변환 뒤 지면분리 함수의 시간이며 로딩·렌더링을 포함하지 않습니다. 프레임별 지면 점 수는 정답 라벨 없이 정확도로 해석하지 않습니다.
+
+## TerraSeg Small 지면분리
+
+**Ground → Method → TerraSeg Small**은 [TU Delft의 공식 구현](https://github.com/tudelft-iv/TerraSeg)과 [비상업용 가중치](https://huggingface.co/TedLentsch/TerraSeg)를 사용합니다. Linux x86-64, NVIDIA Ampere·Ada·Hopper GPU, `git`, `uv`가 필요합니다. 배포 앱에서는 **Copy setup command**를 눌러 경로가 포함된 명령을 복사합니다. 소스 폴더에서는 다음을 실행합니다.
+
+```bash
+python3 tools/setup_terraseg.py --accept-noncommercial
+```
+
+설치 후 **Retry TerraSeg**를 누르면 열린 앱에서 모델을 준비합니다. **Ground Z**와 Align 설정으로 센서 높이와 수평을 맞추고 기존 지면 제외 ROI를 그대로 쓸 수 있습니다. Objects 탭의 TransFusion과 함께 활성화할 수 있습니다. 공식 가중치와 CUDA 환경은 사용자 데이터 폴더에 별도 설치되며 모델의 CC BY-NC-SA 4.0 및 데이터 관련 조건을 따릅니다.

@@ -7,6 +7,7 @@
 #include <future>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 #include <thread>
 
@@ -102,6 +103,25 @@ int main()
     const auto aligned=Npy(Sample(request.destination,"points"));
     Check(std::abs(aligned[0].x)<1e-5 && std::abs(aligned[0].y-1)<1e-5 &&
       std::abs(aligned[0].z-1)<1e-5 && aligned[0].intensity==42,"Aligned coordinates/intensity are incorrect");
+    auto xyz_live = request;
+    xyz_live.destination = root / "live-xyz";
+    xyz_live.live_snapshot->source_intensities.reset();
+    xyz_live.live_snapshot->has_source_intensity = false;
+    ExportRoiDataset(xyz_live, std::make_shared<RoiExportProgress>());
+    const auto xyz_export = Npy(Sample(xyz_live.destination, "points"));
+    Check(xyz_export.size() == 3 && std::all_of(xyz_export.begin(), xyz_export.end(),
+      [](const auto & p) { return p.intensity == 0; }), "XYZ-only live export used normalized placeholder");
+    auto invalid_live = request;
+    invalid_live.destination = root / "invalid-intensity";
+    auto invalid_intensities = *intensities;
+    invalid_intensities[0] = std::numeric_limits<float>::quiet_NaN();
+    invalid_intensities[1] = std::numeric_limits<float>::infinity();
+    invalid_live.live_snapshot->source_intensities =
+      std::make_shared<const std::vector<float>>(std::move(invalid_intensities));
+    ExportRoiDataset(invalid_live, std::make_shared<RoiExportProgress>());
+    const auto sanitized = Npy(Sample(invalid_live.destination, "points"));
+    Check(sanitized.size() == 3 && sanitized[0].intensity == 0 && sanitized[1].intensity == 0 &&
+      sanitized[2].intensity == 512, "Invalid live source intensities leaked into training exports");
     // Exercise the original-intensity file-loading path, which differs from
     // the viewer's normalized intensity path.
     const auto input=root/"input.bin";

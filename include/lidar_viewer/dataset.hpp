@@ -23,5 +23,5 @@ struct DatasetSample
 };
 bool IsDatasetFile(const fs::path & path);
 std::vector<FrameHandle> ResolveDatasetFrames(const fs::path & path,InputLoadState * load=nullptr,bool include_bin=false);
-FrameData LoadDatasetFrame(const FrameHandle & handle);
+FrameData LoadDatasetFrame(const FrameHandle & handle, bool preserve_source_intensity = false);
 }  // namespace lidar_viewer

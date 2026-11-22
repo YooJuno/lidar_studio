@@ -39,21 +39,20 @@ constexpr std::array<float, kOusterLegacyChannels> kOs1_64AzimuthOffsetDeg{{
   3.164f, 1.055f, -1.055f, -3.164f, 3.164f, 1.055f, -1.055f, -3.164f
 }};
 
-void FinalizeFrame(FrameData & frame, FrameIntensity intensity,bool cropped_dataset=false)
+enum class DisplayIntensityRange {PerFrame, Byte};
+
+void FinalizeFrame(FrameData & frame, FrameIntensity intensity, bool cropped_dataset=false,
+  DisplayIntensityRange range=DisplayIntensityRange::PerFrame)
 {
-  // Match the bag decoder's handling of invalid samples before bounds,
-  // percentile selection and spatial hashing see any NaN/Inf coordinates.
-  frame.points.erase(std::remove_if(frame.points.begin(), frame.points.end(), [](KittiPoint & point) {
-    if (!std::isfinite(point.intensity)) point.intensity = 0.0f;
-    return !std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z);
-  }), frame.points.end());
-  if (frame.points.empty()) {
-    frame.center = {0.0f, 0.0f, 0.0f};
-    frame.radius = 10.0f;
-    frame.min_z = 0.0f;
-    frame.max_z = 0.0f;
-    frame.ground_z = 0.0f;
-    return;
+  const auto & original = frame.source_intensities;
+  const bool preserve_intensity = intensity == FrameIntensity::DisplayNormalized &&
+    frame.has_source_intensity && !frame.points.empty();
+  if (original && original->size() != frame.points.size())
+    throw std::runtime_error("Original intensity buffer does not match the source frame");
+  std::shared_ptr<std::vector<float>> retained;
+  if (preserve_intensity && !original) {
+    retained = std::make_shared<std::vector<float>>();
+    retained->reserve(frame.points.size());
   }
 
   Vec3 min_corner{
@@ -71,7 +70,21 @@ void FinalizeFrame(FrameData & frame, FrameIntensity intensity,bool cropped_data
   std::vector<float> z_samples;
   z_samples.reserve(frame.points.size());
 
-  for (auto & p : frame.points) {
+  // Keep raw intensities aligned with the same stable XYZ compaction as the
+  // display points. Existing decoder buffers are shared when no point is removed.
+  std::size_t kept = 0;
+  for (std::size_t index = 0; index < frame.points.size(); ++index) {
+    auto & p = frame.points[index];
+    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {
+      if (preserve_intensity && original && !retained) {
+        retained = std::make_shared<std::vector<float>>();
+        retained->reserve(frame.points.size());
+        retained->insert(retained->end(), original->begin(), original->begin() + index);
+      }
+      continue;
+    }
+    if (retained) retained->push_back(original ? (*original)[index] : p.intensity);
+    if (!std::isfinite(p.intensity)) p.intensity = 0.0f;
     min_corner.x = std::min(min_corner.x, p.x);
     min_corner.y = std::min(min_corner.y, p.y);
     min_corner.z = std::min(min_corner.z, p.z);
@@ -81,6 +94,20 @@ void FinalizeFrame(FrameData & frame, FrameIntensity intensity,bool cropped_data
     min_intensity = std::min(min_intensity, p.intensity);
     max_intensity = std::max(max_intensity, p.intensity);
     z_samples.push_back(p.z);
+    if (kept != index) frame.points[kept] = p;
+    ++kept;
+  }
+  frame.points.resize(kept);
+  if (retained) frame.source_intensities = std::move(retained);
+  else if (!preserve_intensity) frame.source_intensities.reset();
+
+  if (frame.points.empty()) {
+    frame.center = {0.0f, 0.0f, 0.0f};
+    frame.radius = 10.0f;
+    frame.min_z = 0.0f;
+    frame.max_z = 0.0f;
+    frame.ground_z = 0.0f;
+    return;
   }
 
   frame.center = {
@@ -101,6 +128,10 @@ void FinalizeFrame(FrameData & frame, FrameIntensity intensity,bool cropped_data
   frame.ground_z = z_samples[ground_index];
 
   if (intensity == FrameIntensity::Original) return;
+  if (range == DisplayIntensityRange::Byte) {
+    for (auto & p : frame.points) p.intensity /= 255.f;
+    return;
+  }
   const float intensity_range = max_intensity - min_intensity;
   if (intensity_range > 1e-6f) {
     for (auto & p : frame.points) {
@@ -338,17 +369,17 @@ FrameData LoadFrame(const FrameHandle & handle, FrameIntensity intensity, FrameR
 {
   if (handle.format == InputFormat::LidarPcap) {
     auto frame = lidar_viewer::ReadLidarPcapFrame(handle);
-    FinalizeFrame(frame,FrameIntensity::Original);
-    if (intensity == FrameIntensity::DisplayNormalized) {
-      for (auto & point : frame.points) point.intensity /= 255.f;
-    }
+    FinalizeFrame(frame,intensity,false,DisplayIntensityRange::Byte);
     return frame;
   }
   if (handle.format==InputFormat::Numpy || handle.format==InputFormat::Pcd || handle.format==InputFormat::DatasetXyzi) {
-    auto frame=lidar_viewer::LoadDatasetFrame(handle);FinalizeFrame(frame,intensity,true);return frame;
+    auto frame = lidar_viewer::LoadDatasetFrame(handle, intensity == FrameIntensity::DisplayNormalized);
+    FinalizeFrame(frame, intensity, true);
+    return frame;
   }
   if (handle.format == InputFormat::Ros2Bag) {
-    auto frame = LoadBagFrame(handle,isolation==FrameReadIsolation::Independent);
+    auto frame = LoadBagFrame(handle,isolation==FrameReadIsolation::Independent,
+      intensity==FrameIntensity::DisplayNormalized);
     FinalizeFrame(frame,intensity);
     return frame;
   }

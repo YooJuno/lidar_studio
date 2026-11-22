@@ -156,15 +156,24 @@ void TestPointLayouts()
   decoded = DecodePointCloud2(nonfinite);
   Check(decoded.points.size() == 2 && decoded.points[0].x == 2 &&
     decoded.points[0].intensity == 0, "Nonfinite XYZ filtering or intensity fallback failed");
+  decoded = DecodePointCloud2(nonfinite, true);
+  Check(decoded.source_intensities && decoded.source_intensities->size() == 2 &&
+    std::isinf(decoded.source_intensities->front()) && decoded.source_intensities->back() == 30 &&
+    decoded.points.front().intensity == 0, "Raw PointCloud2 intensity lost XYZ alignment");
 
   auto no_intensity = Xt32Cloud(1);
   no_intensity.fields.erase(no_intensity.fields.begin() + 3);
-  Check(DecodePointCloud2(no_intensity).points[0].intensity == 0, "Optional intensity is not optional");
+  const auto absent = DecodePointCloud2(no_intensity, true);
+  Check(absent.points[0].intensity == 0 && !absent.source_intensities && !absent.has_source_intensity,
+    "PointCloud2 without an intensity field invented a raw channel");
 
   auto integer = Xt32Cloud(1);
   integer.fields[3] = MakeField("reflectivity", 12, Field::UINT16);
   Store(integer.data, 12, static_cast<std::uint16_t>(512));
   Check(DecodePointCloud2(integer).points[0].intensity == 512, "Integer reflectivity decoding failed");
+  const auto reflectivity = DecodePointCloud2(integer, true);
+  Check(reflectivity.source_intensities && reflectivity.source_intensities->front() == 512,
+    "Raw PointCloud2 reflectivity was lost");
 
   auto doubles = Xt32Cloud(1);
   doubles.point_step = 40;
@@ -428,6 +437,9 @@ void TestStorage(const std::string & storage_id)
     Check(livox.size() == 1 && LoadBagFrame(livox.front()).points[0].intensity == 200 &&
       LoadBagFrame(handles[0]).points[0].x == 1,
       "Switching between explicit Livox and PointCloud2 topics used the wrong decoder");
+    const auto raw_livox = LoadBagFrame(livox.front(), false, true);
+    Check(raw_livox.source_intensities && raw_livox.source_intensities->front() == 200,
+      "Raw Livox CustomMsg reflectivity was lost");
     Throws([&] {ResolveBagFrames(folder, "/missing");}, "Missing topic should fail clearly");
     for (const auto & entry : fs::directory_iterator(folder)) {
       if (entry.path().extension() == ".mcap" || entry.path().extension() == ".db3") {

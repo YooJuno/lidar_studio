@@ -17,10 +17,12 @@ std::optional<std::uint64_t> ReadBagDurationNs(const fs::path & input);
 std::vector<FrameHandle> ResolveBagFrames(
   const fs::path & input, const std::string & topic = "/b2/points", const std::string & imu_topic = "",
   lidar_viewer::InputLoadState * load = nullptr);
-FrameData LoadBagFrame(const FrameHandle & handle, bool independent_reader = false);
+FrameData LoadBagFrame(const FrameHandle & handle, bool independent_reader = false,
+  bool preserve_source_intensity = false);
 
 #ifdef LIDAR_VIEWER_HAS_ROSBAG
 // Decode declared PointField offsets, row padding, and byte order rather than
 // reinterpreting storage as an aligned C++ point struct.
-FrameData DecodePointCloud2(const sensor_msgs::msg::PointCloud2 & cloud);
+FrameData DecodePointCloud2(const sensor_msgs::msg::PointCloud2 & cloud,
+  bool preserve_source_intensity = false);
 #endif

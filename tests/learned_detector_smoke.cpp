@@ -1,4 +1,5 @@
 #include "lidar_viewer/learned_detector.hpp"
+#include "lidar_viewer/terraseg.hpp"
 #include "lidar_viewer/platform.hpp"
 #include <chrono>
 #include <cmath>
@@ -43,8 +44,11 @@ def send(b):
  for i in range(0,len(b),3):sink.write(b[i:i+3]);sink.flush()
 send(reply.pack(b'LDR1',0,0,0,4)+b'CPU!')
 while True:
- tag,revision,count,score=req.unpack(exact(req.size));data=exact(count*12)
- if tag!=b'LDQ1':raise SystemExit(2)
+ tag,revision,count,score=req.unpack(exact(req.size))
+ transfusion='transfusion' in sys.argv
+ if tag!=(b'LDQ2' if transfusion else b'LDQ1'):raise SystemExit(2)
+ data=exact(count*(16 if transfusion else 12))
+ if transfusion and struct.unpack_from('<f',data,12)[0]!=83:raise SystemExit(4)
  x,y,z=struct.unpack_from('<fff',data)
  if x < -900:raise SystemExit(3)
  time.sleep(.04)
@@ -55,7 +59,8 @@ while True:
     std::ifstream protocol_source(worker);
     const std::string protocol((std::istreambuf_iterator<char>(protocol_source)),std::istreambuf_iterator<char>());
 #endif
-    std::ofstream(folder/"detector.cfg")<<"python="<<argv[1]<<"\nmodel_dir="<<temporary.u8string()<<"\nprovider=cpu\n";
+    std::ofstream(folder/"detector.cfg")<<"python="<<argv[1]<<"\nmodel_dir="<<temporary.u8string()<<
+      "\ntransfusion_model_dir="<<temporary.u8string()<<"\nprovider=cpu\n";
     {
       LearnedDetector detector;detector.Start(temporary);
       Wait([&]{auto status=detector.Status();Check(!status.failed,status.message.c_str());return status.ready;});
@@ -70,6 +75,13 @@ while True:
       Wait([&]{if (auto next=detector.Poll()) return next->revision==100;return false;});
       detector.Submit(101,{{-999,0,0,0}},.35f,0);
       Wait([&]{return detector.Status().failed;});
+      detector.Stop();
+      detector.Start(temporary,"transfusion");
+      Wait([&]{const auto status=detector.Status();Check(!status.failed,status.message.c_str());return status.ready;});
+      detector.Submit(102,{{1,2,3,83}},.25f,0);
+      Wait([&]{const auto status=detector.Status();Check(!status.failed,status.message.c_str());
+        result=detector.Poll();return result.has_value();});
+      Check(result->revision==102 && result->detections.size()==1,"TransFusion did not receive original intensity");
       detector.Stop();
       // Stopping during a blocked model startup must not hang application exit.
       std::ofstream(worker)<<"import time\ntime.sleep(60)\n";
@@ -117,6 +129,38 @@ while True:
     for (const auto * variant : {"base", "tiny", "short_range"}) {
       LearnedDetector detector;detector.Start(scripts,variant);
       Wait([&]{const auto status=detector.Status();Check(!status.failed,status.message.c_str());return status.ready;});
+    }
+#endif
+#if defined(__linux__) && defined(__x86_64__)
+    const auto checkpoint=temporary/"test-terraseg.pth";
+    std::ofstream(checkpoint)<<"protocol fixture";
+    std::ofstream(folder/"terraseg.cfg")<<"python="<<argv[1]<<"\ncheckpoint="<<checkpoint.u8string()<<'\n';
+    std::ofstream(temporary/"terraseg_worker.py")<<R"PY(import struct,sys
+src=sys.stdin.buffer
+dst=sys.stdout.buffer
+result=struct.Struct('<4sQII')
+request=struct.Struct('<4sQI')
+dst.write(result.pack(b'TGR1',0,0,0))
+dst.flush()
+while header:=src.read(request.size):
+    tag,revision,count=request.unpack(header)
+    if tag!=b'TGQ1':raise SystemExit(2)
+    scan=struct.iter_unpack('<fff',src.read(count*12))
+    mask=bytes(int(x>0 and abs(z)<.1) for x,y,z in scan)
+    dst.write(result.pack(b'TGR1',revision,len(mask),0)+mask)
+    dst.flush()
+)PY";
+    {
+      TerraSeg ground(temporary);
+      const std::vector<KittiPoint> points{{0,2,.5f,83},{0,3,1.5f,17},{0,1,.5f,0}};
+      for (int i=0;i<2;++i) {
+        const auto partitions=ground.Segment(points,.5f,1.5707963268f,{0,1,.5f});
+        Check(partitions && partitions->ground_points.size()==1 && partitions->ground_points[0].intensity==83 &&
+          partitions->non_ground_points.size()==2 && partitions->non_ground_points.back().intensity==0,
+          "TerraSeg did not preserve source point order, missing returns or ground reference");
+      }
+      ground.Cancel();
+      Check(!ground.Segment(points,0,0,{}),"Canceled TerraSeg accepted another scan");
     }
 #endif
     ConfigEnvironment(previous);std::filesystem::remove_all(temporary.parent_path());

@@ -288,6 +288,8 @@ if(BUILD_TESTING)
     target_link_libraries(learned_detector_smoke_test PRIVATE lidar_viewer_detector)
     add_test(NAME learned_detector_smoke_test COMMAND learned_detector_smoke_test ${Python3_EXECUTABLE})
     set_tests_properties(learned_detector_smoke_test PROPERTIES TIMEOUT 45)
+    add_test(NAME terraseg_worker_smoke_test COMMAND ${Python3_EXECUTABLE} -B
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/terraseg_worker_smoke.py)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
       add_test(NAME linux_desktop_smoke_test COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/linux_desktop_smoke.py)

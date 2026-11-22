@@ -78,9 +78,12 @@ struct FrameHandle
 struct FrameData
 {
   std::vector<KittiPoint> points;
-  // Live display normalization retains the decoded values in source order.
-  // Copies share this immutable buffer; derived/reordered clouds clear it.
+  // Display-normalized input retains decoded intensities in point order.
+  // A null buffer on display input means there are no source intensities.
+  // Copies share this immutable buffer; derived or reordered clouds clear it.
   std::shared_ptr<const std::vector<float>> source_intensities;
+  // False when decoding supplied only a synthetic intensity placeholder.
+  bool has_source_intensity{true};
   Vec3 center{};
   float radius{30.0f};
   float min_z{0.0f};

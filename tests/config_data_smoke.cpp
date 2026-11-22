@@ -67,10 +67,17 @@ int main()
       std::ofstream stream(bin, std::ios::binary);
       stream.write(reinterpret_cast<const char *>(samples), sizeof(samples));
     }
-    const auto frame = LoadFrame(ResolveInputFrames(bin).front());
+    const auto handle = ResolveInputFrames(bin).front();
+    const auto frame = LoadFrame(handle);
     Check(frame.points.size() == 2 && std::isfinite(frame.radius) && frame.center.x == 0 &&
       frame.points.front().intensity == 0 && frame.points.back().intensity == 1,
       "Invalid BIN samples contaminated bounds or intensity normalization");
+    Check(frame.source_intensities && frame.source_intensities->size() == frame.points.size() &&
+      std::isnan(frame.source_intensities->front()) && frame.source_intensities->back() == 10,
+      "Display-normalized BIN lost original XYZ-aligned intensity");
+    const auto original_frame = LoadFrame(handle, FrameIntensity::Original);
+    Check(!original_frame.source_intensities && original_frame.points.front().intensity == 0 &&
+      original_frame.points.back().intensity == 10, "Original-mode BIN semantics changed");
     fs::current_path(original);
     fs::remove_all(temporary);
     std::cout << "config_data_smoke: all checks passed\n";

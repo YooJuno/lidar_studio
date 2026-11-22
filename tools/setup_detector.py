@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Install the optional original Autoware CenterPoint model in user storage."""
+"""Install the optional LiDAR detector models in user storage."""
 import argparse
 import json
 import os
@@ -16,7 +16,8 @@ ROOT=Path(__file__).resolve().parent.parent
 sys.path.insert(0,str(ROOT/'python'))
 from lidar_detection.models import DEFAULT_MODELS, MODELS, sha256_file
 
-MODEL_CONFIG_KEYS={'tiny':'model_dir','short_range':'short_range_model_dir','base':'base_model_dir'}
+MODEL_CONFIG_KEYS={'tiny':'model_dir','short_range':'short_range_model_dir','base':'base_model_dir',
+    'transfusion':'transfusion_model_dir'}
 
 def directories():
     home=Path.home()
@@ -62,7 +63,7 @@ def main():
     selected=DEFAULT_MODELS if args.model=='all' else (args.model,)
     requested_python=args.runtime_python.expanduser().absolute() if args.runtime_python else None
     configured_python=Path(previous['python']).expanduser().absolute() if previous.get('python') else None
-    reuse_runtime=(args.model=='base' and not args.cuda and configured_python is not None
+    reuse_runtime=(args.model in ('base','transfusion') and not args.cuda and configured_python is not None
         and configured_python.is_file() and requested_python in (None,configured_python))
     runtime_python=configured_python if reuse_runtime else requested_python
     if not runtime_python and not (3,10)<=sys.version_info[:2]<=(3,13):
@@ -114,19 +115,23 @@ def main():
             finally:temporary.unlink(missing_ok=True)
         report('Validating '+spec.title)
         subprocess.run([*runtime_args,'-c',
-            'import sys;sys.path.insert(0,sys.argv[1]);from lidar_detection.centerpoint import CenterPoint;'
-            'm=CenterPoint(sys.argv[2],sys.argv[3],sys.argv[4]);print("Validated:",m.spec.title,m.provider)',
+            'import sys;sys.path.insert(0,sys.argv[1]);from lidar_detection.worker import create_detector;'
+            'm=create_detector(sys.argv[2],sys.argv[3],sys.argv[4]);print("Validated:",m.spec.title,m.provider)',
             str(python_root),str(model),provider,variant],check=True)
     config.mkdir(parents=True,exist_ok=True)
     settings={'python':str(python)}
     for variant,key in MODEL_CONFIG_KEYS.items():
-        default_path=str(data/MODELS[variant].folder)
         # Installing a single variant must not replace paths for other models.
         previous_path=previous.get(key)
+        if variant=='transfusion' and variant not in selected and not previous_path:
+            continue
+        default_path=str(data/MODELS[variant].folder)
         if variant=='short_range' and not previous_path and previous.get('model_dir'):
             previous_path=str(Path(previous['model_dir']).parent/MODELS[variant].folder)
         settings[key]=default_path if variant in selected else previous_path or default_path
     settings.update(provider=provider,managed_runtime=str(int(managed_runtime)))
+    for key,value in previous.items():
+        if key not in settings:settings[key]=value
     if any('\r' in value or '\n' in value for value in settings.values()):
         raise RuntimeError('Newlines in runtime paths are unsupported')
     text=''.join(f'{key}={value}\n' for key,value in settings.items())

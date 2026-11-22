@@ -298,6 +298,7 @@ RoiExportResult ExportRoiDataset(const RoiExportRequest & request,const std::sha
         if (j%65536==0) CheckCancel(*progress);
         auto p=raw.points[j];
         if (raw.source_intensities) p.intensity=(*raw.source_intensities)[j];
+        else if (request.live_snapshot && !raw.has_source_intensity) p.intensity=0.0f;
         if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) continue;
         if (p.x==0 && p.y==0 && p.z==0) {++missing_returns;continue;}
         if (!mask.Contains({p.x,p.y,p.z})) continue;

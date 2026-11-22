@@ -212,7 +212,7 @@ struct DetectorSetup::Impl {
 #if defined(__APPLE__) && defined(__aarch64__)
       const auto bundled = root.parent_path()/"detector/runtime/bin/python3";
       fs::path existing;
-      if (model=="base") {
+      if (model=="base" || model=="transfusion") {
         std::ifstream configured(config/"detector.cfg");
         for (std::string line; std::getline(configured,line);) {
           if (!line.empty() && line.back()=='\r') line.pop_back();

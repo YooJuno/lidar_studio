@@ -1,13 +1,17 @@
 #include "lidar_viewer/learned_detector.hpp"
+#include "lidar_viewer/terraseg.hpp"
+#include "lidar_viewer/algorithms/ground_partition.hpp"
 #include "lidar_viewer/platform.hpp"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <chrono>
 #include <stdexcept>
 #include <condition_variable>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -16,6 +20,7 @@
 #include <csignal>
 #include <fcntl.h>
 #include <pthread.h>
+#include <poll.h>
 #include <spawn.h>
 #include <sys/wait.h>
 extern char ** environ;
@@ -31,8 +36,9 @@ static_assert(sizeof(float)==4,"Detector protocol requires float32");
 class Child {
 public:
   ~Child() {Close();}
-  void Open(const std::filesystem::path & python,const std::filesystem::path & worker,
-    const std::filesystem::path & model,const std::string & variant,const std::string & provider,const std::filesystem::path & log,bool bundled=false) {
+  void Open(const std::filesystem::path & python,
+    const std::vector<std::filesystem::path> & arguments,const std::filesystem::path & log) {
+    log_path_=log;
 #ifdef _WIN32
     SECURITY_ATTRIBUTES sa{sizeof(SECURITY_ATTRIBUTES),nullptr,TRUE};
     HANDLE child_in=nullptr,child_out=nullptr;
@@ -50,10 +56,8 @@ public:
       }
       result.append(slashes*2,L'\\');return result+L'"';
     };
-    std::wstring command=quote(python.wstring())+(bundled ? L" -E -s -B -u " : L" -B -u ")+quote(worker.wstring())+L" --model-dir "+quote(model.wstring())+
-      L" --provider "+quote(std::wstring(provider.begin(),provider.end()))+
-      L" --model "+quote(std::wstring(variant.begin(),variant.end()))+
-      L" --native-dir "+quote(ExecutablePath().parent_path().wstring());
+    std::wstring command=quote(python.wstring());
+    for (const auto & argument : arguments) command+=L" "+quote(argument.wstring());
     STARTUPINFOW start{};start.cb=sizeof(start);start.dwFlags=STARTF_USESTDHANDLES;
     start.hStdInput=child_in;start.hStdOutput=child_out;start.hStdError=error;
     PROCESS_INFORMATION process{};
@@ -63,18 +67,24 @@ public:
     process_=process.hProcess;CloseHandle(process.hThread);
 #else
     int input[2],output[2];
-    if (pipe(input)!=0) throw std::runtime_error("Cannot create detector input pipe");
-    if (pipe(output)!=0) {close(input[0]);close(input[1]);throw std::runtime_error("Cannot create detector output pipe");}
-    for (int fd:{input[0],input[1],output[0],output[1]}) fcntl(fd,F_SETFD,FD_CLOEXEC);
+    const auto open_pipe=[](int descriptors[2]) {
+#ifdef __linux__
+      return pipe2(descriptors,O_CLOEXEC);
+#else
+      const int result=pipe(descriptors);
+      if (result==0) for (int i=0;i<2;++i) fcntl(descriptors[i],F_SETFD,FD_CLOEXEC);
+      return result;
+#endif
+    };
+    if (open_pipe(input)!=0) throw std::runtime_error("Cannot create model input pipe");
+    if (open_pipe(output)!=0) {close(input[0]);close(input[1]);throw std::runtime_error("Cannot create model output pipe");}
     const int error=open(log.c_str(),O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC,0600);
     posix_spawn_file_actions_t actions;posix_spawn_file_actions_init(&actions);
     posix_spawn_file_actions_adddup2(&actions,input[0],STDIN_FILENO);
     posix_spawn_file_actions_adddup2(&actions,output[1],STDOUT_FILENO);
     if (error>=0) posix_spawn_file_actions_adddup2(&actions,error,STDERR_FILENO);
-    std::vector<std::string> args{python.string(),"-B","-u"};
-    if(bundled) {args.push_back("-E");args.push_back("-s");}
-    args.insert(args.end(),{worker.string(),"--model-dir",model.string(),"--provider",provider,
-      "--model",variant,"--native-dir",ExecutablePath().parent_path().string()});
+    std::vector<std::string> args{python.string()};
+    for (const auto & argument : arguments) args.push_back(argument.string());
     std::vector<char *> argv;for(auto & arg:args) argv.push_back(arg.data());argv.push_back(nullptr);
     const int rc=posix_spawnp(&pid_,python.c_str(),&actions,nullptr,argv.data(),environ);
     posix_spawn_file_actions_destroy(&actions);close(input[0]);close(output[1]);if (error>=0) close(error);
@@ -101,6 +111,9 @@ public:
   }
   void Read(void * data,std::size_t size) {Transfer(data,size,false);}
   void Write(const void * data,std::size_t size) {Transfer(const_cast<void *>(data),size,true);}
+#ifndef _WIN32
+  void SetDeadline(std::chrono::seconds timeout) {deadline_=std::chrono::steady_clock::now()+timeout;}
+#endif
 private:
   void Transfer(void * data,std::size_t size,bool writing) {
     auto * bytes=static_cast<unsigned char *>(data);
@@ -108,19 +121,33 @@ private:
 #ifdef _WIN32
       DWORD transferred=0;const auto count=static_cast<DWORD>(std::min<std::size_t>(size,1<<20));
       const bool ok=writing ? WriteFile(write_,bytes,count,&transferred,nullptr)!=0 : ReadFile(read_,bytes,count,&transferred,nullptr)!=0;
-      if (!ok || !transferred) throw std::runtime_error("Detector process disconnected; see detector.log");
+      if (!ok || !transferred) throw std::runtime_error("Model process disconnected; see "+log_path_.filename().u8string());
 #else
-      const auto transferred=writing ? write(write_,bytes,size) : read(read_,bytes,size);
+      std::size_t count=size;
+      if (deadline_) {
+        const auto remaining=std::chrono::duration_cast<std::chrono::milliseconds>(
+          *deadline_-std::chrono::steady_clock::now());
+        if (remaining.count()<=0) throw std::runtime_error("Model process timed out");
+        pollfd descriptor{writing ? write_ : read_,static_cast<short>(writing ? POLLOUT : POLLIN),0};
+        const int ready=poll(&descriptor,1,static_cast<int>(remaining.count()));
+        if (ready<0 && errno==EINTR) continue;
+        if (!ready) throw std::runtime_error("Model process timed out");
+        if (ready<0) throw std::runtime_error("Cannot poll model process");
+        if (writing) count=std::min<std::size_t>(count,4096);
+      }
+      const auto transferred=writing ? write(write_,bytes,count) : read(read_,bytes,count);
       if (transferred<0 && errno==EINTR) continue;
-      if (transferred<=0) throw std::runtime_error("Detector process disconnected; see detector.log");
+      if (transferred<=0) throw std::runtime_error("Model process disconnected; see "+log_path_.filename().u8string());
 #endif
       bytes+=transferred;size-=transferred;
     }
   }
+  std::filesystem::path log_path_;
 #ifdef _WIN32
   HANDLE process_{nullptr},read_{nullptr},write_{nullptr};
 #else
   pid_t pid_{-1};int read_{-1},write_{-1};
+  std::optional<std::chrono::steady_clock::time_point> deadline_;
 #endif
 };
 struct Request {
@@ -145,7 +172,184 @@ DetectorResult ReadReply(Child & child,float yaw) {
     result.detections.push_back(algorithms::DecodeCenterPointBox(box.data(),yaw));
   return result;
 }
+
+#ifdef __linux__
+// TerraSeg also runs in synchronous inspect mode. Suppress a broken-pipe
+// signal for this write without changing the caller's signal policy.
+class BlockSigpipe {
+public:
+  BlockSigpipe() {
+    sigemptyset(&blocked_);sigaddset(&blocked_,SIGPIPE);
+    if (pthread_sigmask(SIG_BLOCK,&blocked_,&previous_)!=0)
+      throw std::runtime_error("Cannot protect the model worker pipe");
+  }
+  ~BlockSigpipe() {
+    sigset_t pending{};
+    if (!sigismember(&previous_,SIGPIPE) && sigpending(&pending)==0 && sigismember(&pending,SIGPIPE)) {
+      int signal=0;sigwait(&blocked_,&signal);
+    }
+    pthread_sigmask(SIG_SETMASK,&previous_,nullptr);
+  }
+private:
+  sigset_t blocked_{},previous_{};
+};
+
+struct TerraSegReply {
+  std::uint64_t revision{};
+  bool error{};
+  std::string message;
+  std::vector<unsigned char> mask;
+};
+
+TerraSegReply ReadTerraSegReply(Child & child, std::size_t expected_points)
+{
+  std::array<char,20> header{};
+  child.Read(header.data(),header.size());
+  const std::string tag(header.data(),4);
+  TerraSegReply reply;
+  std::uint32_t points{},length{};
+  std::memcpy(&reply.revision,header.data()+4,8);
+  std::memcpy(&points,header.data()+12,4);
+  std::memcpy(&length,header.data()+16,4);
+  reply.error=tag=="TGE1";
+  if ((!reply.error && tag!="TGR1") || length>16384 || points!=(reply.error ? 0 : expected_points))
+    throw std::runtime_error("Invalid TerraSeg worker reply");
+  reply.message.resize(length);
+  child.Read(reply.message.data(),length);
+  reply.mask.resize(points);
+  child.Read(reply.mask.data(),points);
+  if (std::any_of(reply.mask.begin(),reply.mask.end(),[](unsigned char label){return label>1;}))
+    throw std::runtime_error("Invalid TerraSeg ground labels");
+  return reply;
+}
+#endif
 } // namespace
+
+struct TerraSeg::Impl {
+  mutable std::mutex status_lock;
+  TerraSegStatus status;
+#ifdef __linux__
+  std::mutex request_lock,process_lock;
+  std::atomic<bool> canceled{false};
+  Child child;
+  std::filesystem::path python,checkpoint,worker,log;
+  std::string ready_message;
+  std::vector<float> xyz;
+  std::uint64_t next_revision{1};
+
+  void SetStatus(bool ready, bool failed, std::string message) {
+    std::lock_guard<std::mutex> lock(status_lock);
+    status.ready=ready;status.failed=failed;status.message=std::move(message);
+  }
+#endif
+};
+
+TerraSeg::TerraSeg(const std::filesystem::path & python_root) : impl_(std::make_unique<Impl>())
+{
+#if defined(__linux__) && defined(__x86_64__)
+  auto & model=*impl_;
+  const auto folder=UserConfigurationDirectory();
+  std::ifstream file(folder/"terraseg.cfg");
+  for (std::string line; std::getline(file,line);) {
+    if (!line.empty() && line.back()=='\r') line.pop_back();
+    if (line.rfind("python=",0)==0) model.python=std::filesystem::u8path(line.substr(7));
+    if (line.rfind("checkpoint=",0)==0) model.checkpoint=std::filesystem::u8path(line.substr(11));
+  }
+  model.worker=python_root/"terraseg_worker.py";
+  model.log=folder/"terraseg.log";
+  std::error_code error;
+  model.status.configured=std::filesystem::is_regular_file(model.worker,error) &&
+    std::filesystem::is_regular_file(model.python,error) &&
+    std::filesystem::is_regular_file(model.checkpoint,error);
+  model.status.message=model.status.configured ? "Waiting for a scan" : "TerraSeg runtime or weights are missing";
+#else
+  (void)python_root;
+  impl_->status.message="TerraSeg requires Linux x64 and NVIDIA CUDA";
+#endif
+}
+
+TerraSeg::~TerraSeg() = default;
+
+TerraSegStatus TerraSeg::Status() const
+{
+  std::lock_guard<std::mutex> lock(impl_->status_lock);
+  return impl_->status;
+}
+
+void TerraSeg::Cancel()
+{
+#ifdef __linux__
+  impl_->canceled=true;
+  std::lock_guard<std::mutex> lock(impl_->process_lock);
+  impl_->child.Kill();
+#endif
+}
+
+std::optional<algorithms::GroundRemovalResult> TerraSeg::Segment(
+  const std::vector<KittiPoint> & points, float ground_height, float display_yaw, const Vec3 & sensor_origin)
+{
+#ifdef __linux__
+  auto & model=*impl_;
+  std::lock_guard<std::mutex> lock(model.request_lock);
+  const auto status=Status();
+  if (!status.configured || status.failed || model.canceled) return std::nullopt;
+  if (points.empty()) return algorithms::GroundRemovalResult{};
+  if (points.size()>4000000) {
+    model.SetStatus(status.ready,false,"TerraSeg supports at most 4 million points per scan");
+    return std::nullopt;
+  }
+  try {
+    if (!status.ready) {
+      model.SetStatus(false,false,"Loading TerraSeg Small");
+      {
+        std::lock_guard<std::mutex> process(model.process_lock);
+        if (model.canceled) return std::nullopt;
+        model.child.Open(model.python,{"-E","-s","-B","-u",model.worker,"--checkpoint",model.checkpoint},model.log);
+      }
+      model.child.SetDeadline(std::chrono::seconds(120));
+      const auto ready=ReadTerraSegReply(model.child,0);
+      if (ready.revision || ready.error) throw std::runtime_error(ready.message.empty() ? "Invalid TerraSeg startup reply" : ready.message);
+      model.ready_message=ready.message.empty() ? "Ready · CUDA" : "Ready · "+ready.message;
+    }
+    const float cosine=std::cos(display_yaw),sine=std::sin(display_yaw);
+    model.xyz.clear();model.xyz.reserve(points.size()*3);
+    for (const auto & point : points) {
+      const bool missing=point.x==sensor_origin.x && point.y==sensor_origin.y && point.z==sensor_origin.z;
+      model.xyz.push_back(cosine*point.x+sine*point.y);
+      model.xyz.push_back(-sine*point.x+cosine*point.y);
+      // Skip no-return placeholders in the model while retaining the input index.
+      model.xyz.push_back(missing ? std::numeric_limits<float>::quiet_NaN() : point.z-ground_height);
+    }
+    const auto revision=model.next_revision++;
+    const auto count=static_cast<std::uint32_t>(points.size());
+    std::array<char,16> header{};
+    std::memcpy(header.data(),"TGQ1",4);
+    std::memcpy(header.data()+4,&revision,8);
+    std::memcpy(header.data()+12,&count,4);
+    model.child.SetDeadline(std::chrono::seconds(45));
+    {
+      BlockSigpipe blocked;
+      model.child.Write(header.data(),header.size());
+      model.child.Write(model.xyz.data(),model.xyz.size()*sizeof(float));
+    }
+    auto reply=ReadTerraSegReply(model.child,points.size());
+    if (reply.revision!=revision) throw std::runtime_error("TerraSeg frame revision mismatch");
+    model.SetStatus(true,false,reply.error ? reply.message : model.ready_message);
+    if (reply.error) return std::nullopt;
+    return algorithms::PartitionGround(points,reply.mask);
+  } catch (const std::exception & error) {
+    {
+      std::lock_guard<std::mutex> process(model.process_lock);
+      model.child.Close();
+    }
+    model.SetStatus(false,true,error.what());
+    return std::nullopt;
+  }
+#else
+  (void)points;(void)ground_height;(void)display_yaw;(void)sensor_origin;
+  return std::nullopt;
+#endif
+}
 
 struct LearnedDetector::Impl {
   mutable std::mutex mutex;std::mutex process_mutex;std::condition_variable cv;
@@ -165,7 +369,7 @@ void LearnedDetector::Start(const std::filesystem::path & root,const std::string
   if (!algorithms::IsDetectorModel(variant)) throw std::invalid_argument("Unknown detector model");
   Stop();
   const auto config=UserConfigurationDirectory()/"detector.cfg";
-  std::filesystem::path python,model,short_model,base_model;std::string provider="auto",line;bool managed=false;
+  std::filesystem::path python,model,short_model,base_model,transfusion_model;std::string provider="auto",line;bool managed=false;
   std::ifstream file(config);
   while (std::getline(file,line)) {
     if (!line.empty() && line.back()=='\r') line.pop_back();
@@ -175,6 +379,7 @@ void LearnedDetector::Start(const std::filesystem::path & root,const std::string
     else if (key=="model_dir") model=std::filesystem::u8path(value);
     else if (key=="short_range_model_dir") short_model=std::filesystem::u8path(value);
     else if (key=="base_model_dir") base_model=std::filesystem::u8path(value);
+    else if (key=="transfusion_model_dir") transfusion_model=std::filesystem::u8path(value);
     else if (key=="provider" && value=="cpu") provider=value;
     else if (key=="managed_runtime") managed=value=="1";
   }
@@ -183,6 +388,7 @@ void LearnedDetector::Start(const std::filesystem::path & root,const std::string
     std::filesystem::path{} : model_root/"centerpoint-shortrange-v2.0.0";
   if (variant=="base") model=!base_model.empty() ? base_model : model_root.empty() ?
     std::filesystem::path{} : model_root/"centerpoint-base-v4.1";
+  if (variant=="transfusion") model=transfusion_model;
   // Packaged Mac builds contain an offline, relocatable CPU runtime. Explicit
   // user configurations retain priority; a new Mac needs no setup command.
   const auto assets=root.parent_path()/"detector";
@@ -190,7 +396,7 @@ void LearnedDetector::Start(const std::filesystem::path & root,const std::string
   bool bundled=managed || python==runtime;
   // Installing only Base with the bundled interpreter leaves the two
   // optional user model directories empty. Continue using their bundled weights.
-  if (variant!="base" && ((python.empty() && model.empty()) ||
+  if ((variant=="tiny" || variant=="short_range") && ((python.empty() && model.empty()) ||
       (python==runtime && !std::filesystem::is_directory(model)))) {
     const auto weights=assets/"models"/(variant=="short_range" ? "centerpoint-shortrange-v2.0.0" : "centerpoint-tiny-v4.1");
     if(std::filesystem::is_regular_file(runtime) && std::filesystem::is_directory(weights)) {
@@ -213,29 +419,36 @@ void LearnedDetector::Start(const std::filesystem::path & root,const std::string
       std::filesystem::create_directories(config.parent_path());
       {std::lock_guard<std::mutex> process_lock(impl_->process_mutex);
         std::lock_guard<std::mutex> lock(impl_->mutex);if (impl_->stop) return;
-        impl_->child.Open(python,root/"detector_worker.py",model,variant,provider,config.parent_path()/"detector.log",bundled);
+        std::vector<std::filesystem::path> arguments{"-B","-u"};
+        if (bundled) arguments.insert(arguments.end(),{"-E","-s"});
+        arguments.insert(arguments.end(),{root/"detector_worker.py","--model-dir",model,
+          "--provider",provider,"--model",variant,"--native-dir",ExecutablePath().parent_path()});
+        impl_->child.Open(python,arguments,config.parent_path()/"detector.log");
       }
       auto ready=ReadReply(impl_->child,0);
       if (ready.revision || !ready.error.empty()) throw std::runtime_error(ready.error.empty() ? "Invalid detector startup reply" : ready.error);
       {std::lock_guard<std::mutex> lock(impl_->mutex);impl_->status.ready=true;impl_->status.provider=ready.detail;impl_->status.message="Ready";}
-      std::vector<float> xyz; // Reuse IPC storage across scans, outside the GUI.
+      const bool with_intensity=variant=="transfusion";
+      const std::size_t stride=with_intensity ? 4 : 3;
+      std::vector<float> coordinates; // Reuse IPC storage across scans.
       while (true) {
         Request request;
         {std::unique_lock<std::mutex> lock(impl_->mutex);impl_->cv.wait(lock,[this]{return impl_->stop || impl_->pending.has_value();});
           if (impl_->stop) break;
           request=std::move(*impl_->pending);impl_->pending.reset();}
         const auto processing_started=std::chrono::steady_clock::now();
-        xyz.clear();xyz.reserve(request.scan->size()*3);
+        coordinates.clear();coordinates.reserve(request.scan->size()*stride);
         const float c=std::cos(request.yaw),s=std::sin(request.yaw);
         for (const auto & point:*request.scan) {
-          xyz.push_back(c*point.x+s*point.y);xyz.push_back(-s*point.x+c*point.y);xyz.push_back(point.z);
+          coordinates.push_back(c*point.x+s*point.y);coordinates.push_back(-s*point.x+c*point.y);coordinates.push_back(point.z);
+          if (with_intensity) coordinates.push_back(point.intensity);
         }
+        const auto count=static_cast<std::uint32_t>(request.scan->size());
         request.scan.reset();
-        const std::uint32_t count=static_cast<std::uint32_t>(xyz.size()/3);
-        std::array<char,20> header{};std::memcpy(header.data(),"LDQ1",4);
+        std::array<char,20> header{};std::memcpy(header.data(),with_intensity ? "LDQ2" : "LDQ1",4);
         std::memcpy(header.data()+4,&request.revision,8);std::memcpy(header.data()+12,&count,4);std::memcpy(header.data()+16,&request.threshold,4);
         impl_->child.Write(header.data(),header.size());
-        impl_->child.Write(xyz.data(),xyz.size()*sizeof(float));
+        impl_->child.Write(coordinates.data(),coordinates.size()*sizeof(float));
         auto result=ReadReply(impl_->child,request.yaw);
         result.processing_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-processing_started).count();
         if (result.revision!=request.revision) throw std::runtime_error("Detector frame revision mismatch");

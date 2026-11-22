@@ -40,9 +40,6 @@ template<class Message> std::shared_ptr<rclcpp::SerializedMessage> Serialize(con
 void NormalizeIntensity(FrameData & frame)
 {
   if (frame.points.empty()) return;
-  auto source=std::make_shared<std::vector<float>>();source->reserve(frame.points.size());
-  for (const auto & point:frame.points) source->push_back(point.intensity);
-  frame.source_intensities=std::move(source);
   const auto range = std::minmax_element(frame.points.begin(), frame.points.end(),
     [](const auto & a, const auto & b) {return a.intensity < b.intensity;});
   const float low = range.first->intensity, extent = range.second->intensity - low;
@@ -247,7 +244,7 @@ struct LiveSession::Impl
     try {
       Record(cloud, options.points_topic, received);
       auto next=std::make_unique<LiveFrame>();
-      next->frame=DecodePointCloud2(cloud); next->sequence=sequence;
+      next->frame=DecodePointCloud2(cloud, true); next->sequence=sequence;
       if (!next->frame.timestamp_ns || *next->frame.timestamp_ns<=0) next->frame.timestamp_ns=received;
       NormalizeIntensity(next->frame);
       ImuTimeline timeline;

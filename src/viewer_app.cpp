@@ -30,6 +30,7 @@
 #include "lidar_viewer/live_io.hpp"
 #include "lidar_viewer/pcap_io.hpp"
 #include "lidar_viewer/learned_detector.hpp"
+#include "lidar_viewer/terraseg.hpp"
 #include "lidar_viewer/detector_setup.hpp"
 #include "lidar_viewer/object_tracker.hpp"
 #include "lidar_viewer/platform.hpp"
@@ -80,7 +81,7 @@ constexpr const char * kSettingsFileName = "lidar_viewer_settings.cfg";
 constexpr const char * kProfilesDir = "config/profiles";
 constexpr const char * kAlgorithmsConfigPath = "config/algorithms.yaml";
 constexpr const char * kDefaultInputPath = "dataset/gangnam/2019_10_04_12_28_25.bin";
-constexpr std::array<const char *, 5> kObjectModels{"tiny", nullptr, nullptr, "short_range", "base"};
+constexpr std::array<const char *, 6> kObjectModels{"tiny", nullptr, nullptr, "short_range", "base", "transfusion"};
 
 int ObjectMethodForModel(const std::string & model)
 {
@@ -88,6 +89,13 @@ int ObjectMethodForModel(const std::string & model)
     if (kObjectModels[i] && model==kObjectModels[i]) return static_cast<int>(i);
   }
   return 0;
+}
+
+float DetectorPresetScore(std::string_view model)
+{
+  if (model=="tiny") return .35f;
+  if (model=="transfusion") return .25f;
+  return .5f;
 }
 // Viridis by Nathaniel J. Smith, Stefan van der Walt, and Eric Firing (CC0).
 // https://github.com/BIDS/colormap/blob/master/colormaps.py
@@ -563,6 +571,7 @@ struct ViewerState
   std::future<BagLoadResult> bag_load_future;
   ~ViewerState() {
     if (input_load) input_load->Cancel();
+    if (geometry_worker && terraseg) terraseg->Cancel();
     if (duration_cancel) duration_cancel->store(true);
     if (export_progress) export_progress->cancel.store(true);
   }
@@ -748,6 +757,7 @@ struct ViewerState
   std::vector<lidar_viewer::algorithms::Cluster> clusters;
   std::vector<lidar_viewer::algorithms::Detection> detections;
   std::unique_ptr<lidar_viewer::LearnedDetector> detector;
+  std::shared_ptr<lidar_viewer::TerraSeg> terraseg;
   std::unique_ptr<lidar_viewer::DetectorSetup> detector_setup;
   lidar_viewer::DetectorSetupProgress detector_setup_progress;
   bool detector_setup_applied{false};
@@ -794,6 +804,24 @@ struct ViewerState
 bool GeometryPending(const ViewerState & state)
 {
   return state.geometry_future.valid() || state.pending_detection_frame.has_value();
+}
+
+bool UsesTerraSeg(const ViewerState & state)
+{
+  return state.ground_removal_enabled && state.algorithm_config.ground_removal.mode=="terraseg";
+}
+
+lidar_viewer::TerraSeg & EnsureTerraSeg(ViewerState & state)
+{
+  if (!state.terraseg)
+    state.terraseg=std::make_shared<lidar_viewer::TerraSeg>(lidar_viewer::ProjectResourcePath("python"));
+  return *state.terraseg;
+}
+
+void ReleaseTerraSeg(ViewerState & state)
+{
+  if (state.terraseg) state.terraseg->Cancel();
+  state.terraseg.reset();
 }
 
 const lidar_viewer::RoiSettings & EditedRoi(const ViewerState & state)
@@ -1538,11 +1566,15 @@ void PrepareDetectorInput(ViewerState & state, const FrameData & aligned, const 
   float ground_offset)
 {
   auto points=std::make_shared<std::vector<KittiPoint>>();points->reserve(aligned.points.size());
+  const auto * intensity=(raw.source_intensities && raw.source_intensities->size()==aligned.points.size()) ?
+    raw.source_intensities->data() : nullptr;
   for (std::size_t i=0;i<aligned.points.size();++i) {
-    const auto & p=aligned.points[i];
     // The base scan already has the dataset floor offset subtracted. Identify
     // missing returns at the original sensor origin, not the shifted origin.
-    if (raw.points[i].x!=0 || raw.points[i].y!=0 || raw.points[i].z!=-ground_offset) points->push_back(p);
+    if (raw.points[i].x==0 && raw.points[i].y==0 && raw.points[i].z==-ground_offset) continue;
+    auto p=aligned.points[i];
+    p.intensity=intensity ? intensity[i] : std::numeric_limits<float>::quiet_NaN();
+    points->push_back(p);
   }
   state.detector_input=std::move(points);state.detector_yaw=yaw;
   state.detector_alignment=state.geometry_input_config;
@@ -1566,7 +1598,7 @@ void RefreshDetectorInput(ViewerState & state)
 }
 
 void ApplyCalibration(ViewerState & state, const FrameData * source = nullptr,
-  std::optional<float> source_ground_offset = std::nullopt, bool update_detector=true)
+  std::optional<float> source_ground_offset = std::nullopt, bool update_detector=true, bool defer_terraseg=false)
 {
   const auto started=std::chrono::steady_clock::now();
   FrameData frame=source ? *source : state.base_frame;
@@ -1607,25 +1639,37 @@ void ApplyCalibration(ViewerState & state, const FrameData * source = nullptr,
   }
   state.exclusion_removed_count=0;
   std::size_t obstacles=frame.points.size();
-  if (state.ground_removal_enabled && !frame.points.empty()) {
+  if (state.ground_removal_enabled && !(defer_terraseg && UsesTerraSeg(state)) && !frame.points.empty()) {
     auto skipped=exclusions.ExtractRejected(frame.points);
     state.exclusion_removed_count=skipped.size();
     auto params=state.algorithm_config.ground_removal; params.enabled=true;
     params.sensor_height_m=std::max(.05f,transform.z_offset-source_ground_offset.value_or(state.global_ground_offset)-params.gseg3d_ground_height_m);
     params.sequence_id=state.ground_sequence;
-    lidar_viewer::algorithms::GroundRemovalResult result;
+    std::optional<lidar_viewer::algorithms::GroundRemovalResult> result;
     if(!frame.points.empty()) {
       const auto ground_started=std::chrono::steady_clock::now();
-      result=lidar_viewer::algorithms::RunGroundSegmentation(frame.points,params);
-      state.ground_stage_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-ground_started).count();
-      state.ground_average.Add(*state.ground_stage_ms);
+      if (params.mode=="terraseg") {
+        const auto origin=ApplyCalibrationTransform({0,0,-source_ground_offset.value_or(state.global_ground_offset)},transform);
+        result=EnsureTerraSeg(state).Segment(frame.points,params.gseg3d_ground_height_m,resolved.effective.yaw_deg*kPi/180.f,origin);
+      } else
+        result=lidar_viewer::algorithms::RunGroundSegmentation(frame.points,params);
+      if (result) {
+        state.ground_stage_ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-ground_started).count();
+        state.ground_average.Add(*state.ground_stage_ms);
+      }
     }
-    result.non_ground_points.insert(result.non_ground_points.end(),skipped.begin(),skipped.end());
-    obstacles=result.non_ground_points.size();
-    frame.points=std::move(result.non_ground_points);
-    frame.points.reserve(frame.points.size()+result.ground_points.size());
-    for (auto point : result.ground_points) {point.intensity=-1; frame.points.push_back(point);}
-    ++state.ground_passes;
+    if (result) {
+      frame.points=std::move(result->non_ground_points);
+      frame.points.reserve(frame.points.size()+skipped.size()+result->ground_points.size());
+    }
+    frame.points.insert(frame.points.end(),skipped.begin(),skipped.end());
+    obstacles=frame.points.size();
+    if (result) {
+      for (auto point : result->ground_points) {point.intensity=-1; frame.points.push_back(point);}
+      ++state.ground_passes;
+    } else if (params.mode!="terraseg") {
+      ++state.ground_passes;
+    }
   } else state.exclusion_removed_count=exclusions.CountRejected(frame.points);
   // Skipped points remain visible without a ground label. Only the remaining
   // points enter segmentation; the learned detector always receives the scan.
@@ -1662,6 +1706,10 @@ void QueueGeometry(ViewerState & state, FrameData base, std::optional<std::size_
   work->ground_removal_enabled=state.ground_removal_enabled;work->ground_sequence=state.ground_sequence;
   work->roi=state.roi;work->display_roi=state.display_roi;work->roi_frame=state.roi_frame;
   work->analysis_roi=state.analysis_roi;work->applied_exclusions=state.analysis_roi;
+  if (UsesTerraSeg(state)) {
+    EnsureTerraSeg(state);
+    work->terraseg=state.terraseg;
+  }
   if (roi_only) {
     work->processed_frame=state.processed_frame;work->processed_obstacles=state.processed_obstacles;
     work->processing_ms=state.processing_ms;
@@ -1714,6 +1762,14 @@ void RebuildGrid(ViewerState & state)
 constexpr std::size_t kMaxCachedFrames = 3;
 constexpr std::size_t kFrameCacheBytes = 64u*1024u*1024u;
 
+std::size_t CachedFrameBytes(const FrameData & frame)
+{
+  std::size_t bytes=frame.points.capacity()*sizeof(KittiPoint);
+  if (frame.annotations) bytes+=frame.annotations->point_labels.capacity()*sizeof(std::int32_t);
+  if (frame.source_intensities) bytes+=frame.source_intensities->capacity()*sizeof(float);
+  return bytes;
+}
+
 void StoreFrameInCache(ViewerState & state, std::size_t index, FrameData frame)
 {
   auto cache_it = state.frame_cache.find(index);
@@ -1727,16 +1783,14 @@ void StoreFrameInCache(ViewerState & state, std::size_t index, FrameData frame)
   state.frame_cache.emplace(index, std::move(frame));
   std::size_t bytes=0;
   for (const auto & entry:state.frame_cache) {
-    bytes+=entry.second.points.capacity()*sizeof(KittiPoint);
-    if(entry.second.annotations) bytes+=entry.second.annotations->point_labels.capacity()*sizeof(std::int32_t);
+    bytes+=CachedFrameBytes(entry.second);
   }
   // Retain one oversized frame so it can still be consumed without reloading.
   while (state.frame_cache_order.size() > 1 &&
       (state.frame_cache_order.size() > kMaxCachedFrames || bytes > kFrameCacheBytes)) {
     const std::size_t evict_index = state.frame_cache_order.front();
     state.frame_cache_order.pop_front();
-    bytes-=state.frame_cache.at(evict_index).points.capacity()*sizeof(KittiPoint);
-    if(state.frame_cache.at(evict_index).annotations) bytes-=state.frame_cache.at(evict_index).annotations->point_labels.capacity()*sizeof(std::int32_t);
+    bytes-=CachedFrameBytes(state.frame_cache.at(evict_index));
     state.frame_cache.erase(evict_index);
   }
 }
@@ -1918,7 +1972,7 @@ bool CompleteGeometry(ViewerState & state)
   }
 }
 
-void LoadFrameByIndex(ViewerState & state, std::size_t index)
+void LoadFrameByIndex(ViewerState & state, std::size_t index, bool defer_terraseg=false)
 {
   if (state.frames.empty()) {
     throw std::runtime_error("No frames are available");
@@ -1945,7 +1999,7 @@ void LoadFrameByIndex(ViewerState & state, std::size_t index)
     if (state.frames.size()>1) QueueFramePrefetch(state,(next_index+1)%state.frames.size());
     return;
   }
-  ApplyCalibration(state, &next_base, offset);
+  ApplyCalibration(state, &next_base, offset, true, defer_terraseg);
   state.base_frame = std::move(next_base);
   state.global_ground_offset = offset;
   state.alignment_initialized = true;
@@ -2113,7 +2167,8 @@ void OpenBagSource(ViewerState & state, std::size_t index, bool reload = false)
       load->Stage(lidar_viewer::InputLoadStage::PreparingDisplay);
       result.ground_offset=result.frames.front().format==InputFormat::KittiXyzi ? result.first_frame.ground_z : 0.f;
       ApplyGlobalAlignment(result.first_frame,result.ground_offset);
-      ApplyCalibration(*prepared,&result.first_frame,result.ground_offset);
+      // Commit the first scan before waiting for the optional CUDA model.
+      ApplyCalibration(*prepared,&result.first_frame,result.ground_offset,true,true);
       result.prepared=std::move(prepared);
       load->CheckCancelled();
       return result;
@@ -2405,6 +2460,7 @@ void CompleteBagLoad(ViewerState & state)
   if (!state.loading_bag_source || !state.bag_load_future.valid() ||
       state.bag_load_future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
   const auto selected = *state.loading_bag_source;
+  bool committed=false;
   try {
     auto result = state.bag_load_future.get();
     if (state.input_load) state.input_load->CheckCancelled();
@@ -2510,6 +2566,7 @@ void CompleteBagLoad(ViewerState & state)
     std::cout << (state.frames.front().format==InputFormat::Ros2Bag ? "Opened bag: " : "Opened point cloud: ")
               << state.bag_sources[selected].path << " | "
               << state.frames.size() << " frames" << std::endl;
+    committed=true;
   } catch (const lidar_viewer::InputLoadCancelled &) {
     SetTransientStatus(state,"Opening canceled");
     std::cout << "Opening canceled; current input preserved" << std::endl;
@@ -2523,6 +2580,10 @@ void CompleteBagLoad(ViewerState & state)
   state.input_load.reset();
   state.is_playing = state.input_load_autoplay;
   state.input_load_autoplay=false;
+  if (committed) {
+    if (UsesTerraSeg(state)) QueueGeometry(state,state.base_frame,{}, {},false);
+    else ReleaseTerraSeg(state);
+  }
 }
 
 fs::path DataFoldersConfigPath()
@@ -2615,6 +2676,7 @@ void ConnectLive(ViewerState & state)
     if (state.bag_sensor_height_override) state.calibration.z_m = *state.bag_sensor_height_override;
     if (state.imu_level_cli_override) state.imu_level_enabled = true;
   }
+  if (!UsesTerraSeg(state)) ReleaseTerraSeg(state);
   if (state.frame_reader) state.frame_reader->CancelPending();
   state.prefetch_future={};
   CancelGeometry(state);
@@ -2951,7 +3013,8 @@ void LoadSettingsFile(ViewerState & state, const fs::path & path)
           std::clamp(ParseFiniteFloat(value), 0.1f, 5.0f);
       } else if (key == "ground_mode") {
         if (value == "fast_grid" || value == "gseg3d" || value == "patchworkpp" ||
-            value == "patchwork_classic" || value == "fugseg" || value == "grid" || value == "ransac")
+            value == "patchwork_classic" || value == "terraseg" || value == "fugseg" ||
+            value == "grid" || value == "ransac")
           state.algorithm_config.ground_removal.mode = value;
         else throw std::invalid_argument("Unknown ground segmentation method");
       } else if (key == "fugseg_num_segments") {
@@ -5626,7 +5689,10 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       SectionTitle("Ground segmentation");
       if (ImGui::Checkbox("Classify ground", &state.ground_removal_enabled)) {
         reprocess=true;
-        if (!state.ground_removal_enabled) state.ground_view=ViewerState::GroundView::All;
+        if (!state.ground_removal_enabled) {
+          state.ground_view=ViewerState::GroundView::All;
+          ReleaseTerraSeg(state);
+        }
       }
       TraceUi("ground_enabled");
       ImGui::TextDisabled("Show");ImGui::SetNextItemWidth(-1);
@@ -5640,29 +5706,57 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       TraceUi("ground_display");
       Tip("Display classified points only. ROI remains active. Switching views reuses the existing result and keeps playback running.");
       ImGui::TextDisabled("Method");
-      const char * modes[] = {"fast_grid", "gseg3d", "patchworkpp", "fugseg", "grid", "ransac", "patchwork_classic"};
-      const char * labels[] = {"Fast grid", "GSeg3D", "Patchwork++", "FugSeg", "Grid", "RANSAC", "Patchwork (classic)"};
+      const char * modes[] = {"fast_grid", "gseg3d", "patchworkpp", "fugseg", "grid", "ransac", "patchwork_classic", "terraseg"};
+      const char * labels[] = {"Fast grid", "GSeg3D", "Patchwork++", "FugSeg", "Grid", "RANSAC", "Patchwork (classic)", "TerraSeg Small"};
       const auto count=static_cast<int>(std::size(modes));
       int mode = 0;
       for (int i = 0; i < count; ++i) if (ground.mode == modes[i]) mode = i;
       ImGui::SetNextItemWidth(-1);
       if (ImGui::Combo("##GroundMethod", &mode, labels, count)) {
         ground.mode = modes[mode];
+        if (ground.mode!="terraseg") ReleaseTerraSeg(state);
         state.ground_removal_enabled=true;
         reprocess = true;
       }
       TraceUi("ground_method");
       const bool classic_patchwork=ground.mode=="patchwork_classic";
+      const bool terraseg=ground.mode=="terraseg";
       ImGui::TextDisabled("%s",ground.mode=="gseg3d" ? "Connected planes / CPU" :
+        terraseg ? "Learned ground segmentation / CUDA" :
         classic_patchwork ? "Local planes with fixed thresholds / CPU" :
         ground.mode=="patchworkpp" ? "Adaptive local planes / CPU" : ground.mode=="fugseg" ? "Uncertainty-aware terrain / CPU" :
         ground.mode=="fast_grid" ? "Local terrain grid" : ground.mode=="ransac" ? "Global plane + local check" : "Connected height cells");
       Tip(ground.mode=="ransac" ? "Fits one dominant plane. Prefer local-plane methods when the terrain changes slope." :
+        terraseg ? "Official TerraSeg Small. Use Align to level the scan and set the expected ground height." :
         classic_patchwork ? "Original Patchwork with fixed elevation and flatness thresholds. Sensor height follows Align and Ground reference." :
         ground.mode=="patchworkpp" ? "Original Patchwork++: adaptive local planes, suitable for slopes and uneven roads. Sensor height follows Align." :
         ground.mode=="fugseg" ? "Original FugSeg: uncertainty-aware polar terrain extraction, including sparse and occluded areas." :
         ground.mode=="gseg3d" ? "Original GSeg3D: plane geometry and connected 3D cells. Ground reference controls the region-growing seeds." :
         "Ground reference and slope limits guide connected local heights. Compare Ground only and Obstacles only when tuning.");
+      if (terraseg && state.ground_removal_enabled) {
+        const auto status=EnsureTerraSeg(state).Status();
+        ImGui::TextWrapped("%s",status.message.c_str());
+        TraceUi("terraseg_status");
+#if defined(__linux__) && defined(__x86_64__)
+        if (!status.configured) {
+          ImGui::TextWrapped("Weights are for non-commercial use (CC BY-NC-SA 4.0). Run the TerraSeg setup command, then retry.");
+          if (ImGui::SmallButton("Copy setup command")) {
+            const auto script=lidar_viewer::ProjectResourcePath("tools/setup_terraseg.py").u8string();
+            std::string command="python3 '";
+            for (const char c : script) {
+              if (c=='\'') command+="'\\''";
+              else command+=c;
+            }
+            command+="' --accept-noncommercial";
+            ImGui::SetClipboardText(command.c_str());
+          }
+          ImGui::SameLine();
+        }
+        if ((!status.configured || status.failed) && ImGui::SmallButton("Retry TerraSeg")) {
+          ReleaseTerraSeg(state);reprocess=true;
+        }
+#endif
+      }
       const bool ground_settings=ImGui::CollapsingHeader("Algorithm settings");TraceUi("ground_settings");
       if(ground_settings) {
       if (ground.mode == "gseg3d" || ground.mode == "fast_grid") {
@@ -5712,13 +5806,14 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
           ImGui::SetNextItemWidth(-1);
           reprocess|=ImGui::SliderFloat("##PatchSlope",&ground.max_ground_angle_deg,1,45,"Max slope: %.0f deg",ImGuiSliderFlags_AlwaysClamp);
         }
-      } else if (!classic_patchwork) {
+      } else if (!classic_patchwork && !terraseg) {
         ImGui::SetNextItemWidth(-1);
         reprocess |= ImGui::SliderFloat("##GroundCells", &ground.candidate_grid_cell_m, .1f, 3.f, "Cell size: %.2f m", ImGuiSliderFlags_AlwaysClamp);
         ImGui::SetNextItemWidth(-1);
         reprocess|=ImGui::SliderFloat("##PlaneDistance",&ground.final_distance_threshold_m,.02f,.5f,"Ground thickness: %.2f m",ImGuiSliderFlags_AlwaysClamp);
       }
-      if (ground.mode=="gseg3d" || ground.mode=="fast_grid" || ground.mode=="patchworkpp" || ground.mode=="fugseg" || classic_patchwork) {
+      if (ground.mode=="gseg3d" || ground.mode=="fast_grid" || ground.mode=="patchworkpp" ||
+          ground.mode=="fugseg" || classic_patchwork || terraseg) {
         if (ImGui::CollapsingHeader("Ground reference")) {
           ImGui::TextDisabled("Expected ground Z after Align");ImGui::SetNextItemWidth(-1);
           reprocess|=ImGui::DragFloat("##GroundReferenceZ",&ground.gseg3d_ground_height_m,.01f,-5,5,"%.2f m",ImGuiSliderFlags_AlwaysClamp);
@@ -5731,12 +5826,13 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         }
       }
 #ifdef LIDAR_VIEWER_HAS_CUDA
-      if (ground.mode!="gseg3d" && ground.mode!="patchworkpp" && ground.mode!="fugseg" && !classic_patchwork) {
+      if (ground.mode!="gseg3d" && ground.mode!="patchworkpp" && ground.mode!="fugseg" && !classic_patchwork && !terraseg) {
         reprocess |= ImGui::Checkbox("Use CUDA", &ground.use_cuda);
         TraceUi("ground_cuda");
       }
 #else
-      if (ground.mode!="gseg3d" && ground.mode!="patchworkpp" && ground.mode!="fugseg" && !classic_patchwork) ImGui::TextDisabled("CPU backend");
+      if (ground.mode!="gseg3d" && ground.mode!="patchworkpp" && ground.mode!="fugseg" && !classic_patchwork && !terraseg)
+        ImGui::TextDisabled("CPU backend");
 #endif
       }
       ImGui::Spacing();Metric("Ground points", CountText(state.status_ground));
@@ -5769,17 +5865,18 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       }
       ImGui::TextDisabled("Method");ImGui::SetNextItemWidth(-1);
       const bool method_changed=ImGui::Combo("##ObjectMethod",&state.object_method,
-        "CenterPoint tiny (fast)\0Euclidean 3D (clusters)\0Projected XY (clusters)\0AWML ShortRange (quality)\0CenterPoint base\0");
+        "CenterPoint tiny (fast)\0Euclidean 3D (clusters)\0Projected XY (clusters)\0AWML ShortRange (quality)\0CenterPoint base\0TransFusion LiDAR\0");
       TraceUi("object_method");
       const char * model=kObjectModels[state.object_method];
       const bool learned=model!=nullptr;
       const bool base_model=learned && std::string_view(model)=="base";
+      const bool transfusion=learned && std::string_view(model)=="transfusion";
       if (toggled || method_changed) {
         const bool was_detection=detection.enabled;
         const bool was_clustering=clustering.enabled;
         if (method_changed && learned) {
           if (model!=detection.model) {
-            detection.model=model;detection.min_confidence=detection.model=="tiny" ? .35f : .5f;
+            detection.model=model;detection.min_confidence=DetectorPresetScore(detection.model);
             InvalidateDetectorFrame(state);state.detector_completed=0;
             ResetTracking(state);
           }
@@ -5821,9 +5918,11 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
           TraceUi("object_status");
         }
         ImGui::TextDisabled("%s",detection.model=="short_range" ? "TIER IV AWML / ConvNeXt 2.0" :
-          base_model ? "Autoware CenterPoint base v4.1" : "Autoware CenterPoint tiny v4.1");
+          base_model ? "Autoware CenterPoint base v4.1" :
+          transfusion ? "Autoware TransFusion v2.1" : "Autoware CenterPoint tiny v4.1");
         Tip(detection.model=="short_range" ?
           "Original AWML model; XY range +/-51.2 m. Uses the full gravity-aligned scan before ground/ROI filtering. Ground height and IMU alignment must be correct." :
+          transfusion ? "Uses the original reflectivity from the full aligned scan. XY range +/-92.16 m." :
           "Original Autoware model; XY range +/-76.8 m. Uses the full gravity-aligned scan before ground/ROI filtering. Ground height and IMU alignment must be correct.");
         const auto model_status=state.detector ? state.detector->Status() : lidar_viewer::DetectorStatus{};
         const auto & setup_progress=state.detector_setup_progress;
@@ -5844,15 +5943,17 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
               ImGui::TextWrapped("Preparation canceled. Downloaded files will be reused.");
             const bool retry=setup_progress.stage==lidar_viewer::DetectorSetupStage::Failed ||
               setup_progress.stage==lidar_viewer::DetectorSetupStage::Canceled;
-            if(ImGui::Button(retry ? "Retry preparation" : base_model ? "Install CenterPoint base" : "Install CPU models",{-1,0})) {
+            if(ImGui::Button(retry ? "Retry preparation" : base_model ? "Install CenterPoint base" :
+                transfusion ? "Install TransFusion LiDAR" : "Install CPU models",{-1,0})) {
               if(!state.detector_setup) state.detector_setup=std::make_unique<lidar_viewer::DetectorSetup>();
               state.detector_setup_applied=false;
               state.detector_setup->Start(lidar_viewer::ProjectResourcePath("python"),
-                lidar_viewer::ProjectResourcePath("tools/setup_detector.py"),base_model ? "base" : "all");
+                lidar_viewer::ProjectResourcePath("tools/setup_detector.py"),base_model || transfusion ? model : "all");
               UpdateDetectorSetup(state);
             }
             TraceUi("object_setup_install");
             ImGui::TextWrapped("%s",base_model ? "Downloads the optional base weights. Detection starts automatically when ready." :
+              transfusion ? "Downloads the optional TransFusion weights. Detection starts automatically when ready." :
               "Downloads the tiny and ShortRange models once. Detection starts automatically when ready.");
             if(model_status.configured && ImGui::Button("Retry model",{-1,0})) state.detector_retry=true;
           }
@@ -5885,9 +5986,9 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         TraceUi("object_score");
         Tip("Type a score from 0.10 to 1.00, or use -/+ for 0.01 steps (Ctrl: 0.10). Filters cached results without rerunning inference. Scores are not calibrated probabilities.");
         if (filter_changed) FilterDetections(state);
-        if (detection.min_confidence<(detection.model=="tiny" ? .35f : .5f)) {
+        if (detection.min_confidence<DetectorPresetScore(detection.model)) {
           ImGui::TextColored(ui::WarningColor(),"Low-confidence candidates visible");
-          Tip("Lower scores increase false positives. The quality preset starts at 0.50; this is an application default, not a calibrated probability.");
+          Tip("Lower scores increase false positives. The starting score depends on the selected model.");
         }
         if (enabled) {
           ImGui::Spacing();SectionTitle("Runtime");
@@ -6633,7 +6734,7 @@ int RunViewer(int argc, char ** argv)
                   << "--imu-topic: select an IMU topic; otherwise choose one from recorded topics.\n"
                   << "--2d: open top view; right-drag or Q/E rotates, left-drag pans.\n"
                   << "--panorama: open a 360-degree sensor range view; drag to pan, wheel to zoom, F to reset.\n"
-                  << "--detect: enable the installed original CenterPoint model.\n"
+                  << "--detect: enable the detection model selected in the profile.\n"
                   << "--inspect: index and load the first frame without opening a window.\n"
                   << "ROS 2 bag backend: " << (RosbagInputAvailable() ? "enabled" : "not built") << '\n';
         return 0;
@@ -6802,7 +6903,7 @@ int RunViewer(int argc, char ** argv)
     SyncPlaybackFpsToInput(state);
     BuildFileGroups(state);
     if (!state.frames.empty()) {
-      LoadFrameByIndex(state, 0);
+      LoadFrameByIndex(state, 0, !inspect);
       if (state.current_bag_source) state.loaded_source_path = state.bag_sources[*state.current_bag_source].path;
     }
     state.last_frame_advance_time = 0.0;
@@ -6835,6 +6936,7 @@ int RunViewer(int argc, char ** argv)
       std::cout << "Ground ROI: skipped " << state.exclusion_removed_count << " | input "
                 << state.base_frame.points.size()-state.exclusion_removed_count << " | detector input "
                 << (state.detector_input ? state.detector_input->size() : 0) << " points\n";
+      if (state.terraseg) std::cout<<"TerraSeg: "<<state.terraseg->Status().message<<'\n';
       if (state.imu_level_enabled) {
         std::cout << "IMU leveling: " << state.imu_level_result.status << '\n';
         std::cout << "IMU correction: roll "<<state.imu_level_result.roll_deg<<" pitch "<<state.imu_level_result.pitch_deg
@@ -6994,6 +7096,8 @@ int RunViewer(int argc, char ** argv)
       state.current_bag_source.reset();
       OpenBagSource(state,selected);
       state.input_load_autoplay=autoplay;
+    } else if (!state.frames.empty() && UsesTerraSeg(state)) {
+      QueueGeometry(state,state.base_frame,{}, {},false);
     }
 
     auto & studio=state;
@@ -7196,6 +7300,7 @@ int RunViewer(int argc, char ** argv)
 
     if(studio.point_review) DestroyPointReview(*studio.point_review);
     if (state.input_load) state.input_load->Cancel();
+    ReleaseTerraSeg(state);
     if (state.export_progress) state.export_progress->cancel.store(true);
     state.live.Disconnect();
     panorama_cache.Release();

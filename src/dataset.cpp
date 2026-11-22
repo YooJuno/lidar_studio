@@ -81,12 +81,13 @@ struct Array
       throw std::runtime_error("NumPy payload size does not match its shape");
   }
 };
-FrameData Numpy(const fs::path & path)
+FrameData Numpy(const fs::path & path, bool preserve_source_intensity, std::vector<float> & raw_reflectivity)
 {
   Array array(path);
   if (array.type!='f' || (array.width!=4 && array.width!=8) || (array.columns!=3 && array.columns!=4))
     throw std::runtime_error("Point arrays must be float32/float64 N x 3 or N x 4");
   FrameData frame;frame.points.resize(array.rows);
+  frame.has_source_intensity = array.columns == 4;
   std::array<char,32> row{};
   const std::uint16_t endian=1;
   const bool packed=array.columns==4 && array.width==4 && !array.big && *reinterpret_cast<const unsigned char *>(&endian)==1;
@@ -102,17 +103,30 @@ FrameData Numpy(const fs::path & path)
       static_cast<float>(Scalar(row.data()+2*array.width,array.width,'f',array.big)),
       array.columns==4 ? static_cast<float>(Scalar(row.data()+3*array.width,array.width,'f',array.big)) : 1.f};
   }
-  const auto strength=path.parent_path()/"intensity.npy";
   if(!array.file) throw std::runtime_error("Truncated point array: "+path.u8string());
-  if (path.filename()=="coord.npy" && array.columns==3 && fs::is_regular_file(strength)) {
-    Array values(strength);
-    if (values.rows!=array.rows || values.columns!=1) throw std::runtime_error("Intensity array does not match coordinate count");
-    for (auto & point:frame.points) {values.file.read(row.data(),static_cast<std::streamsize>(values.width));point.intensity=static_cast<float>(Scalar(row.data(),values.width,values.type,values.big));}
-    if(!values.file) throw std::runtime_error("Truncated intensity array");
+  if (path.filename() != "coord.npy" || frame.has_source_intensity) return frame;
+
+  const auto intensity = path.parent_path() / "intensity.npy";
+  const auto reflectivity = path.parent_path() / "reflectivity.npy";
+  const bool legacy_intensity = fs::is_regular_file(intensity);
+  if (!legacy_intensity && (!preserve_source_intensity || !fs::is_regular_file(reflectivity)))
+    return frame;
+
+  Array values(legacy_intensity ? intensity : reflectivity);
+  if (values.rows != array.rows || values.columns != 1)
+    throw std::runtime_error("Intensity array does not match coordinate count");
+  frame.has_source_intensity = true;
+  if (!legacy_intensity) raw_reflectivity.reserve(array.rows);
+  for (auto & point : frame.points) {
+    values.file.read(row.data(), static_cast<std::streamsize>(values.width));
+    const float value = static_cast<float>(Scalar(row.data(), values.width, values.type, values.big));
+    if (legacy_intensity) point.intensity = value;
+    else raw_reflectivity.push_back(value);
   }
+  if (!values.file) throw std::runtime_error("Truncated intensity array");
   return frame;
 }
-FrameData Pcd(const fs::path & path)
+FrameData Pcd(const fs::path & path, bool preserve_source_intensity, std::vector<float> & raw_reflectivity)
 {
   std::ifstream file(path,std::ios::binary);std::vector<std::string> names;std::vector<std::size_t> sizes,counts;
   std::vector<char> types;std::size_t points=0,width=0,height=1,header_size=0;std::string format,line;
@@ -132,21 +146,34 @@ FrameData Pcd(const fs::path & path)
     throw std::runtime_error("Invalid PCD fields or point count");
   std::vector<std::size_t> offsets(names.size()),columns(names.size());std::size_t stride=0,fields=0;
   std::array<int,4> selected{{-1,-1,-1,-1}};
+  int reflectivity = -1;
   for(std::size_t i=0;i<names.size();++i) {
     if((sizes[i]!=1 && sizes[i]!=2 && sizes[i]!=4 && sizes[i]!=8) || counts[i]<1 || counts[i]>64)
       throw std::runtime_error("Invalid PCD field size");
     offsets[i]=stride;columns[i]=fields;stride+=sizes[i]*counts[i];fields+=counts[i];
     for(int j=0;j<4;++j) if(names[i]==std::array<const char *,4>{{"x","y","z","intensity"}}[static_cast<std::size_t>(j)]) selected[static_cast<std::size_t>(j)]=static_cast<int>(i);
+    if (names[i] == "reflectivity") reflectivity = static_cast<int>(i);
   }
   if(selected[0]<0 || selected[1]<0 || selected[2]<0 || (format!="binary" && format!="ascii"))
     throw std::runtime_error("PCD needs x/y/z fields and binary or ascii data; binary_compressed is not supported");
   FrameData frame;frame.points.reserve(points);std::vector<char> bytes(stride);std::vector<double> values(fields);
+  frame.has_source_intensity = selected[3] >= 0;
+  const bool save_reflectivity = preserve_source_intensity && !frame.has_source_intensity && reflectivity >= 0;
+  if (save_reflectivity) {
+    frame.has_source_intensity = true;
+    raw_reflectivity.reserve(points);
+  }
+  const auto read_field = [&](std::size_t field) {
+    return static_cast<float>(format == "binary" ?
+      Scalar(bytes.data() + offsets[field], sizes[field], types[field]) : values[columns[field]]);
+  };
   for(std::size_t i=0;i<points;++i) {
     if(format=="binary") {file.read(bytes.data(),static_cast<std::streamsize>(stride));if(!file) throw std::runtime_error("Truncated PCD data");}
     else for(auto & value:values) if(!(file>>value)) throw std::runtime_error("Invalid ASCII PCD data");
     std::array<float,4> point{{0,0,0,1}};
-    for(std::size_t j=0;j<4;++j) if(selected[j]>=0) {const auto k=static_cast<std::size_t>(selected[j]);
-      point[j]=static_cast<float>(format=="binary" ? Scalar(bytes.data()+offsets[k],sizes[k],types[k]) : values[columns[k]]);}
+    for (std::size_t j = 0; j < point.size(); ++j)
+      if (selected[j] >= 0) point[j] = read_field(static_cast<std::size_t>(selected[j]));
+    if (save_reflectivity) raw_reflectivity.push_back(read_field(static_cast<std::size_t>(reflectivity)));
     frame.points.push_back({point[0],point[1],point[2],point[3]});
   }
   return frame;
@@ -277,9 +304,12 @@ std::vector<FrameHandle> ResolveDatasetFrames(const fs::path & path,InputLoadSta
   });
   return frames;
 }
-FrameData LoadDatasetFrame(const FrameHandle & handle)
+FrameData LoadDatasetFrame(const FrameHandle & handle, bool preserve_source_intensity)
 {
-  auto frame=handle.format==InputFormat::Numpy ? Numpy(handle.path) : handle.format==InputFormat::DatasetXyzi ? BinaryXyzi(handle.path) : Pcd(handle.path);
+  std::vector<float> raw_reflectivity;
+  auto frame = handle.format == InputFormat::Numpy ? Numpy(handle.path, preserve_source_intensity, raw_reflectivity) :
+    handle.format == InputFormat::DatasetXyzi ? BinaryXyzi(handle.path) :
+    Pcd(handle.path, preserve_source_intensity, raw_reflectivity);
   auto annotation=std::make_shared<DatasetAnnotations>();
   const auto root=handle.path.parent_path();
   const auto sample=handle.dataset_sample;
@@ -338,16 +368,21 @@ FrameData LoadDatasetFrame(const FrameHandle & handle)
   } catch(const std::exception & error) {
     annotation->error=error.what();std::vector<std::int32_t>().swap(annotation->point_labels);std::vector<DatasetBox>().swap(annotation->boxes);
   }
-  // Keep labels in lockstep when invalid XYZ samples are discarded. The
-  // normal frame finalizer then sees only valid coordinates.
+  // Keep sidecar values in lockstep when invalid XYZ samples are discarded.
   if(!annotation->point_labels.empty()) {
+    const bool have_reflectivity = !raw_reflectivity.empty();
     std::size_t retained=0;
     for(std::size_t i=0;i<frame.points.size();++i) {
       const auto p=frame.points[i];if(!std::isfinite(p.x)||!std::isfinite(p.y)||!std::isfinite(p.z)) continue;
-      frame.points[retained]=p;annotation->point_labels[retained++]=annotation->point_labels[i];
+      frame.points[retained]=p;annotation->point_labels[retained]=annotation->point_labels[i];
+      if (have_reflectivity) raw_reflectivity[retained] = raw_reflectivity[i];
+      ++retained;
     }
     frame.points.resize(retained);annotation->point_labels.resize(retained);
+    if (have_reflectivity) raw_reflectivity.resize(retained);
   }
+  if (!raw_reflectivity.empty())
+    frame.source_intensities = std::make_shared<const std::vector<float>>(std::move(raw_reflectivity));
   std::map<int,std::size_t> counts;for(const auto label:annotation->point_labels) ++counts[label];
   for(const auto & entry:counts) annotation->label_counts.push_back(entry);
   frame.annotations=std::move(annotation);return frame;

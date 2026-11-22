@@ -10,6 +10,13 @@ REQUEST=struct.Struct('<4sQIf')
 RESPONSE=struct.Struct('<4sQIfI')
 MAX_POINTS=4_000_000
 
+def create_detector(folder,provider,model):
+    if model=='transfusion':
+        from .transfusion import TransFusion
+        return TransFusion(folder,provider)
+    from .centerpoint import CenterPoint
+    return CenterPoint(folder,provider,model)
+
 def read_exact(stream,count):
     result=bytearray(count)
     read_into(stream,memoryview(result))
@@ -43,6 +50,7 @@ def main():
     parser.add_argument('--native-dir')
     parser.add_argument('--model',choices=MODELS,default='tiny')
     args=parser.parse_args()
+    request_magic,channels=(b'LDQ2',4) if args.model=='transfusion' else (b'LDQ1',3)
     source=sys.stdin.buffer;sink=sys.stdout.buffer
     # Some optional native libraries print diagnostic messages to stdout.
     # Redirect fd 1 too; retain a private duplicate for binary replies.
@@ -53,8 +61,7 @@ def main():
     with contextlib.redirect_stdout(sys.stderr):
         try:
             import numpy as np
-            from lidar_detection.centerpoint import CenterPoint
-            detector=CenterPoint(args.model_dir,args.provider,args.model)
+            detector=create_detector(args.model_dir,args.provider,args.model)
             reply(sink,b'LDR1',0,[],0,detector.provider)
         except Exception as error:
             reply(sink,b'LDE1',0,[],0,str(error));return 1
@@ -63,17 +70,21 @@ def main():
             try:header=read_exact(source,REQUEST.size)
             except EOFError:return 0
             magic,revision,count,threshold=REQUEST.unpack(header)
-            if magic!=b'LDQ1' or count>MAX_POINTS or not .01<=threshold<=.99:
+            if magic!=request_magic or count>MAX_POINTS or not .01<=threshold<=.99:
                 reply(sink,b'LDE1',revision,[],0,'Invalid detector request');return 1
             try:
-                needed=count*12
+                needed=count*channels*4
                 if len(receive)<needed:receive=bytearray(needed)
                 read_into(source,memoryview(receive)[:needed])
-                points=np.frombuffer(receive,dtype='<f4',count=count*3).reshape(-1,3)
+                points=np.frombuffer(receive,dtype='<f4',count=count*channels).reshape(-1,channels)
                 boxes,stats=detector.infer(points,threshold)
                 message='pre %.1f / net %.1f / post %.1f ms; %s; NMS %s; %d pillars; %d truncated'%(
                     stats.get('preprocess_ms',0),stats.get('inference_ms',0),stats.get('postprocess_ms',0),
                     stats['preprocess_backend'],stats.get('postprocess_backend','numpy'),stats['pillars'],stats['truncated_pillars'])
+                if stats.get('missing_reflectivity'):
+                    message+=f"; {stats['missing_reflectivity']} points skipped without reflectivity"
+                if stats.get('clipped_reflectivity'):
+                    message+=f"; {stats['clipped_reflectivity']} reflectivity values clipped"
                 reply(sink,b'LDR1',revision,boxes,stats['latency_ms'],message)
             except Exception as error:
                 reply(sink,b'LDE1',revision,[],0,str(error))

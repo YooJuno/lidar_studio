@@ -12,9 +12,9 @@ A desktop workspace for LiDAR playback, ground segmentation, clustering, object 
 
 - **Point clouds, easy to explore.** Switch between 3D, rotatable 2D and a **360° sensor panorama** with distance colors. Browse BIN, NPY, PCD and LiDAR PCAP recordings and review labels.
 - **Direct Ethernet recording.** Connect a supported Hesai, Velodyne, Livox, Ouster or RoboSense LiDAR and view or record its UDP stream with no ROS setup.
-- **Visual ground segmentation.** Choose **FugSeg, GSeg3D, Patchwork++, Patchwork, Fast grid, Grid or RANSAC**. Tune parameters and show all points, ground only or obstacles only. Align scans manually or use IMU leveling.
+- **Visual ground segmentation.** Choose **FugSeg, GSeg3D, Patchwork++, Patchwork, Fast grid, Grid, RANSAC or TerraSeg Small**. Tune parameters and show all points, ground only or obstacles only. Align scans manually or use IMU leveling.
 - **Clustering for obstacle analysis.** Group points with **Euclidean 3D** or **Projected XY** clustering, adjust distance and vertical separation, and inspect cluster boxes.
-- **Learned object detection.** Use **AWML ShortRange**, **CenterPoint tiny**, or **CenterPoint base** for people, bicycles, cars, trucks and buses. Filter classes and confidence, and follow persistent object IDs with Kalman tracking.
+- **Learned object detection.** Use **AWML ShortRange**, **CenterPoint tiny**, **CenterPoint base** or **TransFusion LiDAR** for people, bicycles, cars, trucks and buses. Filter classes and confidence, and follow persistent object IDs with Kalman tracking.
 - **ROI labeling and dataset export.** Draw, move, resize and rotate 3D boxes. Name and color regions, attach class-name hints and export cropped points with frame, ROI and coordinate metadata.
 
 Background loading and analysis keep the interface usable. Separate **Ground avg / Objects avg** indicators show recent processing times without rapidly changing labels.
@@ -126,15 +126,22 @@ If the models are missing, choose **Objects → Install CPU models**. Preparatio
 
 For the optional original Autoware Base weights, select **CenterPoint base** and choose **Install CenterPoint base**. The installer can reuse an existing model runtime.
 
+Select **Objects → TransFusion LiDAR → Install TransFusion LiDAR** for the optional Autoware ONNX model. It takes XYZ and raw 8-bit-scale reflectivity from the source. Its installer downloads about 165 MB of weights. [Autoware model card](https://huggingface.co/AutowareFoundation/lidar_transfusion).
+
 The optional command-line installer remains available for custom CUDA environments:
 
 ```bash
 python3 tools/setup_detector.py          # CPU
 # python3 tools/setup_detector.py --cuda # NVIDIA GPU
 # python3 tools/setup_detector.py --model base # Optional Autoware Base weights
+# python3 tools/setup_detector.py --model transfusion # Optional Autoware TransFusion LiDAR weights
 ```
 
 Class and score changes filter cached predictions without repeating inference. Detection quality depends on the sensor and scene; geometric clusters have no semantic class. [Model setup](docs/guide.md#사람차량-인식--원본-tier-iv-모델).
+
+### Optional learned ground segmentation
+
+**Ground → TerraSeg Small** uses the official noncommercial weights. The optional runtime requires Linux x86-64, NVIDIA Ampere/Ada/Hopper with CUDA, `git` and `uv`. Choose **Copy setup command** in the app, run it in a terminal and then choose **Retry TerraSeg**. The first setup downloads several GB for the CUDA runtime. [TerraSeg model and license](https://huggingface.co/TedLentsch/TerraSeg).
 
 ## License and contact
 

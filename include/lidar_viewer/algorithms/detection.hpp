@@ -9,7 +9,7 @@ namespace lidar_viewer::algorithms
 {
 constexpr bool IsDetectorModel(std::string_view model)
 {
-  return model == "tiny" || model == "short_range" || model == "base";
+  return model == "tiny" || model == "short_range" || model == "base" || model == "transfusion";
 }
 
 enum DetectionClassId

@@ -26,7 +26,8 @@ class InstallerTests(unittest.TestCase):
         self.data=self.root/'data';self.progress=self.root/'progress.json'
         digest=hashlib.sha256(b'validated model').hexdigest()
         self.models={name:SimpleNamespace(folder=name+'-model',title=name,
-            files=[('model.onnx','https://models.example.test/'+name,digest)])for name in ('tiny','short_range','base')}
+            files=[('model.onnx','https://models.example.test/'+name,digest)])
+            for name in ('tiny','short_range','base','transfusion')}
         self.run=self.enter(patch.object(setup.subprocess,'run'))
         self.enter(patch.object(setup,'directories',return_value=(self.config,self.data)))
         self.enter(patch.object(setup,'MODELS',self.models))
@@ -82,6 +83,25 @@ class InstallerTests(unittest.TestCase):
             setup.main()
         self.assertIn(f'short_range_model_dir={tiny.parent/"short_range-model"}\n',config.read_text())
         self.assertTrue(all(call.args[0][:3]==[str(python),'-B','-c'] for call in self.run.call_args_list))
+
+    def test_transfusion_preserves_other_model_and_extension_settings(self):
+        python=self.root/'existing runtime/python'
+        python.parent.mkdir();python.touch()
+        config=self.config/'detector.cfg'
+        original={'python':str(python),'provider':'auto','managed_runtime':'1',
+            'model_dir':'/custom/tiny','short_range_model_dir':'/custom/short',
+            'base_model_dir':'/custom/base','structure_python':'/other/python',
+            'structure_model_dir':'/other/model'}
+        config.write_text(''.join(f'{key}={value}\n' for key,value in original.items()),encoding='utf-8')
+        with patch.object(sys,'argv',['setup','--model','transfusion']), \
+                patch.object(setup.urllib.request,'urlopen',side_effect=self.response) as download:
+            setup.main()
+        self.assertEqual(download.call_count,1)
+        self.assertTrue(download.call_args.args[0].full_url.endswith('/transfusion'))
+        self.assertEqual(self.run.call_count,2)
+        self.assertTrue(all(call.args[0][0]==str(python) for call in self.run.call_args_list))
+        self.assertEqual(dict(line.split('=',1) for line in config.read_text().splitlines()),
+            dict(original,transfusion_model_dir=str(self.data/'transfusion-model')))
 
     def test_failed_checksum_preserves_configuration_and_removes_partial(self):
         (self.config/'detector.cfg').write_text('previous working setup')

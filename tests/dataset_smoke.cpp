@@ -32,6 +32,9 @@ int main()
     auto frames=ResolveInputFrames(root);Check(frames.size()==1 && frames[0].format==InputFormat::Numpy,"Manifest did not resolve exactly one sample");
     Check(ResolveInputFrames(root/"points").size()==1,"Opening points/ did not preserve its dataset manifest");
     auto cloud=LoadFrame(frames[0],FrameIntensity::Original);Check(cloud.points.size()==2 && cloud.points[0].z==-3 && cloud.points[1].intensity==1024,"Stored coordinates/intensity changed");
+    const auto normalized = LoadFrame(frames[0]);
+    Check(normalized.source_intensities && *normalized.source_intensities == std::vector<float>({512, 1024}),
+      "XYZI NumPy display frame lost its source intensity");
     Check(frames[0].dataset_sample && frames[0].dataset_sample->source_frame==14797 && frames[0].dataset_sample->coordinate_space=="aligned","Dataset provenance lost");
     fs::create_directory(root/"labels");std::int32_t file_labels[]{0,1};
     Npy(root/"labels/second.npy","<i4",2,1,{reinterpret_cast<char *>(file_labels),sizeof(file_labels)});
@@ -43,11 +46,26 @@ int main()
     Check(ascii.points[0].x==1 && ascii.points[1].intensity==1024,"ASCII PCD field mapping failed");
     {std::ofstream file(root/"binary.pcd",std::ios::binary);file<<"FIELDS x y z intensity\nSIZE 4 4 4 4\nTYPE F F F F\nPOINTS 2\nDATA binary\n";file.write(bytes.data(),static_cast<std::streamsize>(bytes.size()));}
     Check(LoadFrame(ResolveInputFrames(root/"binary.pcd")[0],FrameIntensity::Original).points[0].intensity==512,"Binary PCD failed");
+    Text(root / "xyz.pcd", "FIELDS x y z\nSIZE 4 4 4\nTYPE F F F\nPOINTS 1\nDATA ascii\n1 2 3\n");
+    const auto xyz = LoadFrame(ResolveInputFrames(root / "xyz.pcd").front());
+    Check(!xyz.source_intensities && xyz.points[0].intensity == 0.5f,
+      "PCD without intensity should keep its display placeholder and have no raw channel");
+    Text(root / "reflectivity.pcd",
+      "FIELDS x y z reflectivity\nSIZE 4 4 4 1\nTYPE F F F U\nPOINTS 2\nDATA ascii\n1 2 3 42\n4 5 6 84\n");
+    const auto reflectivity_pcd = ResolveInputFrames(root / "reflectivity.pcd").front();
+    const auto reflectivity = LoadFrame(reflectivity_pcd);
+    Check(reflectivity.source_intensities && *reflectivity.source_intensities == std::vector<float>({42, 84}) &&
+      reflectivity.points[0].intensity == 0.5f &&
+      LoadFrame(reflectivity_pcd, FrameIntensity::Original).points[0].intensity == 1,
+      "Raw PCD reflectivity should preserve legacy display and export intensity");
     fs::create_directory(root/"organized");float coords[]{1,2,3,4,5,6},intensity[]{42,84};
     Npy(root/"organized/coord.npy","<f4",2,3,{reinterpret_cast<char *>(coords),sizeof(coords)});
     Npy(root/"organized/intensity.npy","<f4",2,1,{reinterpret_cast<char *>(intensity),sizeof(intensity)});
     auto organized=ResolveInputFrames(root/"organized");Check(organized.size()==1,"Helper arrays became extra samples");
     Check(LoadFrame(organized[0],FrameIntensity::Original).points[1].intensity==84,"Separate intensity array failed");
+    const auto with_intensity = LoadFrame(organized[0]);
+    Check(with_intensity.source_intensities && *with_intensity.source_intensities == std::vector<float>({42, 84}),
+      "Separate NumPy intensity array was not retained");
     std::int64_t labels[]{-1,2};
     Npy(root/"organized/segment.npy","<i8",2,1,{reinterpret_cast<char *>(labels),sizeof(labels)});
     organized=ResolveInputFrames(root/"organized");auto annotated=LoadFrame(organized[0]);
@@ -64,6 +82,15 @@ int main()
     Text(root/"organized/annotations.json","{\"coordinate_space\":\"sensor\",\"boxes\":[{\"class_name\":\"person\",\"center_m\":[4,5,6],\"size_m\":[1,1,2],\"yaw_deg\":30}]}");
     annotated=LoadFrame(organized[0]);Check(annotated.points.size()==1 && annotated.annotations->point_labels==std::vector<std::int32_t>({2}) &&
       annotated.annotations->box_annotations && annotated.annotations->boxes.size()==1,"Invalid XYZ removal misaligned labels or lost box annotations");
+    fs::remove(root / "organized/intensity.npy");
+    Check(!LoadFrame(organized[0]).source_intensities, "XYZ-only NumPy must not invent reflectivity");
+    Npy(root / "organized/reflectivity.npy", "<f4", 2, 1,
+      {reinterpret_cast<char *>(intensity), sizeof(intensity)});
+    const auto paired_reflectivity = LoadFrame(organized[0]);
+    Check(paired_reflectivity.source_intensities &&
+      *paired_reflectivity.source_intensities == std::vector<float>({84}) &&
+      paired_reflectivity.annotations->point_labels == std::vector<std::int32_t>({2}) &&
+      paired_reflectivity.points[0].intensity == 0.5f, "Sidecar reflectivity lost alignment or changed display");
     fs::create_directory(root/"raw");{std::ofstream file(root/"raw/sample.bin",std::ios::binary);file.write(bytes.data(),static_cast<std::streamsize>(bytes.size()));}
     auto raw=lidar_viewer::ResolveDatasetFrames(root/"raw",nullptr,true);
     Check(raw.size()==1 && raw[0].format==InputFormat::DatasetXyzi,"Review did not discover BIN samples");
