@@ -40,6 +40,7 @@ def main():
   check('example_autoplays_without_blocking_controls',changed_pixels(a,b,(380,180,1540,750))>100)
   stamps={p.name:(p.stat().st_mtime_ns,hashlib.sha256(p.read_bytes()).hexdigest())for p in cache.glob('*.bin')}
   c.click('open_input');c.click('example_sensor');c.click('example_quick');c.click('example_start');wait(lambda:'Example ready | cached 6 / 6'in text())
+  wait(lambda:text().count('Opened point cloud:')>=2)
   check('cached_open_does_not_download_or_rewrite',stamps=={p.name:(p.stat().st_mtime_ns,hashlib.sha256(p.read_bytes()).hexdigest())for p in cache.glob('*.bin')})
   c.chord('s');saved=out/'settings/lidar_viewer/profiles/example.cfg'
   if not saved.exists():saved=private/'config/profiles/example.cfg'

@@ -99,6 +99,7 @@ def main():
         controls.click("open_input")
         controls.click("example_start")
         wait(lambda: saw("Example ready | cached 1 / 1"))
+        wait(lambda: log.read_text(errors="replace").count("Opened point cloud:")>=2)
         assert timestamps == {p.name: p.stat().st_mtime_ns for p in cache.iterdir()}
         (cache / "keep.txt").write_text("user file")
         controls.click("open_input")

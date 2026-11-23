@@ -85,8 +85,8 @@ while True:
     env=dict(os.environ,XDG_CONFIG_HOME=str(out/'settings'),LIDAR_VIEWER_TRACKING_TRACE='1',LIDAR_VIEWER_DETECTOR_TRACE='1',LIDAR_VIEWER_UI_TRACE='1',LIDAR_VIEWER_CATALOG_TRACE='1',GSETTINGS_BACKEND='memory',NO_AT_BRIDGE='1')
     log_path=out/'viewer.log';before=settings_inventory(repo);result={'status':'started','checks':{},'output':str(out)};process=x11=window=None
     def log():return log_path.read_text(errors='replace')
-    def tracks():
-        return [tuple(map(float,m)) for m in re.findall(r'Track frame (\d+) id (\d+) class (\d+) confirmed (\d+) predicted (\d+) speed ([-.\de+]+) x ([-.\de+]+)',log())]
+    def tracks(after=0):
+        return [tuple(map(float,m)) for m in re.findall(r'Track frame (\d+) id (\d+) class (\d+) confirmed (\d+) predicted (\d+) speed ([-.\de+]+) x ([-.\de+]+)',log()[after:])]
     def frames():return re.findall(r'Detector frame (\d+) revision (\d+)',log())
     def wait(condition,timeout=20):
         deadline=time.monotonic()+timeout
@@ -142,6 +142,35 @@ while True:
             samples=[float(s) for s in re.findall(r'^Status sample ([.\de+]+)$',log(),re.M)]
             check('status_metrics_refresh_at_readable_intervals',len(samples)>=4 and all(b-a>=.99 for a,b in zip(samples,samples[1:])))
             capture(x11,window,out/'02_sidebar_playback.png')
+
+            def first_tracks(after):
+                return [(t[1],t[4]) for t in tracks(after) if t[0]==0]
+            def restart_ids(after,name):
+                wait(lambda: len(first_tracks(after))>=2)
+                check(name,set(first_tracks(after))=={(1,0),(2,0)})
+
+            rewind=len(log())
+            c.click('timeline',.001)
+            restart_ids(rewind,'rewinding_to_first_frame_restarts_ids')
+
+            near_end=len(log())
+            c.click('timeline',.89)
+            wait(lambda: any(25<=t[0]<29 for t in tracks(near_end)))
+            loop=len(log())
+            c.click('playback_toggle')
+            restart_ids(loop,'automatic_loop_restarts_ids_without_old_predictions')
+            check('automatic_loop_rolls_over_after_last_frame',any(t[0]==29 for t in tracks(loop)))
+            c.click('playback_toggle')
+
+            c.click('playback_loop')
+            last_frame=len(log())
+            c.click('timeline',.999)
+            wait(lambda: any(t[0]==29 for t in tracks(last_frame)))
+            replay=len(log())
+            c.click('playback_toggle')
+            restart_ids(replay,'play_at_end_restarts_when_loop_is_off')
+            c.click('playback_toggle')
+
             before_switch=len(log())
             c.click('source_selector')
             target_row=re.compile(r'^Source row: "'+re.escape(str(target))+r'" \| select ([\d.-]+) ([\d.-]+) .* \| available 1$',re.M)

@@ -93,6 +93,7 @@ def main():
         stamps = {f.name: f.stat().st_mtime_ns for f in long.glob('*.bin')}
         c.click('open_input'); c.click('example_start')
         wait(lambda: 'Example ready | cached 600 / 600' in text())
+        wait(lambda: text().count('Opened point cloud:')>=3)
         check('cached_reopen_does_not_rewrite', stamps == {f.name: f.stat().st_mtime_ns for f in long.glob('*.bin')})
         c.chord('s'); time.sleep(.15)
         saved = out / ('settings/lidar_viewer/profiles/example-' + args.sensor + '.cfg')

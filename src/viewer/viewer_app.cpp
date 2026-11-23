@@ -799,13 +799,13 @@ void FilterDetections(ViewerState & state)
   RebuildClusterBoxes(state);
 }
 
-void ResetTracking(ViewerState & state, bool new_recording=false)
+void ResetTracking(ViewerState & state, bool new_sequence=false)
 {
   if (state.tracker) {
-    if (new_recording) state.tracker->ResetSequence();
+    if (new_sequence) state.tracker->ResetSequence();
     else state.tracker->Reset();
   }
-  if (new_recording) state.tracking_source.clear();
+  if (new_sequence) state.tracking_source.clear();
   state.tracking_clock.reset();
   ++state.tracking_session;state.tracking_revision=0;state.visible_tracks.clear();
 }
@@ -1101,6 +1101,18 @@ void UpdateCurrentFileGroup(ViewerState & state)
     }
   }
   state.current_file_group = 0;
+}
+
+void CommitFramePosition(ViewerState & state, std::size_t index)
+{
+  const auto previous = state.current_index;
+  state.current_index = index;
+  UpdateCurrentFileGroup(state);
+  const auto first = state.file_groups.empty() ? 0 : state.file_groups[state.current_file_group].first_index;
+  if (previous != index && index == first) {
+    // Reset before the first scan's paired detector result reaches tracking.
+    ResetTracking(state, /*new_sequence=*/true);
+  }
 }
 
 const FrameData & ProcessedFrame(const std::shared_ptr<const FrameData> & frame)
@@ -1433,7 +1445,7 @@ void CommitGeometry(ViewerState & state, GeometryWork & work,
     std::cout<<"Analysis input: excluded "<<state.exclusion_removed_count<<" | detector "
       <<(state.detector_input ? state.detector_input->size() : 0)<<" | ground passes "<<state.ground_passes<<std::endl;
   if (state.geometry_index) {
-    state.current_index=*state.geometry_index;UpdateCurrentFileGroup(state);QueueNextFramePrefetch(state);
+    CommitFramePosition(state,*state.geometry_index);QueueNextFramePrefetch(state);
   }
   if (state.geometry_live_sequence) {
     state.live_display_sequence=*state.geometry_live_sequence;
@@ -1567,8 +1579,7 @@ void LoadFrameByIndex(ViewerState & state, std::size_t index, bool defer_terrase
   state.base_frame = std::move(next_base);
   state.global_ground_offset = offset;
   state.alignment_initialized = true;
-  state.current_index = next_index;
-  UpdateCurrentFileGroup(state);
+  CommitFramePosition(state, next_index);
   QueueNextFramePrefetch(state);
 }
 
@@ -1581,9 +1592,10 @@ bool TryLoadFrame(ViewerState & state, std::size_t index)
       state.requested_frame.reset();
       return false;
     }
-    // A seek can wait for disk I/O. Discard a held advance immediately so
-    // its detector reply cannot overtake the newer request.
-    if (state.pending_detection_frame) CancelGeometry(state);
+    // A seek can wait for disk I/O. Discard a superseded advance so neither
+    // its frame nor its paired detector result can overtake the newer seek.
+    if (state.pending_detection_frame || (state.geometry_index && !state.applying_exclusions))
+      CancelGeometry(state);
     ConsumeReadyPrefetch(state,index);
     if (state.frame_cache.find(index)==state.frame_cache.end()) {
       state.requested_frame=index;
@@ -1843,7 +1855,7 @@ void RestoreBagSources(ViewerState & state)
 }
 
 void OpenInputSources(ViewerState & state, const fs::path & path,
-  std::vector<BagSource> sources, bool dataset)
+  std::vector<BagSource> sources, bool dataset, bool reload)
 {
   if (dataset || (sources.empty() && path.extension() == ".bin" && fs::is_regular_file(path))) {
     const auto canonical = fs::canonical(path);
@@ -1859,8 +1871,7 @@ void OpenInputSources(ViewerState & state, const fs::path & path,
     [&](const BagSource & source) { return source.path == selected; });
   state.bag_date_filter.clear();
   state.bag_search.fill('\0');
-  // Explicitly reopening a dataset reloads external label edits.
-  OpenBagSource(state, target - state.bag_sources.begin(), dataset);
+  OpenBagSource(state, target - state.bag_sources.begin(), reload);
 }
 
 void OpenInputPath(ViewerState & state, const fs::path & input)
@@ -1884,7 +1895,7 @@ void OpenInputPath(ViewerState & state, const fs::path & input)
     state.ui_error.clear();
     return;
   }
-  OpenInputSources(state, path, dataset ? std::vector<BagSource>{} : DiscoverBagSources(path), dataset);
+  OpenInputSources(state, path, dataset ? std::vector<BagSource>{} : DiscoverBagSources(path), dataset, /*reload=*/true);
 }
 
 void CompleteInputFolder(ViewerState & state)
@@ -1900,7 +1911,7 @@ void CompleteInputFolder(ViewerState & state)
       if (found.sources.empty())
         throw std::runtime_error("All recordings in this folder were removed from the source list. Use Restore removed or open a recording directly.");
     }
-    OpenInputSources(state, found.folder, std::move(found.sources), dataset);
+    OpenInputSources(state, found.folder, std::move(found.sources), dataset, /*reload=*/dataset);
   } catch (const std::exception & error) {
     state.ui_error = std::string("Input could not be opened: ") + error.what();
   }
@@ -1971,7 +1982,7 @@ void ClearDeletedExampleInput(ViewerState & state,const fs::path & directory)
     state.ground_average.Reset();state.object_average.Reset();state.clustering_average.Reset();
     state.clusters.clear();state.detections.clear();state.detector_input.reset();
     InvalidateDetectorFrame(state);
-    ResetTracking(state, /*new_recording=*/true);RebuildClusterBoxes(state);state.roi_renderer.vertices.clear();state.roi_renderer.dirty=true;
+    ResetTracking(state, /*new_sequence=*/true);RebuildClusterBoxes(state);state.roi_renderer.vertices.clear();state.roi_renderer.dirty=true;
     state.status_points=0;state.status_ground=0;
     state.status_ground_average_ms=-1;state.status_object_average_ms=-1;state.status_processing_ms=0;state.status_roi_ms=0;
     state.processing_ms=0;state.roi_ms=0;state.input_fps_estimate.reset();state.current_bag_source.reset();
@@ -2037,9 +2048,8 @@ void UpdateDrivingExample(ViewerState & state)
     auto source=std::find_if(state.bag_sources.begin(),state.bag_sources.end(),[&](const auto & item){return item.path==path;});
     std::size_t index=static_cast<std::size_t>(source-state.bag_sources.begin());
     if(source==state.bag_sources.end()) state.bag_sources.push_back({path,state.example_dataset->Definition().title,{}, {}});
-    OpenBagSource(state,index);
+    OpenBagSource(state,index, /*reload=*/true);
     if(state.loading_bag_source) state.input_load_autoplay=true;
-    else if(!state.frames.empty() && lidar_viewer::IsDrivingExample(state.frames.front().path)) state.is_playing=true;
     state.open_data_panel=false;
     std::cout<<"Example ready | cached "<<progress.cached<<" / "<<progress.total_files<<std::endl;
   } catch(const std::exception & error) {state.open_data_panel=false;state.ui_error=std::string("Example could not be opened: ")+error.what();}
@@ -2071,7 +2081,7 @@ void CompleteBagLoad(ViewerState & state)
     state.frame_cache.clear();
     state.frame_cache_order.clear();
     state.frames = std::move(result.frames);
-    ResetTracking(state, /*new_recording=*/true);
+    ResetTracking(state, /*new_sequence=*/true);
     state.base_frame = std::move(result.first_frame);
     state.live_mode = false;
     state.live_has_frame = false;
@@ -2273,7 +2283,7 @@ void ConnectLive(ViewerState & state)
   state.prefetched_index.reset(); state.requested_frame.reset(); state.frame_cache.clear(); state.frame_cache_order.clear();
   state.frames.clear(); state.file_groups.clear(); state.current_bag_source.reset();
   state.loaded_source_path.clear();state.frame_load_error.clear();
-  ResetTracking(state, /*new_recording=*/true);
+  ResetTracking(state, /*new_sequence=*/true);
   state.base_frame = {}; state.frame = {}; state.processed_frame={}; state.processed_obstacles=0;
   state.roi_gesture.active=false;state.roi_pending=false;state.display_roi_pending=false;
   state.roi_tool=ViewerState::RoiTool::Navigate;
@@ -2916,6 +2926,9 @@ void TogglePlayback(ViewerState & state)
   if (!state.is_playing) {
     state.requested_frame.reset();
     if (state.algorithm_config.detection.enabled && state.geometry_index) CancelGeometry(state);
+  } else if (state.frames.size()>1 && state.current_index==state.frames.size()-1 &&
+             !state.requested_frame && !state.geometry_index) {
+    TryLoadFrame(state, 0);
   }
   state.last_frame_advance_time=glfwGetTime();
 }
