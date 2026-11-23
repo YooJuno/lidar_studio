@@ -4609,14 +4609,19 @@ void BuildExampleDownload(ViewerState & state,float scale)
     ImGui::TextUnformatted(example.title);ImGui::Spacing();
     if(opening) ImGui::TextUnformatted("Opening example...");
     else {
-      ImGui::TextUnformatted(progress.stage==lidar_viewer::ExampleStage::Checking ? "Checking saved files..." : "Downloading example...");
-      ImGui::ProgressBar(progress.total_bytes ? static_cast<float>(progress.bytes)/progress.total_bytes : 0,{-1,0});
-      ImGui::TextDisabled("%.1f / %.1f MB  |  %zu / %zu %s",progress.bytes/1000000.,progress.total_bytes/1000000.,
-        progress.files,progress.total_files,example.archive ? "files" : "frames");
-      if(progress.eta_seconds>=0) {
-        const auto seconds=static_cast<unsigned>(std::ceil(progress.eta_seconds));
-        ImGui::TextDisabled("ETA ~%u:%02u",seconds/60,seconds%60);
-      } else ImGui::TextDisabled("ETA calculating...");
+      if(progress.stage==lidar_viewer::ExampleStage::Preparing) {
+        ImGui::TextUnformatted("Preparing recording...");
+        ImGui::ProgressBar(-static_cast<float>(ImGui::GetTime()*.6),{-1,0},"");
+      } else {
+        ImGui::TextUnformatted(progress.stage==lidar_viewer::ExampleStage::Checking ? "Checking saved files..." : "Downloading example...");
+        ImGui::ProgressBar(progress.total_bytes ? static_cast<float>(progress.bytes)/progress.total_bytes : 0,{-1,0});
+        ImGui::TextDisabled("%.1f / %.1f MB  |  %zu / %zu %s",progress.bytes/1000000.,progress.total_bytes/1000000.,
+          progress.files,progress.total_files,example.archive ? "files" : "frames");
+        if(progress.eta_seconds>=0) {
+          const auto seconds=static_cast<unsigned>(std::ceil(progress.eta_seconds));
+          ImGui::TextDisabled("ETA ~%u:%02u",seconds/60,seconds%60);
+        } else ImGui::TextDisabled("ETA calculating...");
+      }
       if(ImGui::Button("Cancel")) {state.example_dataset->Cancel();state.example_pending=false;}
       TraceUi("example_cancel");ImGui::SameLine();ImGui::TextDisabled("Esc");
     }
