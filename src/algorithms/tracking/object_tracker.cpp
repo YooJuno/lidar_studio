@@ -230,6 +230,11 @@ struct ObjectTracker::Impl
 ObjectTracker::ObjectTracker():impl_(std::make_unique<Impl>()) {}
 ObjectTracker::~ObjectTracker()=default;
 void ObjectTracker::Reset() {impl_->states.clear();impl_->output.clear();impl_->last.reset();impl_->stats={};}
+void ObjectTracker::ResetSequence()
+{
+  Reset();
+  impl_->next_id=1;
+}
 const std::vector<ObjectTrack> & ObjectTracker::Tracks() const {return impl_->output;}
 const TrackingStats & ObjectTracker::Stats() const {return impl_->stats;}
 

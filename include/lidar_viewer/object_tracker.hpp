@@ -55,8 +55,10 @@ public:
   ObjectTracker & operator=(const ObjectTracker &)=delete;
   const std::vector<ObjectTrack> & Update(const std::vector<algorithms::Detection> & detections,
     const TrackingFrame & frame,const TrackingParams & params,float min_confidence);
-  // Reset state while keeping IDs monotonic for this application lifetime.
+  // Clear active tracks while keeping IDs monotonic within the recording.
   void Reset();
+  // Start a new recording with a fresh ID namespace.
+  void ResetSequence();
   const std::vector<ObjectTrack> & Tracks() const;
   const TrackingStats & Stats() const;
 private:

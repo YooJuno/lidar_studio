@@ -153,9 +153,25 @@ int main() {
     next=discontinuity.Update({D(0)},F(20),params,.5f).front().id;
     Check(next>id,"Forward seek reused old IDs");id=next;
     next=discontinuity.Update({D(0)},F(0,-1,2),params,.5f).front().id;
-    Check(next>id,"New source reused old IDs");id=next;
+    Check(next>id,"Implicit source reset recycled an ID");id=next;
     discontinuity.Reset();next=discontinuity.Update({D(0)},F(0),params,.5f).front().id;
     Check(next>id,"Explicit reset recycled an ID");
+
+    ObjectTracker recording;
+    for (std::uint64_t frame=0;frame<7;++frame) recording.Update({D(0),D(8)},F(frame),params,.5f);
+    recording.Update({D(0)},F(7),params,.5f);
+    Check(Id(recording.Tracks(),1).confirmed && Id(recording.Tracks(),2).predicted,
+      "Recording reset fixture lacks active and coasting tracks");
+    recording.ResetSequence();
+    Check(recording.Tracks().empty() && recording.Stats().confirmed==0 && recording.Stats().coasting==0,
+      "Starting a recording retained previous tracks or statistics");
+    recording.Update({D(20),D(28)},F(7),params,.5f);
+    Check(recording.Tracks().size()==2 &&
+      Id(recording.Tracks(),1).detection.oriented_bounds.center.x==20 &&
+      Id(recording.Tracks(),2).detection.oriented_bounds.center.x==28 &&
+      !Id(recording.Tracks(),1).confirmed && !Id(recording.Tracks(),2).predicted,
+      "A new recording did not restart IDs with fresh observations");
+
     ObjectTracker live;id=live.Update({D(0)},F(1,1,1,true),params,.5f).front().id;
     live.Update({D(.2f)},F(4,1.2,1,true),params,.5f);
     Check(live.Tracks().front().id==id,"Latest-frame live subscription reset on a skipped sequence");
