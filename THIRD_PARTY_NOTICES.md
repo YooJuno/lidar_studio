@@ -24,7 +24,8 @@ The third-party algorithm adapters retain their upstream attribution.
 
 PCL (BSD-3-Clause), Dear ImGui (MIT), GLFW (Zlib), GLEW (its BSD/MIT/SGI
 notices), nanoflann (BSD-2-Clause), Eigen (MPL-2.0 and accompanying notices),
-Boost (BSL-1.0), curl (curl license) and OpenSSL (Apache-2.0) retain their
+Boost (BSL-1.0), curl (curl license), libarchive (BSD and accompanying
+notices) and OpenSSL (Apache-2.0) retain their
 upstream licenses. Bundled runtimes and Python packages retain their own
 notices, including Python, NumPy, ONNX and ONNX Runtime.
 
@@ -51,6 +52,9 @@ its noncommercial model terms during setup.
   in `docs/images/README.md` and `docs/media/SOURCE.md`.
 - UrbanV2X driving examples: CC BY-NC-SA 4.0, credited in `docs/examples.md`.
   The app downloads these separately; they are not licensed under MIT.
+- Ouster SDK recordings: CC BY-NC-SA 2.0, downloaded from Ouster.
+- Elevator-LIO Office1 excerpt: CC BY 4.0, attributed in the archive and
+  `docs/examples.md`.
 - Patchwork++ sample scans: retain the source repository's applicable terms
   and attribution described in `docs/examples.md`.
 

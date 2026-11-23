@@ -53,7 +53,7 @@ jobs:
           sudo dpkg -i /tmp/ros2-apt-source.deb
       - name: Install dependencies
         run: |
-          bash tools/install_ubuntu_ci_dependencies.sh ninja-build libglfw3-dev libglew-dev libpcl-dev libnanoflann-dev libcurl4-openssl-dev libssl-dev \
+          bash tools/install_ubuntu_ci_dependencies.sh ninja-build libglfw3-dev libglew-dev libpcl-dev libnanoflann-dev libcurl4-openssl-dev libssl-dev libarchive-dev \
             ros-jazzy-rosbag2-cpp ros-jazzy-sensor-msgs ros-jazzy-tf2-msgs ros-jazzy-rclcpp \
             ros-jazzy-rclpy ros-jazzy-rosbag2-py ros-jazzy-rmw-fastrtps-cpp ros-jazzy-rosbag2-storage-mcap ros-jazzy-rosbag2-storage-sqlite3 \
             zenity xvfb xauth x11-utils x11-xserver-utils libxtst6 ffmpeg \
@@ -260,7 +260,7 @@ jobs:
       - name: Install dependencies
         run: |
           bash tools/install_ubuntu_ci_dependencies.sh ninja-build libglfw3-dev libglew-dev libpcl-dev \
-            libnanoflann-dev libcurl4-openssl-dev libssl-dev zenity xvfb xauth x11-utils x11-xserver-utils \
+            libnanoflann-dev libcurl4-openssl-dev libssl-dev libarchive-dev zenity xvfb xauth x11-utils x11-xserver-utils \
             libxtst6 ffmpeg python3-pil python3-numpy libgl1-mesa-dri dpkg-dev
       - name: Build and test without ROS
         run: |
@@ -271,6 +271,13 @@ jobs:
           ctest --test-dir build --output-on-failure
           LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s '-screen 0 1920x1200x24' \
             /usr/bin/python3 tests/ui_direct_live_smoke.py --viewer build/lidar_studio --output build/test_artifacts/direct-live
+      - name: Download and replay archived example datasets without ROS
+        run: |
+          for dataset in mid360 os1; do
+            LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s '-screen 0 1920x1200x24' \
+              /usr/bin/python3 tests/ui_archive_example_smoke.py --viewer build/lidar_studio \
+              --output build/test_artifacts/archive-examples --dataset "$dataset"
+          done
       - name: Package and verify runtime dependencies
         run: |
           cpack --config build/CPackConfig.cmake
@@ -344,7 +351,7 @@ jobs:
         run: ./.vcpkg/bootstrap-vcpkg.bat -disableMetrics
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
-        run: brew install pcl glfw glew nanoflann ninja openssl@3
+        run: brew install pcl glfw glew nanoflann ninja openssl@3 libarchive
       - name: Prepare offline Mac detector and original models
         if: runner.os == 'macOS'
         run: python3 tools/bundle_macos_detector.py --output build-detector
@@ -362,7 +369,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 -DCMAKE_PREFIX_PATH="$(brew --prefix)" -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" -DLIDAR_VIEWER_ENABLE_CUDA=OFF \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 -DCMAKE_PREFIX_PATH="$(brew --prefix);$(brew --prefix libarchive)" -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" -DLIDAR_VIEWER_ENABLE_CUDA=OFF \
             -DLIDAR_VIEWER_ENABLE_ROSBAG=OFF -DLIDAR_VIEWER_USER_SETTINGS=ON -DCPACK_PACKAGE_VERSION="$RELEASE_VERSION" \
             -DLIDAR_STUDIO_BUNDLED_DETECTOR="$PWD/build-detector"
       - name: Build

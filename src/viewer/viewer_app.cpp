@@ -326,7 +326,7 @@ struct ViewerState
   float height_color_max{4.0f};
   lidar_viewer::UiLayout ui_layout;
   std::unique_ptr<lidar_viewer::ExampleDataset> example_dataset;
-  bool example_pending{false},example_panel{false};
+  bool example_pending{false},open_data_panel{false};
   lidar_viewer::ExampleKind example_kind{lidar_viewer::ExampleKind::Velodyne30};
   struct ExampleCacheResult {lidar_viewer::ExampleKind kind;lidar_viewer::ExampleCacheInfo info;};
   std::unique_ptr<lidar_viewer::BackgroundWorker> example_cache_worker;
@@ -799,9 +799,13 @@ void FilterDetections(ViewerState & state)
   RebuildClusterBoxes(state);
 }
 
-void ResetTracking(ViewerState & state)
+void ResetTracking(ViewerState & state, bool new_recording=false)
 {
-  if (state.tracker) state.tracker->Reset();
+  if (state.tracker) {
+    if (new_recording) state.tracker->ResetSequence();
+    else state.tracker->Reset();
+  }
+  if (new_recording) state.tracking_source.clear();
   state.tracking_clock.reset();
   ++state.tracking_session;state.tracking_revision=0;state.visible_tracks.clear();
 }
@@ -815,9 +819,10 @@ void TrackCurrentDetections(ViewerState & state)
     const auto & handle=state.frames[state.current_index];
     source=(handle.format==InputFormat::KittiXyzi ? handle.path.parent_path() : handle.path).u8string();
   }
+  const bool new_recording=!state.tracking_source.empty() && state.tracking_source!=source;
   if (state.tracking_model!=state.algorithm_config.detection.model || state.tracking_frame_id!=state.base_frame.frame_id ||
       state.tracking_alignment!=state.detector_alignment || state.tracking_source!=source) {
-    ResetTracking(state);state.tracking_model=state.algorithm_config.detection.model;
+    ResetTracking(state,new_recording);state.tracking_model=state.algorithm_config.detection.model;
     state.tracking_frame_id=state.base_frame.frame_id;state.tracking_alignment=state.detector_alignment;
     state.tracking_source=source;
   }
@@ -1672,6 +1677,30 @@ void LoadSettings(ViewerState & state);
 fs::path AlgorithmsConfigPath();
 std::string DetectDatasetProfile(const fs::path & input_path);
 
+std::vector<FrameHandle> ResolveViewerInput(const fs::path & path,const std::string & topic,
+  const std::string & imu_topic,lidar_viewer::InputLoadState * load=nullptr)
+{
+  if (lidar_viewer::IsIncompleteExample(path))
+    throw std::runtime_error("Finish the example download under Open before opening its recording");
+  const auto * example=lidar_viewer::FindExampleAtPath(path);
+  if (example && example->archive && fs::is_directory(path)) {
+    std::vector<FrameHandle> scans;
+    scans.reserve(example->scan_count);
+    for (std::size_t i=0;i<example->archive_member_count;++i) {
+      if (load) load->CheckCancelled();
+      const auto file=path/example->archive_members[i].name;
+      if (file.extension()==".pcap") return ResolveInputFrames(file,topic,imu_topic,load);
+      if (file.extension()!=".bin") continue;
+      FrameHandle scan;
+      scan.path=file;
+      scan.label=FileDisplayName(file);
+      scans.push_back(std::move(scan));
+    }
+    return scans;
+  }
+  return ResolveInputFrames(path,topic,imu_topic,load);
+}
+
 void OpenBagSource(ViewerState & state, std::size_t index, bool reload = false)
 {
   if(state.example_removing || (state.example_dataset && state.example_dataset->Progress().Active())) return;
@@ -1719,7 +1748,7 @@ void OpenBagSource(ViewerState & state, std::size_t index, bool reload = false)
     if (!state.geometry_worker) state.geometry_worker=std::make_unique<lidar_viewer::BackgroundWorker>();
     state.bag_load_future = state.geometry_worker->Submit([path, topic, imu_topic, load, prepared=std::move(prepared)]() mutable {
       ViewerState::BagLoadResult result;
-      result.frames = prepared->review_window ? lidar_viewer::ResolveDatasetFrames(path,load.get(),true) : ResolveInputFrames(path, topic, imu_topic, load.get());
+      result.frames = prepared->review_window ? lidar_viewer::ResolveDatasetFrames(path,load.get(),true) : ResolveViewerInput(path,topic,imu_topic,load.get());
       if (result.frames.empty()) throw std::runtime_error("No point cloud samples found in this input");
       load->Stage(lidar_viewer::InputLoadStage::ReadingFirstFrame);
       result.first_frame = LoadFrame(result.frames.front());
@@ -1757,6 +1786,7 @@ void StartBagPicker(ViewerState & state)
       initial = home;
     }
     state.bag_picker.OpenBag(initial);
+    state.open_data_panel=false;
     state.ui_error.clear();
   } catch (const std::exception & error) {
     state.ui_error = error.what();
@@ -1884,6 +1914,7 @@ void DropCallback(GLFWwindow * window, int count, const char ** paths)
     if (count!=1) throw std::runtime_error("Drop one point cloud file, dataset folder or bag at a time");
     if (state->bag_picker.Active() || state->dataset_picker.Active()) return;
     OpenInputPath(*state,fs::u8path(paths[0]));
+    state->open_data_panel=false;
   } catch (const std::exception & error) {state->ui_error=error.what();}
 }
 
@@ -1940,7 +1971,7 @@ void ClearDeletedExampleInput(ViewerState & state,const fs::path & directory)
     state.ground_average.Reset();state.object_average.Reset();state.clustering_average.Reset();
     state.clusters.clear();state.detections.clear();state.detector_input.reset();
     InvalidateDetectorFrame(state);
-    ResetTracking(state);RebuildClusterBoxes(state);state.roi_renderer.vertices.clear();state.roi_renderer.dirty=true;
+    ResetTracking(state, /*new_recording=*/true);RebuildClusterBoxes(state);state.roi_renderer.vertices.clear();state.roi_renderer.dirty=true;
     state.status_points=0;state.status_ground=0;
     state.status_ground_average_ms=-1;state.status_object_average_ms=-1;state.status_processing_ms=0;state.status_roi_ms=0;
     state.processing_ms=0;state.roi_ms=0;state.input_fps_estimate.reset();state.current_bag_source.reset();
@@ -1977,7 +2008,7 @@ void StartDrivingExample(ViewerState & state)
   if(state.example_dataset && state.example_dataset->Progress().Active()) return;
   if(!state.example_dataset || state.example_dataset->Definition().kind!=state.example_kind)
     state.example_dataset=std::make_unique<lidar_viewer::ExampleDataset>(state.example_kind);
-  state.example_panel=true;
+  state.open_data_panel=true;
   try {if(state.example_dataset->Start()) {state.example_pending=true;state.ui_error.clear();}}
   catch(const std::exception & error) {state.ui_error=error.what();}
 }
@@ -2009,9 +2040,9 @@ void UpdateDrivingExample(ViewerState & state)
     OpenBagSource(state,index);
     if(state.loading_bag_source) state.input_load_autoplay=true;
     else if(!state.frames.empty() && lidar_viewer::IsDrivingExample(state.frames.front().path)) state.is_playing=true;
-    state.example_panel=false;
+    state.open_data_panel=false;
     std::cout<<"Example ready | cached "<<progress.cached<<" / "<<progress.total_files<<std::endl;
-  } catch(const std::exception & error) {state.example_panel=false;state.ui_error=std::string("Example could not be opened: ")+error.what();}
+  } catch(const std::exception & error) {state.open_data_panel=false;state.ui_error=std::string("Example could not be opened: ")+error.what();}
 }
 
 void CompleteBagLoad(ViewerState & state)
@@ -2040,7 +2071,7 @@ void CompleteBagLoad(ViewerState & state)
     state.frame_cache.clear();
     state.frame_cache_order.clear();
     state.frames = std::move(result.frames);
-    ResetTracking(state);
+    ResetTracking(state, /*new_recording=*/true);
     state.base_frame = std::move(result.first_frame);
     state.live_mode = false;
     state.live_has_frame = false;
@@ -2242,7 +2273,7 @@ void ConnectLive(ViewerState & state)
   state.prefetched_index.reset(); state.requested_frame.reset(); state.frame_cache.clear(); state.frame_cache_order.clear();
   state.frames.clear(); state.file_groups.clear(); state.current_bag_source.reset();
   state.loaded_source_path.clear();state.frame_load_error.clear();
-  ResetTracking(state);
+  ResetTracking(state, /*new_recording=*/true);
   state.base_frame = {}; state.frame = {}; state.processed_frame={}; state.processed_obstacles=0;
   state.roi_gesture.active=false;state.roi_pending=false;state.display_roi_pending=false;
   state.roi_tool=ViewerState::RoiTool::Navigate;
@@ -2352,11 +2383,8 @@ fs::path SettingsPath()
 
 std::string DetectDatasetProfile(const fs::path & input_path)
 {
+  if(const auto * example=lidar_viewer::FindExampleAtPath(input_path)) return example->profile;
   if (IsPcapCapture(input_path)) return "direct-lidar";
-  if(lidar_viewer::IsDrivingExample(input_path)) {
-    const auto folder=fs::is_directory(input_path) ? input_path : input_path.parent_path();
-    for(const auto & example:lidar_viewer::DrivingExamples()) if(folder.filename()==example.id) return example.profile;
-  }
   if(lidar_viewer::IsDatasetFile(input_path) || input_path.filename()=="metadata.json") return "dataset";
   if (IsRos2BagInput(input_path)) {
     return "rosbag";
@@ -2775,6 +2803,8 @@ void LoadSettingsFile(ViewerState & state, const fs::path & path)
 void LoadSettings(ViewerState & state)
 {
   const auto app_scale=state.ui_scale;
+  if(const auto * example=lidar_viewer::FindExampleProfile(state.dataset_profile))
+    state.calibration=example->default_alignment;
   state.display_roi={};state.selected_display_roi=0;state.display_roi_pending=false;
   state.detector_model_loaded=false;
   state.ground_view=ViewerState::GroundView::All;
@@ -3184,9 +3214,9 @@ void KeyCallback(GLFWwindow * window, int key, int, int action, int mods)
   if (!state) return;
   auto & studio = state->studio_parent ? *state->studio_parent : *state;
   if(action==GLFW_PRESS && key==GLFW_KEY_ESCAPE) {
-    if(studio.example_panel &&
+    if(!state->review_window && studio.open_data_panel &&
         (!ImGui::GetCurrentContext() || (!ImGui::GetIO().WantTextInput && !ImGui::IsPopupOpen(nullptr,ImGuiPopupFlags_AnyPopupId)))) {
-      if(studio.example_dataset && studio.example_dataset->Progress().Active()) studio.example_dataset->Cancel();else studio.example_panel=false;
+      if(studio.example_dataset && studio.example_dataset->Progress().Active()) studio.example_dataset->Cancel();else studio.open_data_panel=false;
       studio.example_pending=false;
       return;
     }
@@ -3474,7 +3504,7 @@ void BuildSourceSelector(ViewerState & state, float width)
         const auto a=ImGui::GetItemRectMin(),b=ImGui::GetItemRectMax();
         std::cout<<"Restore removed UI: "<<(a.x+b.x)*.5f<<' '<<(a.y+b.y)*.5f<<std::endl;
       }
-      Tip("Restore recordings removed from this list. You can also open a removed recording explicitly with Open... > Open file... .");
+      Tip("Restore recordings removed from this list. Open > Open file also opens a removed recording.");
     }
     ImGui::EndCombo();
   }
@@ -4593,16 +4623,16 @@ void BuildDatasetPanel(ViewerState & state)
   }
 }
 
-void BuildExampleDownload(ViewerState & state,float scale)
+void BuildOpenData(ViewerState & state,float scale)
 {
-  if(!state.example_panel) return;
+  if(!state.open_data_panel) return;
   InspectDrivingExample(state);
   const auto progress=state.example_dataset ? state.example_dataset->Progress() : lidar_viewer::ExampleProgress{};
   const auto & example=lidar_viewer::DrivingExample(state.example_kind);
   const auto display=ImGui::GetIO().DisplaySize;
   ImGui::SetNextWindowPos({display.x*.5f,display.y*.5f},ImGuiCond_Appearing,{.5f,.5f});
   ImGui::SetNextWindowSize({std::min(500.f*scale,display.x-32*scale),0},ImGuiCond_Always);
-  ImGui::Begin("Example datasets",nullptr,ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_AlwaysAutoResize);
+  ImGui::Begin("Open data",nullptr,ImGuiWindowFlags_NoCollapse|ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_AlwaysAutoResize);
   const bool opening=progress.stage==lidar_viewer::ExampleStage::Ready && state.example_pending;
   if(state.example_removing) ImGui::TextUnformatted("Deleting downloaded files...");
   else if(progress.Active() || opening) {
@@ -4626,7 +4656,26 @@ void BuildExampleDownload(ViewerState & state,float scale)
       TraceUi("example_cancel");ImGui::SameLine();ImGui::TextDisabled("Esc");
     }
   } else {
-    ImGui::TextDisabled("Public recordings  |  No login needed");
+    using lidar_viewer::UiIcon;
+    const bool input_busy=state.live.Active() || state.loading_bag_source || state.folder_scan_future.valid() ||
+      state.dataset_edit_future.valid() || state.bag_picker.Active() || state.dataset_picker.Active();
+    const auto action_width=[scale](const char * label) {return ImGui::CalcTextSize(label).x+40.f*scale;};
+    ImGui::BeginDisabled(input_busy);
+    if(lidar_viewer::ActionButton("##OpenLocalFile",UiIcon::Folder,"Open file",{action_width("Open file"),0},scale))
+      StartBagPicker(state);
+    TraceUi("open_input_file");
+    Tip("Open a point cloud, capture or recording. Ctrl+O.");
+    ImGui::SameLine();
+    if(lidar_viewer::ActionButton("##AddLocalFolder",UiIcon::Plus,"Add recordings folder",{action_width("Add recordings folder"),0},scale)) {
+      state.open_folder_picker=true;
+      state.open_data_panel=false;
+    }
+    TraceUi("open_input_folder");
+    Tip("Add recordings in a folder and its subfolders to the playback list.");
+    ImGui::EndDisabled();
+
+    ImGui::SeparatorText("Public examples");
+    ImGui::TextDisabled("No login needed");
     ImGui::Spacing();
     const auto choose=[&](lidar_viewer::ExampleKind kind) {
       if(state.example_kind!=kind) {state.example_kind=kind;state.example_dataset.reset();state.example_pending=false;state.example_cache_kind.reset();state.example_cache_info={};}
@@ -4716,21 +4765,33 @@ void BuildExampleDownload(ViewerState & state,float scale)
     const auto & info=state.example_cache_info;
     const auto & current=lidar_viewer::DrivingExample(state.example_kind);
     if(state.example_cache_future.valid()) ImGui::TextDisabled("Checking saved files...");
-    else if(info.files) ImGui::TextDisabled("Saved  |  %zu / %zu %s  |  %.1f MB",info.files,current.count,
-      current.archive ? "files" : "frames",info.bytes/1000000.);
+    else if(info.files && current.archive) ImGui::TextDisabled("Saved  |  %zu frames  |  %.1f MB",current.scan_count,info.bytes/1000000.);
+    else if(info.files) ImGui::TextDisabled("Saved  |  %zu / %zu frames  |  %.1f MB",info.files,current.count,info.bytes/1000000.);
     else ImGui::TextDisabled("Not downloaded");
     ImGui::Spacing();
     const bool saved=info.files==current.count;
+    ImGui::BeginDisabled(input_busy);
+    ImGui::PushStyleColor(ImGuiCol_Button,ui::SelectionColor());
     if(ImGui::Button(failed ? "Retry" : saved ? "Open saved recording" : "Download and open",{200*scale,0})) StartDrivingExample(state);
-    TraceUi("example_start");ImGui::SameLine();
-    if(ImGui::Button("Close")) state.example_panel=false;
+    TraceUi("example_start");
+    ImGui::PopStyleColor();
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if(ImGui::Button("Close")) state.open_data_panel=false;
     TraceUi("example_close");
-    if(info.files) {
+    if(info.present) {
       ImGui::SameLine();ImGui::BeginDisabled(state.export_future.valid() || state.loading_bag_source.has_value());
-      if(lidar_viewer::ActionButton("##DeleteExample",lidar_viewer::UiIcon::Trash,"Delete download",{0,0},scale)) DeleteDrivingExample(state);
+      if(lidar_viewer::ActionButton("##DeleteExample",UiIcon::Trash,"Delete download",{action_width("Delete download"),0},scale))
+        DeleteDrivingExample(state);
       TraceUi("example_delete");ImGui::EndDisabled();
       Tip("Delete this cached recording. If it is open, playback closes first. Other lengths, sensors, exports and original recordings are kept. Shared frames remain on disk while another cached length uses them.");
     }
+    ImGui::Spacing();
+    if(ImGui::TextLink("Perception benchmark")) {
+      state.open_benchmark=true;
+      state.open_data_panel=false;
+    }
+    TraceUi("open_benchmark");
   }
   ImGui::End();
 }
@@ -4767,26 +4828,13 @@ void BuildViewerHeader(ViewerState & state, ViewerState & studio, bool dataset_i
 
   ImGui::BeginDisabled(example_busy || state.dataset_edit_future.valid() || state.live.Active() ||
     state.loading_bag_source || state.folder_scan_future.valid() || state.bag_picker.Active() || state.dataset_picker.Active());
-  if (action("##OpenInput", UiIcon::Folder, "Open")) {
+  if (action("##OpenInput", UiIcon::Folder, "Open",!state.review_window && state.open_data_panel)) {
     if (state.review_window) state.open_dataset_review = true;
-    else ImGui::OpenPopup("Open data");
+    else state.open_data_panel = !state.open_data_panel;
   }
   TraceUi("open_input");
   ImGui::EndDisabled();
-  Tip(state.review_window ? "Open a point cloud file or folder. Ctrl+O." : "Open a recording or add a folder of recordings. Ctrl+O opens the file picker.");
-  if (ImGui::BeginPopup("Open data")) {
-    if (ImGui::MenuItem("Open file...", "Ctrl+O")) StartBagPicker(state);
-    TraceUi("open_input_file");
-    if (ImGui::MenuItem("Add recordings folder...")) state.open_folder_picker = true;
-    TraceUi("open_input_folder");
-    Tip("Add the recordings from a folder and its subfolders to the playback source list.");
-    ImGui::Separator();
-    if (ImGui::MenuItem("Example datasets...", nullptr, false, !example_busy && !state.live.Active())) state.example_panel = true;
-    TraceUi("open_example");
-    if (ImGui::MenuItem("Perception benchmark...")) studio.open_benchmark = true;
-    TraceUi("open_benchmark");
-    ImGui::EndPopup();
-  }
+  Tip(state.review_window ? "Open a point cloud file or folder. Ctrl+O." : "Open a file, add a recordings folder or choose a public example. Ctrl+O opens the file picker.");
   ImGui::SameLine();
   ImGui::BeginDisabled(example_busy || state.review_window || state.loading_bag_source || state.folder_scan_future.valid() || state.bag_picker.Active());
   if (action("##Live", UiIcon::Live, "Live", state.live.Active())) state.open_live_dialog = true;
@@ -5191,6 +5239,14 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       end_tab();
     }
     if (!dataset_input && begin_tab("Align")) {
+      const auto * example=lidar_viewer::FindExampleProfile(state.dataset_profile);
+      if(example) {
+        SectionTitle("Dataset setup");
+        ImGui::TextUnformatted(example->sensor);
+        ImGui::TextWrapped("%s",example->alignment_reference ? example->alignment_reference :
+          "Sensor axes / mount pose unavailable");
+        Tip("The example preset sets orientation. The reference grid and expected ground height can be adjusted per profile.");
+      }
       SectionTitle("IMU leveling");
       reprocess|=ImGui::Checkbox("IMU auto level",&state.imu_level_enabled);
       TraceUi("align_auto");
@@ -5225,7 +5281,8 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
             read_only ? ImGuiInputTextFlags_ReadOnly : 0);
           TraceUi(id);
           if (read_only) Tip("Controlled by IMU. Turn off auto level to edit the saved manual angle.");
-          else Tip(height ? "Display height in metres (-5 to 5)." : "Type an angle in degrees. Full turns wrap into -180 to 180.");
+          else Tip(height ? "Vertical display offset in metres. Set the expected floor height under Ground." :
+            "Type an angle in degrees. Full turns wrap into -180 to 180.");
           if (changed && !read_only) {
             if (!std::isfinite(value)) {value=previous;state.ui_error="Alignment values must be finite.";return false;}
             value=height ? std::clamp(value,-5.f,5.f) : std::remainder(value,360.f);
@@ -5240,7 +5297,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         if (input(automatic ? "Roll (IMU)" : "Roll","##Roll",roll,automatic,"%.2f deg",.1f)) {
           state.calibration.roll_deg=roll;reprocess=true;
         }
-        reprocess|=input("Height Z","##Z",state.calibration.z_m,false,"%.3f m",.01f,true);
+        reprocess|=input("Z offset","##Z",state.calibration.z_m,false,"%.3f m",.01f,true);
         ImGui::EndTable();
       }
       const float half=(ImGui::GetContentRegionAvail().x-10*s)*.5f;
@@ -5249,10 +5306,12 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       }
       TraceUi("align_reset_rotation");Tip("Turn off IMU correction and reset yaw/pitch/roll to zero. Keep sensor height and mount settings.");
       ImGui::SameLine();
-      if (ImGui::Button("Reset all",{half,0})) {
-        state.calibration={};state.imu_level_enabled=false;reprocess=true;
+      if (ImGui::Button(example ? "Example default" : "Reset all",{half,0})) {
+        state.calibration=example ? example->default_alignment : CalibrationSettings{};
+        state.imu_level_enabled=false;reprocess=true;
       }
-      TraceUi("align_reset_all");Tip("Turn off IMU correction and reset display angles and height. Sensor mounting settings are preserved.");
+      TraceUi("align_reset_all");Tip(example ? "Restore this example's display rotation and Z offset." :
+        "Turn off IMU correction and reset display angles and height. Sensor mounting settings are preserved.");
       if (state.base_frame.imu && !state.base_frame.imu->topic.empty()) {
         const auto & imu=*state.base_frame.imu;
         ImGui::TextDisabled("%s -> %s",imu.imu_frame.c_str(),imu.lidar_frame.c_str());
@@ -5953,7 +6012,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
   }
   BuildLiveWaitingPanel(state);
   BuildInputLoading(state);
-  BuildExampleDownload(studio,s);
+  if(!state.review_window) BuildOpenData(studio,s);
   BuildAppSettings(studio,s);
   lidar_viewer::DrawAboutDialog(state.open_about);
   BuildDatasetReviewDialog(state);
@@ -6519,7 +6578,7 @@ int RunViewer(int argc, char ** argv)
       // A disconnected or damaged recording must not hide other registered bags.
       for (std::size_t i = 0; i < state.bag_sources.size(); ++i) {
         try {
-          auto frames = ResolveInputFrames(state.bag_sources[i].path, bag_topic, imu_topic);
+          auto frames = ResolveViewerInput(state.bag_sources[i].path,bag_topic,imu_topic);
           if (frames.empty()) continue;
           auto first = LoadFrame(frames.front());
           state.frames = std::move(frames);
@@ -6533,7 +6592,7 @@ int RunViewer(int argc, char ** argv)
       }
       if (state.frames.empty()) throw std::runtime_error("No registered bag can be opened. Run with a different bag or collection folder.");
     } else if (load_initial_input && !async_initial_bag) {
-      state.frames = point_review ? lidar_viewer::ResolveDatasetFrames(input_path,nullptr,true) : ResolveInputFrames(input_path, bag_topic, imu_topic);
+      state.frames = point_review ? lidar_viewer::ResolveDatasetFrames(input_path,nullptr,true) : ResolveViewerInput(input_path,bag_topic,imu_topic);
       state.dataset_tab_requested=!state.frames.empty() && state.frames.front().dataset_sample!=nullptr;
     }
     state.input_fps_estimate = EstimateInputFps(state);

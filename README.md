@@ -59,7 +59,7 @@ The macOS download is **ad-hoc signed, not Apple-notarized**; macOS may block it
 <summary>Build from source on Ubuntu</summary>
 
 ```bash
-sudo apt install cmake g++ libglfw3-dev libglew-dev libpcl-dev libnanoflann-dev libcurl4-openssl-dev libssl-dev zenity
+sudo apt install cmake g++ libglfw3-dev libglew-dev libpcl-dev libnanoflann-dev libcurl4-openssl-dev libssl-dev libarchive-dev zenity
 git clone --recursive https://github.com/YooJuno/lidar_studio.git
 cd lidar_studio
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DLIDAR_VIEWER_ENABLE_CUDA=OFF -DLIDAR_VIEWER_ENABLE_ROSBAG=OFF
@@ -73,21 +73,18 @@ The core viewer and ground algorithms work without Python or a GPU. Detection an
 
 </details>
 
-## Try a driving recording
+## Try an example dataset
 
-Choose **Open… → Driving examples…**, select a recording length, then **Download and open**:
+Choose **Open → Public examples**, select a sensor and scene, then **Download and open**. No login, Python, ROS or GPU is needed.
 
-| Sensor | Channels / view | 30 s · 300 frames | 1 min · 600 frames |
-| --- | --- | --- | --- |
-| **Velodyne HDL-32E** | 32 · 360° | 434 MB | 860 MB |
-| **Hesai XT32** | 32 · 360° | 922 MB | 1.84 GB |
-| **Hesai AT128P** | 128 · forward 120° | 2.30 GB | 4.61 GB |
+| Dataset | Sensors | Scene and length |
+| --- | --- | --- |
+| Elevator-LIO | Livox MID-360 | Indoor office, 30 s · 39 MB |
+| Ouster SDK | OS0-128, OS1-128, OS2-128 | Urban driving, 20–26 s · 99–200 MB |
+| UrbanV2X | Velodyne HDL-32E, Hesai XT32 and AT128P | Hong Kong Science Park, 30 or 60 s |
+| Patchwork++ | Velodyne | Six-scan preview, 12 MB |
 
-A six-scan **Quick preview** (12 MB) is also available. The default is the smaller Velodyne 30-second recording.
-
-**No login, Python, ROS or GPU is needed.** Real consecutive scans open with ground segmentation and 10 Hz playback. Downloads show progress and ETA, support cancellation/retry and reuse verified scans across lengths. Each sensor has a separate profile and initial mount correction. Manage saved recordings and **Delete download** in the same chooser.
-
-[UrbanV2X](https://huggingface.co/datasets/polyutaslab/UrbanV2X) is published by TAS Lab, Hong Kong Polytechnic University, under **CC BY-NC-SA 4.0**. The quick preview comes from [Patchwork++](https://github.com/url-kaist/patchwork-plusplus/tree/3e6903a1d5537a4cc2ace897b0bbb98a92d6014c/data). [Example details, full recordings and KITTI instructions](docs/examples.md).
+Downloads show size and progress. Open saved recordings offline or remove them with **Delete download**. [Example sources, licenses and KITTI instructions](docs/examples.md).
 
 ## Find your workflow
 

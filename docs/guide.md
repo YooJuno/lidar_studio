@@ -26,7 +26,7 @@ UI는 고정 버전의 [Dear ImGui](https://github.com/ocornut/imgui/tree/f5befd
 
 ## Run
 
-**공개 예제:** **Open… → Driving examples…**에서 센서와 길이를 선택한 뒤 **Download and open**을 누르세요. 로그인 없이 **Velodyne HDL-32E(32채널·360도)**, **Hesai XT32(32채널·360도)**, **Hesai AT128P(128채널·전방 120도)**의 연속 주행 30초·300프레임 또는 1분·600프레임을 받을 수 있습니다. 센서별 용량을 먼저 표시하며, 기본값은 Velodyne 30초·434 MB입니다. 기존 6프레임·12 MB 미리보기도 유지합니다. 진행률·ETA·취소·재시도를 제공하고 길이를 바꿔도 검증한 프레임은 재사용합니다. 센서별 별도 프로파일과 초기 장착 보정값을 사용합니다. 같은 창에서 저장된 프레임 수·용량을 확인하고 **Delete download**로 선택한 예제를 삭제할 수 있습니다. 해당 예제를 보고 있으면 재생부터 닫으며 다른 센서·길이와 내보낸 파일은 유지합니다. [예제·라이선스·KITTI 실행 가이드](examples.md).
+**공개 예제**는 **Open → Public examples**에서 센서와 환경을 골라 바로 내려받아 재생할 수 있습니다. 같은 화면에서 로컬 파일과 녹화 폴더도 엽니다. UrbanV2X의 Velodyne·Hesai 야외 주행, Ouster OS0·OS1·OS2 원본 패킷 기록, Elevator-LIO의 Livox MID-360 실내 30초가 제공됩니다. 저장된 데이터는 오프라인 재생 및 삭제가 가능합니다. [예제별 출처·정렬·라이선스](examples.md).
 
 입력 경로를 생략하면 **빈 뷰어가 먼저 열립니다.** 상단 **Open → Open file...**을 누르면 시스템 파일 탐색 창이 열립니다. bag 폴더 안의 `metadata.yaml` 또는 `.db3`·`.mcap` 파일을 선택하세요. 분할 파일을 골라도 같은 폴더의 기록 전체를 엽니다. 탐색 창을 취소해도 뷰어는 계속 열려 있습니다. 재생 컨트롤은 입력을 연 뒤 표시됩니다.
 
@@ -125,7 +125,7 @@ source /opt/ros/jazzy/setup.bash
 - 패키지 빌드는 `-DLIDAR_VIEWER_USER_SETTINGS=ON`을 사용해 사용자 설정을 Windows `%APPDATA%/LiDARViewer`, macOS `~/Library/Application Support/LiDARViewer`, Ubuntu `~/.config/lidar_viewer`에 저장합니다. 기본 설정은 배포 리소스에서 읽고 사용자 설정으로 덮어씁니다. 업데이트해도 사용자 ROI를 패키지 설정으로 덮어쓰지 않습니다. `XDG_CONFIG_HOME`도 지원합니다.
 - 소스 빌드는 기존처럼 프로젝트 `config/profiles`에 저장합니다. 사용자 경로를 쓰려면 위 CMake 옵션을 켭니다.
 
-Windows 소스 빌드는 저장소의 `vcpkg.json`과 `cmake/triplets/x64-windows-release.cmake`를 사용합니다. macOS 의존성은 `brew install pcl glfw glew nanoflann ninja`로 설치합니다. 두 플랫폼 모두 기본 CI 설정은 `-DLIDAR_VIEWER_ENABLE_CUDA=OFF -DLIDAR_VIEWER_ENABLE_ROSBAG=OFF`입니다.
+Windows 소스 빌드는 저장소의 `vcpkg.json`과 `cmake/triplets/x64-windows-release.cmake`를 사용합니다. macOS 의존성은 `brew install pcl glfw glew nanoflann ninja openssl@3 libarchive`로 설치하고, CMake 검색 경로에 `$(brew --prefix libarchive)`를 추가합니다. 두 플랫폼 모두 기본 CI 설정은 `-DLIDAR_VIEWER_ENABLE_CUDA=OFF -DLIDAR_VIEWER_ENABLE_ROSBAG=OFF`입니다.
 
 <a id="macos-first-launch"></a>
 ### macOS 첫 실행

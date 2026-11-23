@@ -1,8 +1,25 @@
-# Driving examples
+# Example datasets
 
 ## In-app recordings — no account required
 
-Select **Open… → Driving examples…**, choose a length, then **Download and open**. Nothing downloads at startup.
+Select **Open → Public examples**, choose a sensor and scene, then **Download and open**. The same window also opens local files and recording folders.
+
+| Recording | Sensor and view | Frames at approx. 10 Hz | Download |
+| --- | --- | --- | --- |
+| Elevator-LIO Office1, indoor | Livox MID-360, 360° non-repetitive scan | 300 · 30 s | 38.94 MB |
+| Ouster urban drive, wide view | OS0-128, 360° × 92°, dual returns | 201 · 20 s | 158.51 MB |
+| Ouster urban drive, low bandwidth | OS1-128, 360° × 43°, single return | 258 · 26 s | 99.01 MB |
+| Ouster urban drive, long range | OS2-128, 360° × 22°, dual returns | 201 · 20 s | 200.03 MB |
+
+The [Ouster SDK recordings](https://docs.ouster.com/sdk-docs/0.5.1/sample-data.html) are vendor PCAPs with matching calibration JSON under [CC BY-NC-SA 2.0](https://creativecommons.org/licenses/by-nc-sa/2.0/). LiDAR Studio keeps the original packet and calibration contents. Once unpacked, the recordings take roughly 140–426 MB on disk.
+
+The [Elevator-LIO Office1 excerpt](https://github.com/YooJuno/lidar_studio/releases/tag/example-data-v1) comes from the [public Elevator-LIO dataset](https://huggingface.co/datasets/xiaofan0100/Elevator-LIO-Dataset), by Yifan Zhang et al., under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The 30-second clip combines five consecutive MID-360 messages per frame and retains XYZ, reflectivity and the first message timestamp in the filename. It contains LiDAR points only. [Paper and authors](https://arxiv.org/abs/2605.24495).
+
+The app checks the archive and unpacked files against pinned SHA-256 checksums. Prepared recordings open offline and contain no extra copy of the ZIP. **Delete download** removes the selected cache and closes its playback if open.
+
+**Align** shows each example's reference frame. Elevator-LIO uses the inverse of the published vehicle-to-LiDAR rotation, a −90° yaw, to display the vehicle axes. Ouster examples use their calibrated sensor axes. **Example default** restores the preset and **Save profile** remembers edits for that sensor and recording. Set the vertical display position with **Align → Z offset** and the floor seed height with **Ground → Expected ground Z** for GSeg3D. [Elevator-LIO calibration](https://huggingface.co/datasets/xiaofan0100/Elevator-LIO-Dataset/blob/87c86479ec479fe670369b5bd685e0ab69372632/calibration_offsets.yaml).
+
+### UrbanV2X lengths
 
 | Sensor | Channels / view | 30 s · 300 frames | 60 s · 600 frames | Sequence |
 | --- | --- | --- | --- | --- |

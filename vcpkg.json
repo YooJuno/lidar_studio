@@ -13,6 +13,10 @@
     },
     "openssl",
     {
+      "name": "libarchive",
+      "default-features": false
+    },
+    {
       "name": "curl",
       "default-features": false,
       "features": [

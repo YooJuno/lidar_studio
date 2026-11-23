@@ -36,6 +36,20 @@ int main(int argc,char ** argv) {
       DrivingExampleDirectory(ExampleKind::Urban30)!=DrivingExampleDirectory(ExampleKind::Urban60),"Example caches overlap");
     for(const auto & example:DrivingExamples()) {
       if(example.kind==ExampleKind::Quick) continue;
+      if(example.archive) {
+        Check(example.count==1 && example.scan_count>=200 && example.archive_members && example.archive_member_count>=2,
+          "Missing archive example files or real playback count");
+        Check(fs::path(example.files[0].name).extension()==".zip" &&
+          std::strlen(example.files[0].sha256)==64,"Invalid source archive");
+        std::set<std::string> names;
+        for(std::size_t i=0;i<example.archive_member_count;++i) {
+          const auto & member=example.archive_members[i];
+          Check(fs::path(member.name).filename()==fs::path(member.name) &&
+            names.insert(member.name).second && member.bytes && std::strlen(member.sha256)==64,
+            "Invalid or unsafe replay archive member");
+        }
+        continue;
+      }
       Check(example.channels==32 || example.channels==128,"Missing sensor channel information");
       Check(example.count==300 || example.count==600,"Unexpected driving sample length");
       std::set<std::string> names;std::uint64_t prior=0;

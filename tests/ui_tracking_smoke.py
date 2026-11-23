@@ -76,10 +76,13 @@ while True:
  if index%2:boxes.reverse()
  time.sleep(.02);sink.write(r.pack(b'LDR1',rev,len(boxes),20,0)+b''.join(struct.pack('<9f',*b) for b in boxes));sink.flush()
 ''')
-    viewer=private/'build/lidar_viewer';shutil.copy2(args.viewer.resolve(),viewer);bag=out/'fixture';write_fixture(bag)
+    viewer=private/'build/lidar_viewer';shutil.copy2(args.viewer.resolve(),viewer)
+    bag=out/'recordings/fixture';target=bag.with_name('other');bag.parent.mkdir()
+    write_fixture(bag);write_fixture(target)
     config=out/'settings/lidar_viewer';config.mkdir(parents=True)
     (config/'detector.cfg').write_text(f'python={os.sys.executable}\nmodel_dir={private}\nprovider=cpu\n')
-    env=dict(os.environ,XDG_CONFIG_HOME=str(out/'settings'),LIDAR_VIEWER_TRACKING_TRACE='1',LIDAR_VIEWER_DETECTOR_TRACE='1',LIDAR_VIEWER_UI_TRACE='1',GSETTINGS_BACKEND='memory',NO_AT_BRIDGE='1')
+    (config/'data_folders.cfg').write_text(f'folder "{bag.parent}"\n')
+    env=dict(os.environ,XDG_CONFIG_HOME=str(out/'settings'),LIDAR_VIEWER_TRACKING_TRACE='1',LIDAR_VIEWER_DETECTOR_TRACE='1',LIDAR_VIEWER_UI_TRACE='1',LIDAR_VIEWER_CATALOG_TRACE='1',GSETTINGS_BACKEND='memory',NO_AT_BRIDGE='1')
     log_path=out/'viewer.log';before=settings_inventory(repo);result={'status':'started','checks':{},'output':str(out)};process=x11=window=None
     def log():return log_path.read_text(errors='replace')
     def tracks():
@@ -139,6 +142,17 @@ while True:
             samples=[float(s) for s in re.findall(r'^Status sample ([.\de+]+)$',log(),re.M)]
             check('status_metrics_refresh_at_readable_intervals',len(samples)>=4 and all(b-a>=.99 for a,b in zip(samples,samples[1:])))
             capture(x11,window,out/'02_sidebar_playback.png')
+            before_switch=len(log())
+            c.click('source_selector')
+            target_row=re.compile(r'^Source row: "'+re.escape(str(target))+r'" \| select ([\d.-]+) ([\d.-]+) .* \| available 1$',re.M)
+            wait(lambda: target_row.search(log()[before_switch:]))
+            row=target_row.search(log()[before_switch:])
+            x11.click(window,*(round(float(value)) for value in row.groups()))
+            wait(lambda: f'Opened bag: "{target}"' in log()[before_switch:])
+            new_tracks=lambda: re.findall(r'^Track frame 0 id (\d+) .* predicted (\d+)',log()[before_switch:],re.M)
+            wait(lambda: len(new_tracks())>=2)
+            check('new_recording_restarts_ids_and_drops_old_predictions',set(new_tracks())=={('1','0'),('2','0')})
+            check('switching_recordings_reuses_the_detector_worker',len((private/'python/starts.txt').read_text().splitlines())==1)
             check('original_profiles_unchanged',before==settings_inventory(repo));result['status']='passed'
     except Exception as error:
         result.update(status='failed',error=str(error),traceback=traceback.format_exc())
