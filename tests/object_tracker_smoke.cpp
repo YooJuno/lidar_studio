@@ -89,6 +89,17 @@ int main() {
     for (std::uint64_t i=6;i<=13;++i) weak.Update({D(static_cast<float>(i)*.1f,0,3,0,.4f)},F(i),params,.5f);
     Check(weak.Tracks().empty(),"Weak observations extended a track indefinitely");
 
+    ObjectTracker partial_shape;
+    for (std::uint64_t i=0;i<8;++i) partial_shape.Update({D(0,0,0)},F(i),params,.5f);
+    const float partial[]{.25f,.1f,.9f,2.5f,1.3f,1.4f,.72f,.4f,0};
+    partial_shape.Update({algorithms::DecodeCenterPointBox(partial,0)},F(8),params,.5f);
+    const auto & partial_track=Id(partial_shape.Tracks(),1);
+    const auto & partial_box=partial_track.detection.oriented_bounds;
+    Check(partial_track.low_confidence_update && partial_box.center.x>.01f &&
+      std::abs(partial_box.half_length-2.f)<1e-5f && std::abs(partial_box.half_width-1.f)<1e-5f &&
+      std::abs(partial_box.axis_x.y)<1e-5f,
+      "A weak partial detection altered the tracked dimensions or heading while recovering position");
+
     ObjectTracker young;
     const auto young_id=young.Update({D(0)},F(0),params,.5f).front().id;
     young.Update({D(.1f)},F(1),params,.5f);young.Update({D(.2f)},F(2),params,.5f);
@@ -207,6 +218,18 @@ int main() {
     bounded.Update(many,F(0),params,.5f);
     Check(bounded.Tracks().size()==ObjectTracker::kMaxTracks && bounded.Stats().capacity_dropped==700-ObjectTracker::kMaxTracks,
       "Tracking capacity was not bounded and reported");
+    ObjectTracker sparse;
+    std::vector<algorithms::Detection> separated;
+    for (int i=0;i<64;++i) {
+      const float x=8.f*static_cast<float>(i)+(i%2 ? -7.2f : 0.f);
+      separated.push_back(D(x));
+    }
+    sparse.Update(separated,F(0),params,.5f);
+    std::reverse(separated.begin(),separated.end());
+    sparse.Update(separated,F(1),params,.5f);
+    for (std::size_t i=0;i<separated.size();++i)
+      Check(Id(sparse.Tracks(),i+1).measurement_index==separated.size()-1-i,
+        "Solving independent groups associated a track outside its original group");
     auto invalid=D(0);invalid.oriented_bounds.center.x=std::numeric_limits<float>::quiet_NaN();
     ObjectTracker robust;robust.Update({invalid,D(0,0,3,0,.2f)},F(0),params,.5f);
     Check(robust.Tracks().empty(),"Invalid or below-threshold boxes created tracks");

@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <queue>
 #include <stdexcept>
 
@@ -73,7 +74,7 @@ algorithms::Detection Box(const State & x,int class_id,float score)
 
 // Rectangular shortest-augmenting-path Hungarian assignment. Dummy columns
 // allow each track to remain unmatched instead of forcing an invalid link.
-std::vector<int> Assign(const std::vector<double> & costs,std::size_t rows,std::size_t real_columns)
+std::vector<int> AssignDense(const std::vector<double> & costs,std::size_t rows,std::size_t real_columns)
 {
   if (!rows || !real_columns) return std::vector<int>(rows,-1);
   const auto columns=real_columns+rows;
@@ -104,6 +105,55 @@ std::vector<int> Assign(const std::vector<double> & costs,std::size_t rows,std::
   return result;
 }
 
+// Rejected pairs do not couple otherwise independent assignment problems.
+// Solve each connected component with its own unmatched columns rather than
+// paying for every isolated or out-of-range target in the dense solver.
+std::vector<int> Assign(const std::vector<double> & costs,std::size_t rows,std::size_t columns)
+{
+  if (rows*columns<=256) return AssignDense(costs,rows,columns);
+  std::vector<std::size_t> parent(rows+columns);
+  std::iota(parent.begin(),parent.end(),0);
+  std::vector<unsigned char> linked(rows+columns,0);
+  const auto root=[&](std::size_t node) {
+    while (parent[node]!=node) {
+      parent[node]=parent[parent[node]];
+      node=parent[node];
+    }
+    return node;
+  };
+  for (std::size_t row=0;row<rows;++row) for (std::size_t col=0;col<columns;++col) {
+    if (costs[row*columns+col]>=unmatched) continue;
+    parent[root(rows+col)]=root(row);
+    linked[row]=linked[rows+col]=1;
+  }
+  struct Component {std::vector<std::size_t> rows,columns;};
+  std::vector<Component> components(rows);
+  for (std::size_t row=0;row<rows;++row) if (linked[row]) components[root(row)].rows.push_back(row);
+  for (std::size_t col=0;col<columns;++col) if (linked[rows+col])
+    components[root(rows+col)].columns.push_back(col);
+
+  std::vector<int> result(rows,-1);
+  std::vector<double> local;
+  for (const auto & component:components) {
+    const auto & selected_rows=component.rows;
+    const auto & selected_columns=component.columns;
+    if (selected_rows.empty()) continue;
+    if (selected_rows.size()==rows && selected_columns.size()==columns)
+      return AssignDense(costs,rows,columns);
+    if (selected_rows.size()==1 && selected_columns.size()==1) {
+      result[selected_rows.front()]=static_cast<int>(selected_columns.front());
+      continue;
+    }
+    local.clear();
+    local.reserve(selected_rows.size()*selected_columns.size());
+    for (const auto row:selected_rows) for (const auto col:selected_columns) local.push_back(costs[row*columns+col]);
+    const auto assignments=AssignDense(local,selected_rows.size(),selected_columns.size());
+    for (std::size_t i=0;i<assignments.size();++i) if (assignments[i]>=0)
+      result[selected_rows[i]]=static_cast<int>(selected_columns[static_cast<std::size_t>(assignments[i])]);
+  }
+  return result;
+}
+
 struct TrackState
 {
   State x=State::Zero();Covariance covariance=Covariance::Identity();
@@ -115,6 +165,7 @@ struct TrackState
   std::optional<std::size_t> measurement;
   std::vector<Vec3> trail;
 };
+
 
 struct Observation
 {
@@ -184,6 +235,21 @@ double AssociationCost(const TrackState & track,const algorithms::Detection & de
     .025*(1-detection.confidence)+.12*std::clamp(unobserved_s/.6,0.,1.)+(changed_class ? .15 : 0.);
 }
 
+template<int Dimensions>
+void CorrectMeasurement(TrackState & track,const Measurement & z,const Noise & noise)
+{
+  using Innovation=Eigen::Matrix<double,Dimensions,Dimensions>;
+  const auto r=noise.topLeftCorner<Dimensions,Dimensions>();
+  const Innovation s=track.covariance.topLeftCorner<Dimensions,Dimensions>()+r;
+  const Eigen::LDLT<Innovation> solve(s);
+  const auto measured=track.covariance.leftCols<Dimensions>();
+  const Eigen::Matrix<double,10,Dimensions> k=solve.solve(measured.transpose()).transpose();
+  track.x+=k*(z.head<Dimensions>()-track.x.head<Dimensions>());
+  Covariance residual=Covariance::Identity();residual.leftCols<Dimensions>()-=k;
+  track.covariance=residual*track.covariance*residual.transpose()+k*r*k.transpose();
+  track.covariance=(track.covariance+track.covariance.transpose()).eval()*.5;
+}
+
 void Correct(TrackState & track,const algorithms::Detection & detection,
   const Observation & observation,std::int64_t stamp,double dt)
 {
@@ -191,17 +257,14 @@ void Correct(TrackState & track,const algorithms::Detection & detection,
   // A 3D box's heading is ambiguous by pi. Correct the nearest equivalent
   // orientation, including wraparound at +/-pi, before the linear update.
   z[3]=track.x[3]+std::remainder(z[3]-track.x[3],pi);
-  // Closely spaced detections share noise. Limit their influence per unit of sensor
-  // time, and downweight weak geometry while still following its position.
+  // Closely spaced detections share noise. Limit their influence per unit of
+  // sensor time. Weak observations can recover position through occlusion,
+  // where shape and heading often describe only the visible part of an object.
   const double temporal_scale=std::max(1.,.03/std::max(dt,.001));
-  const Noise r=MeasurementNoise(track.x)*temporal_scale*(observation.strong ? 1. : 4.);
-  const Noise s=track.covariance.topLeftCorner<7,7>()+r;
-  const Eigen::LDLT<Noise> solve(s);
-  const Eigen::Matrix<double,10,7> k=solve.solve(track.covariance.leftCols<7>().transpose()).transpose();
-  track.x+=k*(z-track.x.head<7>());track.x[3]=std::remainder(track.x[3],2*pi);
-  Covariance residual=Covariance::Identity();residual.leftCols<7>()-=k;
-  track.covariance=residual*track.covariance*residual.transpose()+k*r*k.transpose();
-  track.covariance=(track.covariance+track.covariance.transpose()).eval()*.5;
+  const Noise r=MeasurementNoise(track.x)*temporal_scale;
+  if (observation.strong) CorrectMeasurement<7>(track,z,r);
+  else CorrectMeasurement<3>(track,z,r*4.);
+  track.x[3]=std::remainder(track.x[3],2*pi);
   track.score=detection.confidence;track.last_measurement=stamp;track.measurement=observation.index;
   track.weak_update=!observation.strong;track.missed_previous=false;
   if (!observation.strong) {track.alternate_hits=0;return;}
