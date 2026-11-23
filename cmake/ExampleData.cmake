@@ -17,9 +17,19 @@ else()
 endif()
 target_link_libraries(lidar_viewer_live PRIVATE ${example_curl_library})
 find_package(OpenSSL REQUIRED COMPONENTS Crypto)
-add_library(lidar_viewer_example STATIC src/datasets/examples/example_dataset.cpp)
+find_package(LibArchive REQUIRED)
+add_library(lidar_viewer_example STATIC
+  src/datasets/examples/example_archive.cpp
+  src/datasets/examples/example_catalog.cpp
+  src/datasets/examples/example_dataset.cpp)
 target_include_directories(lidar_viewer_example PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(lidar_viewer_example PRIVATE ${example_curl_library} OpenSSL::Crypto Threads::Threads)
+if(TARGET LibArchive::LibArchive)
+  target_link_libraries(lidar_viewer_example PRIVATE LibArchive::LibArchive)
+else()
+  target_include_directories(lidar_viewer_example PRIVATE ${LibArchive_INCLUDE_DIRS})
+  target_link_libraries(lidar_viewer_example PRIVATE ${LibArchive_LIBRARIES})
+endif()
 lidar_warnings(lidar_viewer_example)
 target_link_libraries(lidar_studio PRIVATE lidar_viewer_example)
 
