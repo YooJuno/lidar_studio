@@ -56,6 +56,23 @@ int main() {
       Id(crossing.Tracks(),leftward).velocity.x< -1.2f,"Crossing or reordered detections swapped IDs");
     Check(Id(crossing.Tracks(),rightward).trail.size()<=ObjectTracker::kTrailLength,"Trajectory history grew without bound");
 
+    // Longitudinal box-center jitter makes the other car's center closer.
+    // Their rotated footprints still occupy separate lanes.
+    ObjectTracker adjacent_lanes;
+    const auto car_box=[](float x,float y,float yaw) {
+      constexpr float angle=.3f;
+      const float box[]{48.f+std::cos(angle)*x-std::sin(angle)*y,std::sin(angle)*x+std::cos(angle)*y,
+        .8f,5.2f,1.2f,1.6f,yaw+angle,.8f,0};
+      return algorithms::DecodeCenterPointBox(box,0);
+    };
+    for (std::uint64_t i=0;i<8;++i)
+      adjacent_lanes.Update({car_box(0,0,0),car_box(2,1,0)},F(i),params,.5f);
+    adjacent_lanes.Update({car_box(.7f,1,-.05f),car_box(1.3f,0,.05f)},F(8),params,.5f);
+    Check(adjacent_lanes.Tracks().size()==2 && Id(adjacent_lanes.Tracks(),1).confirmed &&
+      Id(adjacent_lanes.Tracks(),2).confirmed && Id(adjacent_lanes.Tracks(),1).measurement_index==1 &&
+      Id(adjacent_lanes.Tracks(),2).measurement_index==0,
+      "Longitudinal detection jitter swapped adjacent oriented vehicle tracks");
+
     ObjectTracker typed;const auto person=typed.Update({D(0,0,3)},F(0),params,.5f).front().id;
     typed.Update({D(0,0,0)},F(1),params,.5f);
     Check(typed.Tracks().size()==1 && typed.Tracks().front().id!=person && typed.Tracks().front().detection.class_id==0,

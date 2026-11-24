@@ -1,7 +1,7 @@
 #include "lidar_viewer/object_tracker.hpp"
-#include <Eigen/Cholesky>
 #include <Eigen/Core>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <limits>
@@ -14,9 +14,7 @@ namespace lidar_viewer
 namespace
 {
 using State=Eigen::Matrix<double,10,1>;
-using Covariance=Eigen::Matrix<double,10,10>;
 using Measurement=Eigen::Matrix<double,7,1>;
-using Noise=Eigen::Matrix<double,7,7>;
 constexpr double pi=3.14159265358979323846, forbidden=1e6, unmatched=1.1;
 constexpr double strong_gate=16.27, weak_gate=7.81;
 constexpr float weak_score_fraction=.6f, max_weak_age_s=.5f;
@@ -47,12 +45,12 @@ Measurement Measure(const algorithms::Detection & d)
   return z;
 }
 
-Noise MeasurementNoise(const State & x)
+Measurement MeasurementVariance(const State & x)
 {
-  Noise r=Noise::Zero();
   const double sigma=.20+.004*std::hypot(x[0],x[1]);
-  r.diagonal()<<sigma*sigma,sigma*sigma,.09,.09,.16,.16,.16;
-  return r;
+  Measurement variance;
+  variance<<sigma*sigma,sigma*sigma,.09,.09,.16,.16,.16;
+  return variance;
 }
 
 algorithms::Detection Box(const State & x,int class_id,float score)
@@ -156,7 +154,12 @@ std::vector<int> Assign(const std::vector<double> & costs,std::size_t rows,std::
 
 struct TrackState
 {
-  State x=State::Zero();Covariance covariance=Covariance::Identity();
+  State x=State::Zero();
+  // Independent position/velocity pairs and independent yaw/dimension
+  // states. Only each position's covariance with its own velocity is nonzero
+  // away from the diagonal.
+  State variance=State::Ones();
+  Eigen::Vector3d position_velocity_covariance=Eigen::Vector3d::Zero();
   std::uint64_t id{0};int class_id{-1},streak{1},strong_hits{1};bool confirmed{false};
   int alternate_class{-1},alternate_hits{0};
   float score{0},strong_score{0};
@@ -193,33 +196,99 @@ bool ForecastCoveredBy(const TrackState & forecast,const Measurement & box,int o
     std::abs(-s*offset.x()+c*offset.y())<smaller.y()*.25;
 }
 
+struct FootprintPoint {double x,y;};
+
+double OrientedVolumeIoU(const State & track, const Measurement & observation)
+{
+  const double h1=std::max(.01,track[6])*.5, h2=observation[6]*.5;
+  const double dz=observation[2]-track[2];
+  const double height=std::min(h1,dz+h2)-std::max(-h1,dz-h2);
+  if (height<=0) return 0;
+
+  // Work in the predicted box's local coordinates. The observation is a
+  // rotated rectangle, so clipping against the four axis-aligned sides is
+  // enough and each intermediate polygon has at most eight vertices.
+  const double dx=observation[0]-track[0], dy=observation[1]-track[1];
+  const double c=std::cos(track[3]), s=std::sin(track[3]);
+  const double cx=c*dx+s*dy, cy=-s*dx+c*dy;
+  const double l1=std::max(.01,track[4])*.5, w1=std::max(.01,track[5])*.5;
+  const double l2=observation[4]*.5, w2=observation[5]*.5;
+  const double yaw=observation[3]-track[3], cos_yaw=std::cos(yaw), sin_yaw=std::sin(yaw);
+  const double lx=l2*cos_yaw, ly=l2*sin_yaw, wx=-w2*sin_yaw, wy=w2*cos_yaw;
+  if (std::abs(cx)>=l1+std::abs(lx)+std::abs(wx) || std::abs(cy)>=w1+std::abs(ly)+std::abs(wy))
+    return 0;
+
+  std::array<FootprintPoint,8> a{{
+    {cx-lx-wx,cy-ly-wy}, {cx+lx-wx,cy+ly-wy}, {cx+lx+wx,cy+ly+wy}, {cx-lx+wx,cy-ly+wy}
+  }}, b;
+  auto * polygon=&a;
+  auto * clipped=&b;
+  std::size_t count=4;
+  for (int side=0;side<4;++side) {
+    const auto distance=[&](const FootprintPoint & p) {
+      return side<2 ? l1+(side==0 ? p.x : -p.x) : w1+(side==2 ? p.y : -p.y);
+    };
+    auto previous=(*polygon)[count-1];
+    double previous_distance=distance(previous);
+    std::size_t kept=0;
+    for (std::size_t i=0;i<count;++i) {
+      const auto current=(*polygon)[i];
+      const double current_distance=distance(current);
+      if ((previous_distance>0 && current_distance<0) || (previous_distance<0 && current_distance>0)) {
+        const double t=previous_distance/(previous_distance-current_distance);
+        (*clipped)[kept++]={previous.x+t*(current.x-previous.x),previous.y+t*(current.y-previous.y)};
+      }
+      if (current_distance>=0) (*clipped)[kept++]=current;
+      previous=current;
+      previous_distance=current_distance;
+    }
+    if (kept<3) return 0;
+    std::swap(polygon,clipped);
+    count=kept;
+  }
+  double twice_area=0;
+  for (std::size_t i=0;i<count;++i) {
+    const auto p=(*polygon)[i], q=(*polygon)[(i+1)%count];
+    twice_area+=p.x*q.y-p.y*q.x;
+  }
+  const double volume1=8*l1*w1*h1, volume2=8*l2*w2*h2;
+  const double overlap=std::min(std::abs(twice_area)*.5*height,std::min(volume1,volume2));
+  return overlap/(volume1+volume2-overlap);
+}
+
 void Predict(TrackState & track,double dt)
 {
-  Covariance f=Covariance::Identity(),q=Covariance::Zero();
-  for (int i=0;i<3;++i) {
-    f(i,i+7)=dt;const double acceleration_density=i==2 ? .4 : 1.6;
+  const double dt2=dt*dt;
+  for (int position=0;position<3;++position) {
+    const int velocity=position+7;
+    const double acceleration_density=position==2 ? .4 : 1.6;
+    double & covariance=track.position_velocity_covariance[position];
     // Continuous acceleration noise accumulates consistently across skipped scans.
-    q(i,i)=acceleration_density*dt*dt*dt/3.;
-    q(i,i+7)=q(i+7,i)=acceleration_density*dt*dt*.5;q(i+7,i+7)=acceleration_density*dt;
+    track.x[position]+=dt*track.x[velocity];
+    track.variance[position]+=2.*dt*covariance+dt2*track.variance[velocity]+acceleration_density*dt2*dt/3.;
+    covariance+=dt*track.variance[velocity]+acceleration_density*dt2*.5;
+    track.variance[velocity]+=acceleration_density*dt;
   }
-  q(3,3)=.09*dt;for(int i=4;i<7;++i) q(i,i)=.01*dt;
-  track.x=f*track.x;track.covariance=f*track.covariance*f.transpose()+q;track.measurement.reset();
+  track.variance[3]+=.09*dt;
+  track.variance.segment<3>(4).array()+=.01*dt;
+  track.measurement.reset();
   track.weak_update=false;
 }
 
 double AssociationCost(const TrackState & track,const algorithms::Detection & detection,
-  const Measurement & z,const Eigen::Matrix3d & inverse,bool weak,double unobserved_s)
+  const Measurement & z,const Eigen::Vector3d & inverse,bool weak,double unobserved_s)
 {
   const bool changed_class=track.class_id!=detection.class_id;
   if (changed_class && (weak || !track.confirmed || !IsVehicle(track.class_id) || !IsVehicle(detection.class_id)))
     return forbidden;
-  const Eigen::Vector3d delta=z.head<3>()-track.x.head<3>();
-  const double mahal=delta.dot(inverse*delta);
   const bool strict=weak || changed_class;
   const double gate=strict ? weak_gate : strong_gate;
   const bool person=track.class_id==algorithms::DetectionClassPerson;
   const double max_distance=strict ? std::clamp(.4*track.x[4]+.4,.75,2.5) : person ? 4. : 12.;
-  if (!std::isfinite(mahal) || mahal>gate || delta.squaredNorm()>max_distance*max_distance) return forbidden;
+  const Eigen::Vector3d delta=z.head<3>()-track.x.head<3>();
+  const Eigen::Vector3d squared=delta.cwiseProduct(delta);
+  const double mahal=squared.dot(inverse), distance_squared=squared.sum();
+  if (!std::isfinite(mahal) || mahal>gate || distance_squared>max_distance*max_distance) return forbidden;
   double size_cost=0;
   for (int axis=4;axis<7;++axis) {
     const double ratio=z[axis]/std::max(.01,track.x[axis]);
@@ -230,24 +299,30 @@ double AssociationCost(const TrackState & track,const algorithms::Detection & de
   // A large covariance can keep a stale track eligible, but should not give it
   // an advantage over a closer, recently measured track.
   const double distance_scale=std::clamp(.5*track.x[4]+.5,1.,3.);
-  const double distance_cost=std::min(1.,delta.norm()/distance_scale);
+  const double distance_cost=std::min(1.,std::sqrt(distance_squared)/distance_scale);
   return .45*mahal/gate+.30*distance_cost+.10*std::min(1.,size_cost/3)+.05*heading+
     .025*(1-detection.confidence)+.12*std::clamp(unobserved_s/.6,0.,1.)+(changed_class ? .15 : 0.);
 }
 
-template<int Dimensions>
-void CorrectMeasurement(TrackState & track,const Measurement & z,const Noise & noise)
+void CorrectMeasurement(TrackState & track,const Measurement & z,const Measurement & noise,bool strong)
 {
-  using Innovation=Eigen::Matrix<double,Dimensions,Dimensions>;
-  const auto r=noise.topLeftCorner<Dimensions,Dimensions>();
-  const Innovation s=track.covariance.topLeftCorner<Dimensions,Dimensions>()+r;
-  const Eigen::LDLT<Innovation> solve(s);
-  const auto measured=track.covariance.leftCols<Dimensions>();
-  const Eigen::Matrix<double,10,Dimensions> k=solve.solve(measured.transpose()).transpose();
-  track.x+=k*(z.head<Dimensions>()-track.x.head<Dimensions>());
-  Covariance residual=Covariance::Identity();residual.leftCols<Dimensions>()-=k;
-  track.covariance=residual*track.covariance*residual.transpose()+k*r*k.transpose();
-  track.covariance=(track.covariance+track.covariance.transpose()).eval()*.5;
+  const int dimensions=strong ? 7 : 3;
+  for (int i=0;i<dimensions;++i) {
+    const double variance=track.variance[i], innovation_variance=variance+noise[i];
+    const double innovation=z[i]-track.x[i];
+    const double gain=variance/innovation_variance, residual=1.-gain;
+    track.x[i]+=gain*innovation;
+    // Joseph-form covariance correction, specialized for a scalar observation.
+    track.variance[i]=residual*residual*variance+gain*gain*noise[i];
+    if (i<3) {
+      const int velocity=i+7;
+      double & covariance=track.position_velocity_covariance[i];
+      const double velocity_gain=covariance/innovation_variance;
+      track.x[velocity]+=velocity_gain*innovation;
+      track.variance[velocity]+=velocity_gain*(velocity_gain*innovation_variance-2.*covariance);
+      covariance=residual*(covariance-velocity_gain*variance)+gain*velocity_gain*noise[i];
+    }
+  }
 }
 
 void Correct(TrackState & track,const algorithms::Detection & detection,
@@ -261,9 +336,8 @@ void Correct(TrackState & track,const algorithms::Detection & detection,
   // sensor time. Weak observations can recover position through occlusion,
   // where shape and heading often describe only the visible part of an object.
   const double temporal_scale=std::max(1.,.03/std::max(dt,.001));
-  const Noise r=MeasurementNoise(track.x)*temporal_scale;
-  if (observation.strong) CorrectMeasurement<7>(track,z,r);
-  else CorrectMeasurement<3>(track,z,r*4.);
+  const double noise_scale=observation.strong ? temporal_scale : 4.*temporal_scale;
+  CorrectMeasurement(track,z,MeasurementVariance(track.x)*noise_scale,observation.strong);
   track.x[3]=std::remainder(track.x[3],2*pi);
   track.score=detection.confidence;track.last_measurement=stamp;track.measurement=observation.index;
   track.weak_update=!observation.strong;track.missed_previous=false;
@@ -373,14 +447,35 @@ const std::vector<ObjectTrack> & ObjectTracker::Update(const std::vector<algorit
     if (rows.empty()) return;
 
     costs.resize(rows.size()*columns.size());
+    std::array<std::size_t,kMaxTracks> row_candidates{};
+    std::array<std::size_t,kMaxMeasurements> column_candidates{};
+    const bool check_overlap=confirmed && strong && (rows.size()>1 || columns.size()>1);
+    bool ambiguous=false;
     for (std::size_t i=0;i<rows.size();++i) {
       const auto & track=core.states[rows[i]];
-      const Eigen::Matrix3d innovation=track.covariance.topLeftCorner<3,3>()+MeasurementNoise(track.x).topLeftCorner<3,3>();
-      const Eigen::Matrix3d inverse=innovation.ldlt().solve(Eigen::Matrix3d::Identity());
+      const Eigen::Vector3d innovation=track.variance.head<3>()+MeasurementVariance(track.x).head<3>();
+      const Eigen::Vector3d inverse=innovation.cwiseInverse();
       const double unobserved=std::max(0.,age(track.last_measurement)-dt);
       for (std::size_t j=0;j<columns.size();++j) {
         const auto & observed=observations[columns[j]];
-        costs[i*columns.size()+j]=AssociationCost(track,detections[observed.index],observed.box,inverse,!strong,unobserved);
+        auto & cost=costs[i*columns.size()+j];
+        cost=AssociationCost(track,detections[observed.index],observed.box,inverse,!strong,unobserved);
+        if (check_overlap && cost<unmatched && IsVehicle(track.class_id)) {
+          const auto row_count=++row_candidates[i], column_count=++column_candidates[j];
+          ambiguous|=row_count>1 || column_count>1;
+        }
+      }
+    }
+    // Compare trusted vehicle shapes where multiple valid links compete.
+    // SimpleTrack uses 3D generalized IoU (arXiv:2111.09621). A bounded
+    // overlap bonus here leaves the motion gates and recovery policy intact.
+    if (ambiguous) for (std::size_t i=0;i<rows.size();++i) {
+      if (!row_candidates[i]) continue;
+      const auto & track=core.states[rows[i]];
+      for (std::size_t j=0;j<columns.size();++j) {
+        auto & cost=costs[i*columns.size()+j];
+        if (cost<unmatched && (row_candidates[i]>1 || column_candidates[j]>1))
+          cost-=.20*OrientedVolumeIoU(track.x,observations[columns[j]].box);
       }
     }
     const auto assignments=Assign(costs,rows.size(),columns.size());
@@ -410,15 +505,16 @@ const std::vector<ObjectTrack> & ObjectTracker::Update(const std::vector<algorit
     if (core.states.size()>=kMaxTracks) {++core.stats.capacity_dropped;continue;}
     if (core.next_id==std::numeric_limits<std::uint64_t>::max()) throw std::overflow_error("Tracking ID exhausted");
     const auto & observed=observations[j];const auto & detection=detections[observed.index];TrackState track;
-    track.x.head<7>()=observed.box;track.covariance.topLeftCorner<7,7>()=MeasurementNoise(track.x);
-    track.covariance.bottomRightCorner<3,3>()*=100;
+    track.x.head<7>()=observed.box;
+    track.variance.head<7>()=MeasurementVariance(track.x);
+    track.variance.tail<3>().setConstant(100);
     track.id=core.next_id++;track.class_id=detection.class_id;track.score=track.strong_score=detection.confidence;
     track.last_measurement=track.last_strong=frame.timestamp_ns;track.measurement=observed.index;
     track.confirmed=params.confirmation_hits==1;
     track.trail.reserve(kTrailLength);core.states.push_back(std::move(track));
   }
   core.states.erase(std::remove_if(core.states.begin(),core.states.end(),[](const auto & track) {
-    return !track.x.allFinite() || !track.covariance.allFinite();
+    return !track.x.allFinite() || !track.variance.allFinite() || !track.position_velocity_covariance.allFinite();
   }),core.states.end());
   for (auto & track:core.states) {
     if (!track.confirmed && !track.measurement) continue;
