@@ -98,6 +98,7 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/tools/setup_detector.py"
   "${CMAKE_CURRENT_SOURCE_DIR}/tools/setup_terraseg.py"
   "${CMAKE_CURRENT_SOURCE_DIR}/tools/setup_centerpoint_training.py"
   "${CMAKE_CURRENT_SOURCE_DIR}/tools/benchmark_perception.py"
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/compare_perception_reports.py"
   "${CMAKE_CURRENT_SOURCE_DIR}/tools/nuscenes_benchmark_data.py"
   "${CMAKE_CURRENT_SOURCE_DIR}/tools/nuscenes_benchmark_metrics.py" DESTINATION "${resource_destination}/tools")
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/README.md" DESTINATION "${resource_destination}")
