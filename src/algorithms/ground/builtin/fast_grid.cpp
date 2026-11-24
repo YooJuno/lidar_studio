@@ -72,12 +72,16 @@ std::vector<unsigned char> ClassifyFastGroundCpu(
   const float height_slope=std::tan(std::clamp(params.gseg3d_slope_threshold_deg,0.f,45.f)*kPi/180.f);
   GroundGrid coarse(radius, std::max(params.gseg3d_cell_size_x_m, .25f));
   GroundGrid fine(radius, std::max(params.gseg3d_cuda_cell_size_m, .25f));
+  std::vector<std::size_t> occupied_fine_cells;
+  occupied_fine_cells.reserve(std::min(input.size(), fine.minimum.size()));
   for (const auto & point : input) {
     if (!Candidate(point, params, radius_squared,height_slope)) continue;
     for (GroundGrid * grid : {&coarse, &fine}) {
       const int x = grid->Coord(point.x), y = grid->Coord(point.y);
       if (grid->Contains(x, y)) {
-        auto & minimum = grid->minimum[grid->Index(x, y)];
+        const auto index = grid->Index(x, y);
+        auto & minimum = grid->minimum[index];
+        if (grid == &fine && minimum >= 9.0e8f && point.z < 9.0e8f) occupied_fine_cells.push_back(index);
         minimum = std::min(minimum, point.z);
       }
     }
@@ -126,8 +130,8 @@ std::vector<unsigned char> ClassifyFastGroundCpu(
 
   const float deviation = std::max(params.gseg3d_max_ground_height_deviation_m * 1.5f,
     params.gseg3d_ground_inlier_threshold_m);
-  for (std::size_t index = 0; index < fine.minimum.size(); ++index) {
-    if (fine.minimum[index] >= 9.0e8f) continue;
+  // Fine cells are independent once the coarse ground has been propagated.
+  for (const auto index : occupied_fine_cells) {
     const float x = fine.origin + (static_cast<float>(index % fine.width) + .5f) * fine.cell;
     const float y = fine.origin + (static_cast<float>(index / fine.width) + .5f) * fine.cell;
     int support;
