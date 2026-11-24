@@ -119,6 +119,10 @@ void ApplyGroundRemovalValue(
     params.fugseg_vertical_noise_deg = ParseFloat(value);
   } else if (key == "fugseg_range_noise_m") {
     params.fugseg_range_noise_m = ParseFloat(value);
+  } else if (key == "linefit_max_range_m") {
+    params.linefit_max_range_m = ParseFloat(value);
+  } else if (key == "linefit_distance_threshold_m") {
+    params.linefit_distance_threshold_m = ParseFloat(value);
   } else if (key == "gseg3d_cell_size_x_m") {
     params.gseg3d_cell_size_x_m = ParseFloat(value);
   } else if (key == "gseg3d_cell_size_y_m") {

@@ -121,6 +121,8 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/fugseg/LICENSE"
   DESTINATION "${resource_destination}/third-party-licenses" RENAME FugSeg-MIT.txt)
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ground_segmentation/LICENSE.txt"
   DESTINATION "${resource_destination}/third-party-licenses" RENAME GSeg3D-BSD-3-Clause.txt)
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/linefit_ground_segmentation/LICENSE"
+  DESTINATION "${resource_destination}/third-party-licenses" RENAME LineFit-BSD-3-Clause.txt)
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/patchwork_plusplus/LICENSE"
   DESTINATION "${resource_destination}/third-party-licenses" RENAME PatchworkPlusPlus-BSD-2-Clause.txt)
 install(FILES "${dear_imgui_SOURCE_DIR}/LICENSE.txt"

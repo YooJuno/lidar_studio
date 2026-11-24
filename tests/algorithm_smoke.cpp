@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <vector>
 
 void RunAlgorithmRegressionTests();
@@ -25,6 +26,37 @@ void AddObject(std::vector<KittiPoint> & points, float center_x, float center_y)
           1.0f});
       }
     }
+  }
+}
+
+void CheckLineFit()
+{
+  GroundRemovalParams params;
+  params.mode = "linefit";
+  params.sensor_height_m = 1.2f;
+  params.gseg3d_ground_height_m = -0.35f;
+  const float floor = params.gseg3d_ground_height_m;
+  const std::vector<KittiPoint> scan{
+    {-2.4f, 0, floor, 1},
+    {2.0f, 0, floor + .5f, 2},
+    {1.2f, 0, floor, 3},
+    {-1.2f, -0.0f, floor, 4},
+    {52.f, 0, floor, 5},
+    {2.4f, 0, floor, 6},
+    {-1.8f, 0, floor, 7},
+    {1.8f, 0, floor, 8},
+    {-2.1f, .05f, floor, 9},
+    {1.8f, 0, std::numeric_limits<float>::infinity(), 10}
+  };
+  const auto labels = [](const auto & points) {
+    std::vector<float> values;
+    for (const auto & point : points) values.push_back(point.intensity);
+    return values;
+  };
+  const auto result = RunGroundSegmentation(scan, params);
+  if (labels(result.ground_points) != std::vector<float>{1, 3, 4, 6, 7, 8, 9} ||
+      labels(result.non_ground_points) != std::vector<float>{2, 5, 10}) {
+    throw std::runtime_error("LineFit lost a ground point, source order or an obstacle");
   }
 }
 }  // namespace
@@ -89,6 +121,7 @@ int main(int argc, char ** argv)
   }
 
   try {
+    CheckLineFit();
     RunAlgorithmRegressionTests();
     if (argc>=2) {
       const float height=argc>=3 ? std::stof(argv[2]) : .57f;
@@ -105,7 +138,7 @@ int main(int argc, char ** argv)
           const auto p=lidar_viewer::RotateImuVector(rotation,{point.x,point.y,point.z});
           point.x=static_cast<float>(p.x);point.y=static_cast<float>(p.y);point.z=static_cast<float>(p.z)+height;
         }
-        for (const auto * mode : {"fast_grid","gseg3d","patchworkpp","fugseg","grid","ransac"}) {
+        for (const auto * mode : {"fast_grid","gseg3d","patchworkpp","fugseg","grid","ransac","linefit"}) {
           GroundRemovalParams params;params.enabled=true;params.mode=mode;params.sensor_height_m=height;
           params.sequence_id=index+1000;
           const auto started=std::chrono::steady_clock::now();

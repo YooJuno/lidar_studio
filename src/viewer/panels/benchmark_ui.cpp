@@ -115,10 +115,10 @@ struct BenchmarkWorkspace::Impl
 #else
   std::array<char, 4096> python{{'p','y','t','h','o','n','3'}};
 #endif
-  Method ground[8]{{"fast_grid", "Fast grid", true}, {"fugseg", "FugSeg", true},
+  Method ground[9]{{"fast_grid", "Fast grid", true}, {"fugseg", "FugSeg", true},
     {"gseg3d", "GSeg3D", true}, {"patchworkpp", "Patchwork++", true},
     {"patchwork_classic", "Patchwork", false}, {"grid", "Grid", false},
-    {"ransac", "RANSAC", false}, {"terraseg", "TerraSeg", false}};
+    {"ransac", "RANSAC", false}, {"terraseg", "TerraSeg", false}, {"linefit", "LineFit", false}};
   Method detectors[4]{{"short_range", "AWML ShortRange", false}, {"tiny", "CenterPoint tiny", false},
     {"base", "CenterPoint base", false}, {"transfusion", "TransFusion", false}};
   bool compare_timeout = true;

@@ -2520,6 +2520,8 @@ void SaveSettings(ViewerState & state)
   out << "fugseg_horizontal_noise_deg=" << state.algorithm_config.ground_removal.fugseg_horizontal_noise_deg << '\n';
   out << "fugseg_vertical_noise_deg=" << state.algorithm_config.ground_removal.fugseg_vertical_noise_deg << '\n';
   out << "fugseg_range_noise_m=" << state.algorithm_config.ground_removal.fugseg_range_noise_m << '\n';
+  out << "linefit_max_range_m=" << state.algorithm_config.ground_removal.linefit_max_range_m << '\n';
+  out << "linefit_distance_threshold_m=" << state.algorithm_config.ground_removal.linefit_distance_threshold_m << '\n';
   out << "ground_use_cuda=" << state.algorithm_config.ground_removal.use_cuda << '\n';
   out << "gseg3d_ground_inlier_threshold_m=" << state.algorithm_config.ground_removal.gseg3d_ground_inlier_threshold_m << '\n';
   out << "gseg3d_cell_size_x_m=" << state.algorithm_config.ground_removal.gseg3d_cell_size_x_m << '\n';
@@ -2647,7 +2649,7 @@ void LoadSettingsFile(ViewerState & state, const fs::path & path)
       } else if (key == "ground_mode") {
         const auto mode = lidar_viewer::algorithms::NormalizeGroundMode(value);
         if (mode == "fast_grid" || mode == "gseg3d" || mode == "patchworkpp" ||
-            mode == "patchwork_classic" || mode == "terraseg" || mode == "fugseg" ||
+            mode == "patchwork_classic" || mode == "terraseg" || mode == "fugseg" || mode == "linefit" ||
             mode == "grid" || mode == "ransac")
           state.algorithm_config.ground_removal.mode = mode;
         else throw std::invalid_argument("Unknown ground segmentation method");
@@ -2667,6 +2669,10 @@ void LoadSettingsFile(ViewerState & state, const fs::path & path)
         state.algorithm_config.ground_removal.fugseg_vertical_noise_deg=std::clamp(ParseFiniteFloat(value),0.001f,1.f);
       } else if (key == "fugseg_range_noise_m") {
         state.algorithm_config.ground_removal.fugseg_range_noise_m=std::clamp(ParseFiniteFloat(value),0.001f,0.5f);
+      } else if (key == "linefit_max_range_m") {
+        state.algorithm_config.ground_removal.linefit_max_range_m=std::clamp(ParseFiniteFloat(value),10.f,160.f);
+      } else if (key == "linefit_distance_threshold_m") {
+        state.algorithm_config.ground_removal.linefit_distance_threshold_m=std::clamp(ParseFiniteFloat(value),.02f,.5f);
       } else if (key == "ground_use_cuda") {
         state.algorithm_config.ground_removal.use_cuda = ParseStrictInt(value) != 0;
       } else if (key == "gseg3d_ground_inlier_threshold_m") {
@@ -5443,8 +5449,8 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       TraceUi("ground_display");
       Tip("Display classified points only. ROI remains active. Switching views reuses the existing result and keeps playback running.");
       ImGui::TextDisabled("Method");
-      const char * modes[] = {"fast_grid", "gseg3d", "patchworkpp", "fugseg", "grid", "ransac", "patchwork_classic", "terraseg"};
-      const char * labels[] = {"Fast grid", "GSeg3D", "Patchwork++", "FugSeg", "Grid", "RANSAC", "Patchwork (classic)", "TerraSeg Small"};
+      const char * modes[] = {"fast_grid", "gseg3d", "patchworkpp", "fugseg", "grid", "ransac", "patchwork_classic", "terraseg", "linefit"};
+      const char * labels[] = {"Fast grid", "GSeg3D", "Patchwork++", "FugSeg", "Grid", "RANSAC", "Patchwork (classic)", "TerraSeg Small", "LineFit"};
       const auto count=static_cast<int>(std::size(modes));
       int mode = 0;
       for (int i = 0; i < count; ++i) if (ground.mode == modes[i]) mode = i;
@@ -5459,13 +5465,16 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       const bool gseg3d=ground.mode=="gseg3d";
       const bool classic_patchwork=ground.mode=="patchwork_classic";
       const bool terraseg=ground.mode=="terraseg";
+      const bool linefit=ground.mode=="linefit";
       ImGui::TextDisabled("%s",gseg3d ? "Connected planes / CPU" :
         terraseg ? "Learned ground segmentation / CUDA" :
+        linefit ? "Radial ground lines / CPU" :
         classic_patchwork ? "Local planes with fixed thresholds / CPU" :
         ground.mode=="patchworkpp" ? "Adaptive local planes / CPU" : ground.mode=="fugseg" ? "Uncertainty-aware terrain / CPU" :
         ground.mode=="fast_grid" ? "Local terrain grid" : ground.mode=="ransac" ? "Global plane + local check" : "Connected height cells");
       Tip(ground.mode=="ransac" ? "Fits one dominant plane. Prefer local-plane methods when the terrain changes slope." :
         terraseg ? "Official TerraSeg Small. Use Align to level the scan and set the expected ground height." :
+        linefit ? "Fits lines to the lowest returns in radial slices. Set Align and the expected ground height before tuning." :
         classic_patchwork ? "Original Patchwork with fixed elevation and flatness thresholds. Sensor height follows Align and Ground reference." :
         ground.mode=="patchworkpp" ? "Original Patchwork++: adaptive local planes, suitable for slopes and uneven roads. Sensor height follows Align." :
         ground.mode=="fugseg" ? "Original FugSeg: uncertainty-aware polar terrain extraction, including sparse and occluded areas." :
@@ -5554,6 +5563,13 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
           ImGui::SetNextItemWidth(-1);
           reprocess|=ImGui::SliderFloat("##PatchSlope",&ground.max_ground_angle_deg,1,45,"Max slope: %.0f deg",ImGuiSliderFlags_AlwaysClamp);
         }
+      } else if (linefit) {
+        ImGui::SetNextItemWidth(-1);
+        reprocess |= ImGui::SliderFloat("##LineFitDistance", &ground.linefit_distance_threshold_m, .02f, .5f,
+          "Ground thickness: %.2f m", ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SetNextItemWidth(-1);
+        reprocess |= ImGui::SliderFloat("##LineFitRange", &ground.linefit_max_range_m, 10.f, 160.f,
+          "Range: %.0f m", ImGuiSliderFlags_AlwaysClamp);
       } else if (!classic_patchwork && !terraseg) {
         ImGui::SetNextItemWidth(-1);
         reprocess |= ImGui::SliderFloat("##GroundCells", &ground.candidate_grid_cell_m, .1f, 3.f, "Cell size: %.2f m", ImGuiSliderFlags_AlwaysClamp);
@@ -5565,7 +5581,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         reprocess|=ImGui::SliderFloat("##GroundContinuity",&ground.gseg3d_max_ground_height_deviation_m,.05f,.6f,"Height continuity: %.2f m",ImGuiSliderFlags_AlwaysClamp);
         Tip("Maximum centroid height change between connected cells. A limit below slope x cell width breaks ramps.");
       } else if (ground.mode=="fast_grid" || ground.mode=="patchworkpp" ||
-          ground.mode=="fugseg" || classic_patchwork || terraseg) {
+          ground.mode=="fugseg" || classic_patchwork || terraseg || linefit) {
         if (ImGui::CollapsingHeader("Ground reference")) {
           ImGui::TextDisabled("Expected ground Z after Align");ImGui::SetNextItemWidth(-1);
           reprocess|=ImGui::DragFloat("##GroundReferenceZ",&ground.gseg3d_ground_height_m,.01f,-5,5,"%.2f m",ImGuiSliderFlags_AlwaysClamp);
@@ -5573,12 +5589,12 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         }
       }
 #ifdef LIDAR_VIEWER_HAS_CUDA
-      if (ground.mode!="gseg3d" && ground.mode!="patchworkpp" && ground.mode!="fugseg" && !classic_patchwork && !terraseg) {
+      if (ground.mode!="gseg3d" && ground.mode!="patchworkpp" && ground.mode!="fugseg" && !classic_patchwork && !terraseg && !linefit) {
         reprocess |= ImGui::Checkbox("Use CUDA", &ground.use_cuda);
         TraceUi("ground_cuda");
       }
 #else
-      if (ground.mode!="gseg3d" && ground.mode!="patchworkpp" && ground.mode!="fugseg" && !classic_patchwork && !terraseg)
+      if (ground.mode!="gseg3d" && ground.mode!="patchworkpp" && ground.mode!="fugseg" && !classic_patchwork && !terraseg && !linefit)
         ImGui::TextDisabled("CPU backend");
 #endif
       }

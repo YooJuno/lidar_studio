@@ -79,7 +79,7 @@ void PrintUsage()
     "       (--ground METHOD | --detector MODEL) [--python-root PATH]\n"
     "       [--score FLOAT] [--track NAME:HITS:MISSED_SECONDS]...\n\n"
     "Ground methods: fast_grid, gseg3d, patchworkpp, patchwork_classic (patchwork),\n"
-    "                fugseg, grid, ransac, terraseg\n"
+    "                fugseg, grid, ransac, terraseg, linefit\n"
     "Detector models: tiny, short_range, base, transfusion\n"
     "Tracking defaults: score 0.50, profile studio:3:0.8\n"
     "Output must be a new or empty directory. The manifest uses nuScenes XYZI-ring.\n";
@@ -173,8 +173,8 @@ Options ParseOptions(const std::vector<std::string> & arguments)
     throw std::invalid_argument("Specify --manifest, --output and exactly one of --ground and --detector");
   if (!options.method.empty()) {
     if (options.method == "patchwork") options.method = "patchwork_classic";
-    const std::array<std::string_view, 8> methods = {
-      "fast_grid", "gseg3d", "patchworkpp", "patchwork_classic", "fugseg", "grid", "ransac", "terraseg"
+    const std::array<std::string_view, 9> methods = {
+      "fast_grid", "gseg3d", "patchworkpp", "patchwork_classic", "fugseg", "grid", "ransac", "terraseg", "linefit"
     };
     if (std::find(methods.begin(), methods.end(), options.method) == methods.end())
       throw std::invalid_argument("Unknown ground method " + options.method);

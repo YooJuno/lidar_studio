@@ -10,6 +10,7 @@ third-party code, model weights, datasets or dataset-derived media.
 | --- | --- | --- |
 | FugSeg | MIT | `third_party/fugseg/LICENSE` |
 | GSeg3D | BSD-3-Clause | `third_party/ground_segmentation/LICENSE.txt` |
+| LineFit | BSD-3-Clause | `third_party/linefit_ground_segmentation/LICENSE` |
 | Patchwork++ | BSD-2-Clause | `third_party/patchwork_plusplus/LICENSE` |
 | Autoware-derived CenterPoint adapters | Apache-2.0 | Existing SPDX headers and `third_party/licenses/Autoware-CenterPoint-*` |
 | AWML ShortRange models and adapter notices | Apache-2.0 | `third_party/licenses/AWML-CenterPoint-*` |

@@ -17,7 +17,7 @@ from pathlib import Path
 from nuscenes_benchmark_data import prepare
 
 
-GROUND = ("fast_grid", "gseg3d", "fugseg", "patchworkpp", "patchwork_classic", "grid", "ransac", "terraseg")
+GROUND = ("fast_grid", "gseg3d", "fugseg", "patchworkpp", "patchwork_classic", "grid", "ransac", "terraseg", "linefit")
 DETECTORS = ("short_range", "tiny", "base", "transfusion")
 DEFAULT_GROUND = ("fast_grid", "fugseg", "gseg3d", "patchworkpp")
 DEFAULT_TRACKING = "studio:3:0.8"

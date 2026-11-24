@@ -70,6 +70,10 @@ struct GroundRemovalParams
   float fugseg_vertical_noise_deg{0.033f};
   float fugseg_range_noise_m{0.02f};
 
+  // Himmelsbach LineFit working range and vertical inlier distance.
+  float linefit_max_range_m{50.0f};
+  float linefit_distance_threshold_m{0.05f};
+
   // GSeg3D: two-pass 3D grid segmentation.  The viewer calibrates points
   // into its level world frame before this algorithm runs, so the default
   // ground height is zero and no ROS/IMU transform is required here.
@@ -118,6 +122,10 @@ GroundRemovalResult RunGroundRemovalPatchworkClassic(
   const GroundRemovalParams & params);
 
 GroundRemovalResult RunGroundRemovalFugSeg(
+  const std::vector<KittiPoint> & input,
+  const GroundRemovalParams & params);
+
+GroundRemovalResult RunGroundRemovalLineFit(
   const std::vector<KittiPoint> & input,
   const GroundRemovalParams & params);
 

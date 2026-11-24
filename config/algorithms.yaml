@@ -62,6 +62,10 @@ ground_removal:
   fugseg_vertical_noise_deg: 0.033
   fugseg_range_noise_m: 0.02
 
+  # Himmelsbach LineFit, original polar line-fitting core (CPU).
+  linefit_max_range_m: 50.0
+  linefit_distance_threshold_m: 0.05
+
   # GSeg3D: two-phase, 3D grid ground segmentation vendored from
   # dfki-ric/ground_segmentation.  Points have already been transformed by
   # the viewer calibration; ground_height should normally remain at zero.

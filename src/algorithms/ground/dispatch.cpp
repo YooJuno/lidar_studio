@@ -14,6 +14,7 @@ GroundRemovalResult RunGroundSegmentation(
   }
   if (mode == "patchwork_classic") return RunGroundRemovalPatchworkClassic(input, params);
   if (mode == "fugseg") return RunGroundRemovalFugSeg(input,params);
+  if (mode == "linefit") return RunGroundRemovalLineFit(input, params);
   if (mode == "grid") {
     return RunGroundRemovalGrid(input, params);
   }
