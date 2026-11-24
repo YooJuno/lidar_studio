@@ -123,8 +123,10 @@ def ui_rows(runs):
         add("Detection", name, "Local center AP", detection.get("mean_ap"), result["timing"],
             f"Pedestrian {person.get('fp', 0):,} false positives | {person.get('fn', 0):,} misses at the selected score")
         for profile, track in result["tracking"].items():
-            add("Tracking", f"{name} / {profile}", "Recall", track.get("recall"), track["timing"],
-                f"{track['id_switches']:,} ID switches | {track['fragmentations']:,} fragments | {track['coasting_fp']:,} predicted false positives")
+            recall = track["recall"]
+            recall_label = f"{recall:.1%} recall" if recall is not None else "No labelled targets"
+            add("Tracking", f"{name} / {profile}", "Local IDF1", track["idf1"], track["timing"],
+                f"{recall_label} | {track['id_switches']:,} ID switches | {track['fragmentations']:,} fragments | {track['coasting_fp']:,} predicted false positives")
     return rows
 
 

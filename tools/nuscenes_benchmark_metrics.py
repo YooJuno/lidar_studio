@@ -364,12 +364,15 @@ def _tracking_timing(dataset, run_dir):
     return {profile: _timing_summary(list(profile_times.values())) for profile, profile_times in times.items()}
 
 
-def _track_matches(candidates, targets, previous_matches):
-    if not candidates or not targets:
-        return []
+def _track_distances(candidates, targets):
     a = np.array([candidate.location for candidate in candidates])
     b = np.array([target.location for target in targets])
-    distances = np.linalg.norm(a[:, None, :] - b[None, :, :], axis=2)
+    return np.linalg.norm(a.reshape(-1, 1, 2) - b.reshape(1, -1, 2), axis=2)
+
+
+def _track_matches(candidates, targets, previous_matches, distances):
+    if distances.size == 0:
+        return []
     # Keep the prior labelled frame's valid identity matches through crowded
     # crossings. A nearer centre alone does not establish an ID switch.
     candidate_ids = {candidate.identity: i for i, candidate in enumerate(candidates)}
@@ -392,10 +395,30 @@ def _track_matches(candidates, targets, previous_matches):
     return matches
 
 
+def _identity_true_positives(overlap):
+    """Find the best one-to-one trajectory assignment over an entire scene."""
+    if not overlap:
+        return 0
+    track_ids = {track for track, _ in overlap}
+    target_ids = {target for _, target in overlap}
+    track_rows = {track: i for i, track in enumerate(track_ids)}
+    target_cols = {target: j for j, target in enumerate(target_ids)}
+    hits = np.zeros((len(track_ids), len(target_ids)), dtype=np.int64)
+    for (track, target), count in overlap.items():
+        hits[track_rows[track], target_cols[target]] = count
+    rows, cols = linear_sum_assignment(hits, maximize=True)
+    return int(hits[rows, cols].sum())
+
+
 def _tracking_summary(counts):
+    positives = counts["idtp"]
+    predictions = counts["tp"] + counts["fp"]
+    targets = counts["tp"] + counts["fn"]
     return {
         **_object_summary(counts),
         **{key: counts[key] for key in ("id_switches", "fragmentations", "coasting_fp")},
+        "idtp": positives, "idfp": predictions - positives, "idfn": targets - positives,
+        "idf1": _ratio(2 * positives, predictions + targets),
     }
 
 
@@ -411,12 +434,17 @@ def _score_tracks(dataset, run_dir, tracks, truth, score_threshold):
         last_match = {}
         previous_frame_matches = {}
         missed = set()
+        identity_overlaps = defaultdict(Counter)
         for frame in dataset.keyframes:
             for category in CLASS_RANGES:
                 candidates = [box for box in tracks[frame.frame, profile, category] if box.score >= score_threshold]
                 targets = truth[frame.frame, category]
                 context = (frame.scene, category)
-                matches = _track_matches(candidates, targets, previous_frame_matches.get(context, {}))
+                distances = _track_distances(candidates, targets)
+                # IDF1 assigns full trajectories independently of the frame-wise matches.
+                identity_overlaps[context].update((candidates[i].identity, targets[j].identity)
+                                                  for i, j in zip(*np.nonzero(distances < CENTER_GATE_M)))
+                matches = _track_matches(candidates, targets, previous_frame_matches.get(context, {}), distances)
                 previous_frame_matches[context] = {targets[j].identity: candidates[i].identity for i, j, _ in matches}
                 matched_candidates = {i for i, _, _ in matches}
                 matched_targets = {j for _, j, _ in matches}
@@ -445,6 +473,8 @@ def _score_tracks(dataset, run_dir, tracks, truth, score_threshold):
                 classes[category].update(counts)
                 values = ("tp", "fp", "fn", "id_switches", "fragmentations", "coasting_fp")
                 rows.append((frame.scene, frame.frame, profile, category, *(counts[key] for key in values)))
+        for (_, category), overlap in identity_overlaps.items():
+            classes[category]["idtp"] += _identity_true_positives(overlap)
         scores[profile] = {
             **_tracking_summary(sum(classes.values(), Counter())),
             "classes": {category: _tracking_summary(counts) for category, counts in classes.items()},
@@ -477,6 +507,7 @@ def evaluate_objects(dataset, run_dir, score_threshold):
         "operating_score_threshold": score_threshold,
         "operating_match_distance_m": CENTER_GATE_M,
         "tracking_policy": "Confirmed tracks including predictions; preserve prior valid matches, then maximize remaining in-gate matches and minimize distance",
+        "identity_policy": "IDF1 from a global one-to-one track assignment within each scene and class, using the local center gate",
         "detection": _score_detections(dataset, run_dir, detections, truth, score_threshold),
         "tracking": _score_tracks(dataset, run_dir, tracks, truth, score_threshold),
         "timing": timing,
