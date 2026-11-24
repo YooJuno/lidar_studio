@@ -66,7 +66,39 @@ def main():
     assert lib.lidar_pillar_order_v2(None,None,0,None,1025)!=0
     assert lib.lidar_pillar_features_v2(None,None,0,None,None,None,0,None,640,0,-51.2,-51.2,-3,8,10)!=0
     assert lib.lidar_pillar_features_v2(None,None,0,None,None,None,0,None,640,.16,-51.2,-51.2,-3,8,11)!=0
-    print('detector_native_smoke: stable sorting, float32 features, padding, truncation, bounds and concurrent reuse passed')
+    lib.lidar_pillar_filter_v1.argtypes = [
+        ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_void_p,
+        ctypes.c_uint32, ctypes.c_float, ctypes.c_void_p, ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(ctypes.c_int),
+    ]
+    lib.lidar_transfusion_pack_v1.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t,
+        ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t),
+    ]
+    points = array('f', [0,0,0,17.5, -4,0,0,3, 1,0,0,-1, 0,0,1,float('nan'), 0,1,0,300.5])
+    lower = array('f', [-4] * 3)
+    upper = array('f', [4] * 3)
+    selected = array('f', [0] * len(points))
+    keys = array('i', [0] * 5)
+    kept, missing, normalized = ctypes.c_size_t(), ctypes.c_size_t(), ctypes.c_int()
+    assert lib.lidar_pillar_filter_v1(address(points), 5, 4, address(selected), address(keys),
+        4, 2, address(lower), address(upper), ctypes.byref(kept), ctypes.byref(missing), ctypes.byref(normalized)) == 0
+    assert (kept.value, missing.value, normalized.value) == (3, 1, 0)
+    assert keys[:3].tolist() == [10, 10, 10]
+    assert selected[:12].tolist() == [0,0,0,17.5, 1,0,0,-1, 0,1,0,300.5]
+    order = array('q', [2, 0, 1])
+    starts = array('q', [0])
+    counts = array('i', [3])
+    features = array('f', [0] * 100)
+    clipped = ctypes.c_size_t()
+    assert lib.lidar_transfusion_pack_v1(address(selected), address(order), 3,
+        address(starts), address(counts), 1, address(features), ctypes.byref(clipped)) == 0
+    assert clipped.value == 2
+    assert features[:15].tolist() == [0,1,0,255,0, 0,0,0,17,0, 1,0,0,0,0] and not any(features[15:])
+    counts[0] = 21
+    assert lib.lidar_transfusion_pack_v1(address(selected), address(order), 3,
+        address(starts), address(counts), 1, address(features), ctypes.byref(clipped)) != 0
+    print('detector_native_smoke: filtering, stable sorting, CenterPoint and TransFusion features, padding, bounds and concurrent reuse passed')
     return 0
 
 

@@ -2,6 +2,7 @@
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -32,6 +33,31 @@ class TransFusionTests(unittest.TestCase):
             pillarize(np.array([[0, 0, 0, .5]], np.float32))
         empty, _ = pillarize(np.empty((0, 4), np.float32))
         self.assertIsNone(empty)
+
+    def test_native_packing_matches_numpy_for_capped_and_invalid_points(self):
+        rng = np.random.default_rng(134)
+        # Overfill a pillar and exceed the total voxel cap with distinct cells.
+        grid_x, grid_y = np.meshgrid(np.arange(304), np.arange(200))
+        sparse = np.column_stack(((grid_x.ravel() + .5) * .24 - 92.16,
+                                  (grid_y.ravel() + .5) * .24 - 92.16,
+                                  np.zeros(grid_x.size), rng.uniform(-2, 259, grid_x.size))).astype(np.float32)
+        dense = np.column_stack((rng.uniform(-.01, .01, (500, 3)), rng.uniform(-5, 266, 500))).astype(np.float32)
+        edges = np.array([[-92.16, 0, 0, 200], [92.16, 0, 0, 200], [0, 0, -3, 200],
+                          [0, 0, 7, 200], [0, np.inf, 0, 200], [0, 0, 0, np.nan],
+                          [0, 0, 0, 300], [0, 0, 0, -1]], np.float32)
+        for points in (np.concatenate((dense, edges)), np.concatenate((sparse, dense, edges))):
+            with patch('lidar_detection.native.library', return_value=None):
+                baseline, expected = pillarize(points)
+            actual, stats = pillarize(points)
+            for key, value in baseline.items():
+                np.testing.assert_array_equal(actual[key], value)
+            for key, value in expected.items():
+                if key != 'preprocess_backend':
+                    self.assertEqual(stats[key], value)
+            self.assertEqual(stats['missing_reflectivity'], 1)
+            self.assertGreater(stats['clipped_reflectivity'], 0)
+            self.assertEqual(int(actual['num_points'].max()), 20)
+        self.assertGreater(stats['truncated_pillars'], 0)
 
     def test_decoder_world_coordinates_class_and_yaw(self):
         scores = np.zeros((1, 5, 500), np.float32)

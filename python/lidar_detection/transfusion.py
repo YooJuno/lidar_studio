@@ -8,7 +8,7 @@ import numpy as np
 
 from .centerpoint import suppress
 from .models import get_model, sha256_file
-from .native import backend_name, nms_backend_name, stable_order
+from .native import backend_name, fill_transfusion, filter_pillar_points, nms_backend_name, stable_order
 from .runtime_options import make_session_options, preload_cuda_libraries
 
 # Geometry and decoding follow autoware_lidar_transfusion at 8361f0ef2dd4.
@@ -26,31 +26,38 @@ def pillarize(points):
     """Pack one aligned XYZI sweep into Autoware's zero-padded pillars."""
     if points.ndim != 2 or points.shape[1] != 4:
         raise ValueError('TransFusion requires XYZI points with original reflectivity')
-    x, y, z, intensity = points.T
-    in_range = ((x > MINIMUM[0]) & (x < MAXIMUM[0]) & (y > MINIMUM[1]) &
-                (y < MAXIMUM[1]) & (z > MINIMUM[2]) & (z < MAXIMUM[2]))
-    have_intensity = np.isfinite(intensity)
+    step = np.float32(SPEC.voxel[0])
+    filtered = filter_pillar_points(points, MINIMUM, MAXIMUM, SPEC.grid, step)
+    if filtered is None:
+        x, y, z, intensity = points.T
+        in_range = ((x > MINIMUM[0]) & (x < MAXIMUM[0]) & (y > MINIMUM[1]) &
+                    (y < MAXIMUM[1]) & (z > MINIMUM[2]) & (z < MAXIMUM[2]))
+        have_intensity = np.isfinite(intensity)
+        missing = int(np.count_nonzero(in_range & ~have_intensity))
+        points = points[in_range & have_intensity]
+        intensity = points[:, 3]
+        normalized = (len(intensity) and 0 <= intensity.min() and intensity.max() <= 1
+                      and np.any(intensity != np.trunc(intensity)))
+        x = np.clip(np.floor((points[:, 0] - MINIMUM[0]) / step).astype(np.int32), 0, SPEC.grid - 1)
+        y = np.clip(np.floor((points[:, 1] - MINIMUM[1]) / step).astype(np.int32), 0, SPEC.grid - 1)
+        keys = y * SPEC.grid + x
+    else:
+        points, keys, missing, normalized = filtered
     stats = {
         'pillars': 0,
         'truncated_pillars': 0,
         'preprocess_backend': backend_name(len(points)),
-        'missing_reflectivity': int(np.count_nonzero(in_range & ~have_intensity)),
+        'missing_reflectivity': missing,
         'clipped_reflectivity': 0,
     }
-    points = points[in_range & have_intensity]
     if not len(points):
         if stats['missing_reflectivity']:
             raise ValueError('TransFusion needs original uint8 reflectivity; this scan has none in range.')
         return None, stats
 
-    intensity = points[:, 3]
-    if 0 <= intensity.min() and intensity.max() <= 1 and np.any(intensity != np.trunc(intensity)):
+    if normalized:
         raise ValueError('TransFusion expects uint8 reflectivity (0–255); this scan only has normalized intensity.')
 
-    step = np.float32(SPEC.voxel[0])
-    x = np.clip(np.floor((points[:, 0] - MINIMUM[0]) / step).astype(np.int32), 0, SPEC.grid - 1)
-    y = np.clip(np.floor((points[:, 1] - MINIMUM[1]) / step).astype(np.int32), 0, SPEC.grid - 1)
-    keys = y * SPEC.grid + x
     # The upstream shuffles points before filling capped pillars. A fixed seed
     # gives uniform sampling with repeatable results on paused or replayed scans.
     rng = np.random.default_rng(0)
@@ -67,14 +74,16 @@ def pillarize(points):
         starts, counts = starts[sample], counts[sample]
 
     counts = np.minimum(counts, POINTS_PER_PILLAR).astype(np.int32)
-    slots = np.arange(POINTS_PER_PILLAR)
-    occupied = slots < counts[:, None]
-    selected = points[order[(starts[:, None] + slots)[occupied]]]
     voxels = np.zeros((len(starts), POINTS_PER_PILLAR, SPEC.features), np.float32)
-    reflectivity = selected[:, 3]
-    clipped_reflectivity = int(np.count_nonzero((reflectivity < 0) | (reflectivity > 255)))
-    reflectivity[:] = np.clip(reflectivity, 0, 255).astype(np.uint8)
-    voxels[occupied, :4] = selected
+    clipped_reflectivity = fill_transfusion(points, order, starts, counts, voxels)
+    if clipped_reflectivity is None:
+        slots = np.arange(POINTS_PER_PILLAR)
+        occupied = slots < counts[:, None]
+        selected = points[order[(starts[:, None] + slots)[occupied]]]
+        reflectivity = selected[:, 3]
+        clipped_reflectivity = int(np.count_nonzero((reflectivity < 0) | (reflectivity > 255)))
+        reflectivity[:] = np.clip(reflectivity, 0, 255).astype(np.uint8)
+        voxels[occupied, :4] = selected
     # Feature 4 is time lag. Zero is the newest scan and the padding value.
     coords = np.zeros((len(starts), 4), np.int32)
     coords[:, 2] = ordered_keys[starts] // SPEC.grid

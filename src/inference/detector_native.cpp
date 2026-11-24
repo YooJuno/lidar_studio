@@ -16,9 +16,63 @@
 
 namespace {
 constexpr std::size_t kMaxScan=4000000, kMaxVoxels=64000;
+
+template<unsigned Channels>
+void FilterPillarPoints(const float * points, std::size_t n, float * selected, std::int32_t * keys,
+  std::uint32_t grid, float voxel, const float * minimum, const float * maximum,
+  std::size_t & count, std::size_t & missing, int & normalized)
+{
+  bool unit_interval = true;
+  bool fractional = false;
+  const float last_cell = static_cast<float>(grid - 1);
+  for (std::size_t i = 0; i < n; ++i) {
+    const float * point = points + Channels * i;
+    // TransFusion's published voxelizer excludes both endpoints, while the
+    // CenterPoint adapter includes points exactly on the lower boundary.
+    const auto inside = [&](int axis) {
+      return point[axis] < maximum[axis] &&
+        (Channels == 4 ? point[axis] > minimum[axis] : point[axis] >= minimum[axis]);
+    };
+    if (!inside(0) || !inside(1) || !inside(2)) continue;
+    if constexpr (Channels == 4) {
+      const float intensity = point[3];
+      if (!std::isfinite(intensity)) {
+        ++missing;
+        continue;
+      }
+      unit_interval &= intensity >= 0.f && intensity <= 1.f;
+      fractional |= intensity != 0.f && intensity != 1.f;
+    }
+    const auto column = static_cast<std::int32_t>(std::clamp((point[0] - minimum[0]) / voxel, 0.f, last_cell));
+    const auto row = static_cast<std::int32_t>(std::clamp((point[1] - minimum[1]) / voxel, 0.f, last_cell));
+    std::copy_n(point, Channels, selected + Channels * count);
+    keys[count++] = row * static_cast<std::int32_t>(grid) + column;
+  }
+  if constexpr (Channels == 4) normalized = unit_interval && fractional;
+}
 }
 
 LIDAR_NATIVE_EXPORT int lidar_pillar_abi() {return 2;}
+
+// Keep point order before the deterministic shuffle, so capped pillars see
+// the same measurements as the NumPy path.
+LIDAR_NATIVE_EXPORT int lidar_pillar_filter_v1(const float * points, std::size_t n, std::uint32_t channels,
+  float * selected, std::int32_t * keys, std::uint32_t grid, float voxel,
+  const float * minimum, const float * maximum, std::size_t * count, std::size_t * missing, int * normalized)
+{
+  if (n > kMaxScan || (channels != 3 && channels != 4) || !grid || grid > 1024 ||
+      !std::isfinite(voxel) || voxel <= 0.f || !minimum || !maximum || !count || !missing || !normalized ||
+      (n && (!points || !selected || !keys))) return 1;
+  for (int axis = 0; axis < 3; ++axis) {
+    if (!std::isfinite(minimum[axis]) || !std::isfinite(maximum[axis]) || minimum[axis] >= maximum[axis]) return 1;
+  }
+  *count = 0;
+  *missing = 0;
+  *normalized = 0;
+  if (channels == 3) FilterPillarPoints<3>(points, n, selected, keys, grid, voxel, minimum, maximum, *count, *missing, *normalized);
+  else FilterPillarPoints<4>(points, n, selected, keys, grid, voxel, minimum, maximum, *count, *missing, *normalized);
+  return 0;
+}
 
 // Stable counting sort over the model's bounded integer grid. Preserve the
 // caller's deterministic shuffle within each pillar, including its first 32.
@@ -95,6 +149,35 @@ LIDAR_NATIVE_EXPORT int lidar_pillar_features(const float * points,
   const std::int64_t * order,std::size_t n,const std::int64_t * starts,
   const std::int64_t * counts,const std::int32_t * keys,std::size_t num,float * features)
 {return lidar_pillar_features_v2(points,order,n,starts,counts,keys,num,features,480,.32f,-76.8f,-76.8f,-4.f,10.f,9);}
+
+// The output is zero-padded before entry. Write the occupied slots directly
+// so there is no dense index grid or intermediate selected XYZI array.
+LIDAR_NATIVE_EXPORT int lidar_transfusion_pack_v1(const float * points, const std::int64_t * order, std::size_t n,
+  const std::int64_t * starts, const std::int32_t * counts, std::size_t num, float * features, std::size_t * clipped)
+{
+  constexpr std::size_t slots = 20, dimensions = 5;
+  if (n > kMaxScan || num > kMaxVoxels || !clipped ||
+      (num && (!points || !order || !starts || !counts || !features))) return 1;
+  *clipped = 0;
+  for (std::size_t pillar = 0; pillar < num; ++pillar) {
+    const auto start = starts[pillar];
+    const auto count = counts[pillar];
+    if (start < 0 || count <= 0 || static_cast<std::size_t>(count) > slots ||
+        static_cast<std::size_t>(start) > n || static_cast<std::size_t>(count) > n - static_cast<std::size_t>(start)) return 1;
+    for (std::int32_t rank = 0; rank < count; ++rank) {
+      const auto index = order[start + rank];
+      if (index < 0 || static_cast<std::size_t>(index) >= n) return 1;
+      const auto * point = points + static_cast<std::size_t>(index) * 4;
+      const float intensity = point[3];
+      if (!std::isfinite(intensity)) return 1;
+      auto * slot = features + (pillar * slots + rank) * dimensions;
+      std::copy_n(point, 3, slot);
+      *clipped += intensity < 0.f || intensity > 255.f;
+      slot[3] = static_cast<std::uint8_t>(std::clamp(intensity, 0.f, 255.f));
+    }
+  }
+  return 0;
+}
 
 namespace {
 struct NmsPoint {double x,y;};

@@ -33,6 +33,19 @@ def library():
                 ctypes.c_void_p,ctypes.c_void_p,ctypes.c_void_p,ctypes.c_size_t,ctypes.c_void_p,
                 ctypes.c_uint32,*([ctypes.c_float]*5),ctypes.c_uint32]
             loaded.lidar_pillar_features_v2.restype=ctypes.c_int
+            if hasattr(loaded, 'lidar_pillar_filter_v1'):
+                loaded.lidar_pillar_filter_v1.argtypes = [
+                    ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_void_p,
+                    ctypes.c_uint32, ctypes.c_float, ctypes.c_void_p, ctypes.c_void_p,
+                    ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(ctypes.c_int),
+                ]
+                loaded.lidar_pillar_filter_v1.restype = ctypes.c_int
+            if hasattr(loaded, 'lidar_transfusion_pack_v1'):
+                loaded.lidar_transfusion_pack_v1.argtypes = [
+                    ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p,
+                    ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t),
+                ]
+                loaded.lidar_transfusion_pack_v1.restype = ctypes.c_int
             if hasattr(loaded,'lidar_centerpoint_nms_v1'):
                 loaded.lidar_centerpoint_nms_v1.argtypes=[ctypes.c_void_p,ctypes.c_size_t,ctypes.c_void_p,ctypes.POINTER(ctypes.c_size_t)]
                 loaded.lidar_centerpoint_nms_v1.restype=ctypes.c_int
@@ -42,6 +55,49 @@ def library():
 
 
 def backend_name(point_count=0):return 'native' if point_count<=4_000_000 and library() else 'numpy'
+
+
+def filter_pillar_points(points, minimum, maximum, grid, voxel):
+    native = library()
+    if (native is None or not hasattr(native, 'lidar_pillar_filter_v1') or len(points) > 4_000_000 or
+            points.dtype != np.float32 or not points.flags.c_contiguous):
+        return None
+    if points.ndim != 2 or points.shape[1] not in (3, 4):
+        raise ValueError('Expected contiguous float32 XYZ or XYZI points')
+    minimum = np.ascontiguousarray(minimum, dtype=np.float32)
+    maximum = np.ascontiguousarray(maximum, dtype=np.float32)
+    if minimum.shape != (3,) or maximum.shape != (3,):
+        raise ValueError('Expected three-dimensional pillar bounds')
+    selected = np.empty_like(points)
+    keys = np.empty(len(points), np.int32)
+    count, missing, normalized = ctypes.c_size_t(), ctypes.c_size_t(), ctypes.c_int()
+    if native.lidar_pillar_filter_v1(
+            points.ctypes.data, len(points), points.shape[1], selected.ctypes.data, keys.ctypes.data,
+            grid, voxel, minimum.ctypes.data, maximum.ctypes.data,
+            ctypes.byref(count), ctypes.byref(missing), ctypes.byref(normalized)):
+        raise ValueError('Invalid native pillar bounds')
+    return selected[:count.value], keys[:count.value], missing.value, bool(normalized.value)
+
+
+def fill_transfusion(points, order, starts, counts, features):
+    native = library()
+    if (native is None or not hasattr(native, 'lidar_transfusion_pack_v1') or len(points) > 4_000_000 or
+            points.dtype != np.float32 or not points.flags.c_contiguous):
+        return None
+    starts = np.ascontiguousarray(starts, dtype=np.int64)
+    counts = np.ascontiguousarray(counts, dtype=np.int32)
+    if (points.ndim != 2 or points.shape[1] != 4 or
+            order.dtype != np.int64 or order.shape != (len(points),) or not order.flags.c_contiguous or
+            starts.ndim != 1 or starts.shape != counts.shape or
+            features.dtype != np.float32 or features.shape != (len(starts), 20, 5) or
+            not features.flags.c_contiguous or not features.flags.writeable):
+        raise ValueError('Invalid native TransFusion feature arrays')
+    clipped = ctypes.c_size_t()
+    if native.lidar_transfusion_pack_v1(
+            points.ctypes.data, order.ctypes.data, len(points), starts.ctypes.data, counts.ctypes.data,
+            len(starts), features.ctypes.data, ctypes.byref(clipped)):
+        raise ValueError('Invalid native TransFusion feature input')
+    return clipped.value
 
 
 def nms_backend_name():return 'native' if library() and hasattr(library(),'lidar_centerpoint_nms_v1') else 'numpy'

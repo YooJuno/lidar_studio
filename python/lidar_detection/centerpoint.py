@@ -11,7 +11,7 @@ from pathlib import Path
 import math
 import time
 import numpy as np
-from .native import stable_order,fill_features,backend_name,nms_indices,nms_backend_name
+from .native import stable_order,fill_features,backend_name,nms_indices,nms_backend_name,filter_pillar_points
 from .models import get_model,AWML_REVISION,sha256_file
 from .runtime_options import make_session_options,preload_cuda_libraries
 
@@ -78,13 +78,17 @@ def pillarize(points,model='tiny'):
     voxel=np.float32(spec.voxel[0])
     points=np.asarray(points,dtype=np.float32)
     if points.ndim!=2 or points.shape[1]!=3:raise ValueError('Expected Nx3 XYZ points')
-    x,y,z=points[:,0],points[:,1],points[:,2]
-    valid=(x>=minimum[0])&(x<maximum[0])&(y>=minimum[1])&(y<maximum[1])&(z>=minimum[2])&(z<maximum[2])
-    xyz=points[valid]
+    filtered=filter_pillar_points(points,minimum,maximum,spec.grid,voxel)
+    if filtered is None:
+        x,y,z=points[:,0],points[:,1],points[:,2]
+        valid=(x>=minimum[0])&(x<maximum[0])&(y>=minimum[1])&(y<maximum[1])&(z>=minimum[2])&(z<maximum[2])
+        xyz=points[valid]
+        x=np.clip(np.floor((xyz[:,0]-minimum[0])/voxel).astype(np.int32),0,spec.grid-1)
+        y=np.clip(np.floor((xyz[:,1]-minimum[1])/voxel).astype(np.int32),0,spec.grid-1)
+        keys=y*spec.grid+x
+    else:
+        xyz,keys,_,_=filtered
     if not len(xyz):return np.zeros((0,32,spec.features),np.float32),np.zeros((0,3),np.int64),{'pillars':0,'truncated_pillars':0,'points_in_range':0,'preprocess_backend':backend_name()}
-    x=np.clip(np.floor((xyz[:,0]-minimum[0])/voxel).astype(np.int32),0,spec.grid-1)
-    y=np.clip(np.floor((xyz[:,1]-minimum[1])/voxel).astype(np.int32),0,spec.grid-1)
-    keys=y*spec.grid+x
     permutation=np.random.default_rng(0).permutation(len(xyz))
     # Sort indices, not XYZ/XY copies. Counting sort preserves the original
     # shuffle exactly; both native and NumPy paths keep identical samples.
