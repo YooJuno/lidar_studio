@@ -43,7 +43,7 @@ double GroundDistance(Sectors & sectors, const PolarPoint & point, double sensor
 GroundRemovalResult RunGroundRemovalLineFit(const std::vector<KittiPoint> & input,
   const GroundRemovalParams & params)
 {
-  if (input.empty()) return {};
+  if (!params.enabled || input.empty()) return {{}, input};
   for (const float value : {params.linefit_max_range_m, params.linefit_distance_threshold_m,
       params.sensor_height_m, params.gseg3d_ground_height_m}) {
     if (!std::isfinite(value)) throw std::invalid_argument("LineFit parameters must be finite");

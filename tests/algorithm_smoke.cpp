@@ -32,6 +32,7 @@ void AddObject(std::vector<KittiPoint> & points, float center_x, float center_y)
 void CheckLineFit()
 {
   GroundRemovalParams params;
+  params.enabled = true;
   params.mode = "linefit";
   params.sensor_height_m = 1.2f;
   params.gseg3d_ground_height_m = -0.35f;
@@ -57,6 +58,11 @@ void CheckLineFit()
   if (labels(result.ground_points) != std::vector<float>{1, 3, 4, 6, 7, 8, 9} ||
       labels(result.non_ground_points) != std::vector<float>{2, 5, 10}) {
     throw std::runtime_error("LineFit lost a ground point, source order or an obstacle");
+  }
+  params.enabled = false;
+  const auto disabled = RunGroundSegmentation(scan, params);
+  if (!disabled.ground_points.empty() || labels(disabled.non_ground_points) != labels(scan)) {
+    throw std::runtime_error("Disabled LineFit changed source points");
   }
 }
 }  // namespace
