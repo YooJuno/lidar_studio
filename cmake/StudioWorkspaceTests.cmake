@@ -5,6 +5,8 @@ add_executable(dataset_smoke_test "${CMAKE_CURRENT_SOURCE_DIR}/tests/dataset_smo
 target_link_libraries(dataset_smoke_test PRIVATE lidar_viewer_export)
 add_test(NAME dataset_smoke_test COMMAND dataset_smoke_test)
 if(Python3_Interpreter_FOUND)
+  add_test(NAME perception_report_compare_smoke_test COMMAND "${Python3_EXECUTABLE}" -B
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/perception_report_compare_smoke.py")
   add_executable(training_job_smoke_test "${CMAKE_CURRENT_SOURCE_DIR}/tests/training_job_smoke.cpp")
   target_link_libraries(training_job_smoke_test PRIVATE lidar_viewer_export)
   add_test(NAME training_job_smoke_test COMMAND training_job_smoke_test "${Python3_EXECUTABLE}")
