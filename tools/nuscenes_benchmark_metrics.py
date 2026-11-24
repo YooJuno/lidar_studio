@@ -7,6 +7,7 @@ The module accepts the ordered dataset manifest and the native worker's TSVs.
 from collections import Counter, defaultdict
 import csv
 from dataclasses import dataclass
+from itertools import groupby
 import math
 from pathlib import Path
 
@@ -32,6 +33,7 @@ IGNORED_CLASSES = ("noise", "flat.other", "vehicle.ego")
 AP_DISTANCES_M = (0.5, 1.0, 2.0, 4.0)
 CENTER_GATE_M = 2.0
 CANDIDATE_MIN = 0.10
+TIMING_WARMUP_SCANS = 3
 TIMING_COLUMNS = ("scene", "frame", "point_count", "ground_ms", "detector_ms", "provider")
 BOX_COLUMNS = ("class_id", "score", "x", "y", "z", "length", "width", "height", "yaw")
 GROUND_COLUMNS = (
@@ -73,14 +75,18 @@ def _nonnegative(value):
 def _timing_summary(values):
     if not values:
         raise ValueError("No timing samples")
-    p50, p95, p99 = np.percentile(values, [50, 95, 99])
+    warmup = TIMING_WARMUP_SCANS if len(values) > TIMING_WARMUP_SCANS else 0
+    timed = values[warmup:]
+    p50, p95, p99 = np.percentile(timed, [50, 95, 99])
     return {
-        "count": len(values),
-        "mean_ms": float(np.mean(values)),
+        "count": len(timed),
+        "first_scan_ms": values[0],
+        "warmup_scans_excluded": warmup,
+        "mean_ms": float(np.mean(timed)),
         "p50_ms": float(p50),
         "p95_ms": float(p95),
         "p99_ms": float(p99),
-        "max_ms": max(values),
+        "max_ms": max(timed),
     }
 
 
@@ -104,7 +110,7 @@ def _stage_timing(dataset, run_dir, column):
             providers.add(row["provider"])
     if times.keys() != frames.keys():
         raise ValueError(f"Missing {len(frames.keys() - times.keys())} frame timings for {column}")
-    summary = _timing_summary(list(times.values()))
+    summary = _timing_summary([times[frame.frame] for frame in dataset.frames])
     summary["providers"] = sorted(providers)
     return summary
 
@@ -301,47 +307,72 @@ def _object_summary(counts):
     }
 
 
+def _detection_summary(counts, pairs):
+    summary = _object_summary(counts)
+    ap = {str(gate): _average_precision(pairs[gate], summary["ground_truth"]) for gate in AP_DISTANCES_M}
+    valid_ap = [value for value in ap.values() if value is not None]
+    return {
+        **summary,
+        "ap": sum(valid_ap) / len(valid_ap) if valid_ap else None,
+        "ap_by_distance_m": ap,
+    }
+
+
+def _mean_class_ap(classes):
+    defined = [scores["ap"] for scores in classes.values() if scores["ap"] is not None]
+    return sum(defined) / len(defined) if defined else None
+
+
 def _score_detections(dataset, run_dir, detections, truth, score_threshold):
     classes = {}
+    scene_classes = defaultdict(dict)
+    scene_totals = defaultdict(Counter)
+    frames_by_scene = [(scene, tuple(frames)) for scene, frames in groupby(dataset.keyframes, key=lambda f: f.scene)]
     rows = []
     negative_frames = negative_fp = 0
     for category in CLASS_RANGES:
-        expected = sum(len(truth[frame.frame, category]) for frame in dataset.keyframes)
         pairs = defaultdict(list)
         counts = Counter()
-        for frame in dataset.keyframes:
-            candidates = detections[frame.frame, category]
-            targets = truth[frame.frame, category]
+        for scene, frames in frames_by_scene:
+            scene_counts = Counter()
+            scene_pairs = defaultdict(list)
+            for frame in frames:
+                candidates = detections[frame.frame, category]
+                targets = truth[frame.frame, category]
+                selected = 0
+                distances = []
+                for gate in AP_DISTANCES_M:
+                    for candidate, distance in _greedy_matches(candidates, targets, gate):
+                        scene_pairs[gate].append((candidate.score, distance is not None))
+                        # At the operating score, candidates are a prefix of the AP
+                        # ranks and have the same greedy associations at this gate.
+                        if gate == CENTER_GATE_M and candidate.score >= score_threshold:
+                            selected += 1
+                            if distance is not None:
+                                distances.append(distance)
+                tp, fp, fn = len(distances), selected - len(distances), len(targets) - len(distances)
+                scene_counts.update(tp=tp, fp=fp, fn=fn, center_error_m=sum(distances))
+                negative = category == "pedestrian" and not any(
+                    annotation.category_name.startswith("human.pedestrian.") for annotation in frame.annotations
+                )
+                if negative:
+                    negative_frames += 1
+                    negative_fp += fp
+                rows.append((scene, frame.frame, category, tp, fp, fn, int(negative)))
+            counts.update(scene_counts)
+            scene_totals[scene].update(scene_counts)
+            scene_classes[scene][category] = _detection_summary(scene_counts, scene_pairs)
             for gate in AP_DISTANCES_M:
-                for candidate, distance in _greedy_matches(candidates, targets, gate):
-                    pairs[gate].append((candidate.score, distance is not None))
-            selected = [box for box in candidates if box.score >= score_threshold]
-            distances = [
-                distance for _, distance in _greedy_matches(selected, targets, CENTER_GATE_M)
-                if distance is not None
-            ]
-            tp, fp, fn = len(distances), len(selected) - len(distances), len(targets) - len(distances)
-            counts.update(tp=tp, fp=fp, fn=fn, center_error_m=sum(distances))
-            negative = category == "pedestrian" and not any(
-                annotation.category_name.startswith("human.pedestrian.") for annotation in frame.annotations
-            )
-            if negative:
-                negative_frames += 1
-                negative_fp += fp
-            rows.append((frame.scene, frame.frame, category, tp, fp, fn, int(negative)))
-
-        ap = {str(gate): _average_precision(pairs[gate], expected) for gate in AP_DISTANCES_M}
-        valid_ap = [value for value in ap.values() if value is not None]
-        classes[category] = {
-            **_object_summary(counts),
-            "ap": sum(valid_ap) / len(valid_ap) if valid_ap else None,
-            "ap_by_distance_m": ap,
-        }
+                pairs[gate].extend(scene_pairs[gate])
+        classes[category] = _detection_summary(counts, pairs)
     _write_rows(run_dir / "object-errors.tsv", ("scene", "frame", "class", "tp", "fp", "fn", "pedestrian_negative_frame"), rows)
-    defined = [scores["ap"] for scores in classes.values() if scores["ap"] is not None]
+    mean_ap = _mean_class_ap(classes)
     return {
-        "mean_ap": sum(defined) / len(defined) if defined else None,
+        "mean_ap": mean_ap,
+        "overall": {**_object_summary(sum(scene_totals.values(), Counter())), "ap": mean_ap},
         "classes": classes,
+        "scenes": {scene: {**_object_summary(counts), "ap": _mean_class_ap(scene_classes[scene])}
+                   for scene, counts in scene_totals.items()},
         "pedestrian_negatives": {
             "keyframes": negative_frames,
             "false_positives": negative_fp,
@@ -361,7 +392,8 @@ def _tracking_timing(dataset, run_dir):
         times[profile][frame.frame] = _nonnegative(row["tracking_ms"])
     if not times or any(profile_times.keys() != frames.keys() for profile_times in times.values()):
         raise ValueError("Missing tracking profile or incomplete per-frame timings")
-    return {profile: _timing_summary(list(profile_times.values())) for profile, profile_times in times.items()}
+    return {profile: _timing_summary([profile_times[frame.frame] for frame in dataset.frames])
+            for profile, profile_times in times.items()}
 
 
 def _track_distances(candidates, targets):
@@ -431,6 +463,7 @@ def _score_tracks(dataset, run_dir, tracks, truth, score_threshold):
     events = []
     for profile, timing in timings.items():
         classes = {category: Counter() for category in CLASS_RANGES}
+        scenes = defaultdict(Counter)
         last_match = {}
         previous_frame_matches = {}
         missed = set()
@@ -471,14 +504,18 @@ def _score_tracks(dataset, run_dir, tracks, truth, score_threshold):
                     if j not in matched_targets and key in last_match:
                         missed.add(key)
                 classes[category].update(counts)
+                scenes[frame.scene].update(counts)
                 values = ("tp", "fp", "fn", "id_switches", "fragmentations", "coasting_fp")
                 rows.append((frame.scene, frame.frame, profile, category, *(counts[key] for key in values)))
-        for (_, category), overlap in identity_overlaps.items():
-            classes[category]["idtp"] += _identity_true_positives(overlap)
+        for (scene, category), overlap in identity_overlaps.items():
+            hits = _identity_true_positives(overlap)
+            classes[category]["idtp"] += hits
+            scenes[scene]["idtp"] += hits
         scores[profile] = {
             **_tracking_summary(sum(classes.values(), Counter())),
             "classes": {category: _tracking_summary(counts) for category, counts in classes.items()},
-            "timing": timing,
+            "scenes": {scene: _tracking_summary(counts) for scene, counts in scenes.items()},
+            "timing": {**timing, "providers": ["CPU"]},
         }
 
     _write_rows(run_dir / "tracking-errors.tsv", (
