@@ -22,7 +22,7 @@ python -m venv .venv-benchmark
   --runner build/lidar_studio_benchmark \
   --dataset /path/to/nuscenes \
   --output build/benchmark-mini-val \
-  --ground fast_grid --ground fugseg --ground gseg3d --ground patchworkpp \
+  --ground fast_grid --ground fugseg --ground gseg3d --ground patchworkpp --ground linefit \
   --detector short_range --detector tiny \
   --track studio:3:0.8 --track strict:3:0.3
 ```
@@ -41,3 +41,5 @@ To reopen a run, choose **Perception benchmark… → Results → Open report…
 | Timing | Report p50, p95 and p99 per stage with the backend. Ground timing excludes mask export. Detector timing includes packing, inference and worker communication, excluding setup and queueing. Offline replay measures stage cost and processes every scan. |
 
 Local detection AP and tracking metrics are labeled separately from official nuScenes leaderboard scores. The default Mini run is useful for integration checks and controlled comparisons on two scenes. For a broader evaluation, keep the class definitions and split fixed, record the weights and runtime, and add labelled clips from the sensors and environments in use. Use a sensor-rate replay with capture and rendering enabled to measure frame drops and scan-to-result latency. [Official detection protocol](https://github.com/nutonomy/nuscenes-devkit/blob/master/python-sdk/nuscenes/eval/detection/README.md) · [Official tracking protocol](https://github.com/nutonomy/nuscenes-devkit/blob/master/python-sdk/nuscenes/eval/tracking/README.md)
+
+On all 404 label frames in nuScenes Mini, LineFit classified 1.37% of non-ground points as ground, compared with 5.49% for FugSeg. Ground IoU was 80.31% for LineFit and 93.30% for FugSeg. Try LineFit when keeping low obstacle points is important and the scene can tolerate more residual ground. Its range and vertical tolerance are adjustable in **Ground → Algorithm settings**. [LineFit implementation and paper](https://github.com/lorenwel/linefit_ground_segmentation)

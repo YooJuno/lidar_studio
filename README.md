@@ -12,7 +12,7 @@ A desktop workspace for LiDAR playback, ground segmentation, clustering, object 
 
 - **Point clouds, easy to explore.** Switch between 3D, rotatable 2D and a **360° sensor panorama** with distance colors. Browse BIN, NPY, PCD and LiDAR PCAP recordings and review labels.
 - **Direct Ethernet recording.** Connect a supported Hesai, Velodyne, Livox, Ouster or RoboSense LiDAR and view or record its UDP stream with no ROS setup.
-- **Visual ground segmentation.** Choose **FugSeg, GSeg3D, Patchwork++, Patchwork, Fast grid, Grid, RANSAC or TerraSeg Small**. Tune parameters and show all points, ground only or obstacles only. Align scans manually or use IMU leveling.
+- **Visual ground segmentation.** Choose **FugSeg, GSeg3D, Patchwork++, Patchwork, LineFit, Fast grid, Grid, RANSAC or TerraSeg Small**. Tune parameters and show all points, ground only or obstacles only. Align scans manually or use IMU leveling.
 - **Clustering for obstacle analysis.** Group points with **Euclidean 3D** or **Projected XY** clustering, adjust distance and vertical separation, and inspect cluster boxes.
 - **Learned object detection.** Use **AWML ShortRange**, **CenterPoint tiny**, **CenterPoint base** or **TransFusion LiDAR** for people, bicycles, cars, trucks and buses. Filter classes and confidence, and follow persistent object IDs with Kalman tracking.
 - **Perception benchmark.** Compare ground segmentation, learned detectors and tracking profiles on labelled nuScenes recordings. Review accuracy, latency and failure frames. [Benchmark guide](docs/benchmark.md)
@@ -162,6 +162,6 @@ Developer: **Yoo Junho** · [juno980220@naver.com](mailto:juno980220@naver.com) 
 
 ## Development
 
-C++17 · OpenGL · GLFW · Dear ImGui · PCL · libcurl · OpenSSL. Ground methods integrate pinned [FugSeg](https://github.com/Leo-YuLi/FugSeg), [GSeg3D](https://github.com/dfki-ric/ground_segmentation) and [Patchwork++](https://github.com/url-kaist/patchwork-plusplus) implementations.
+C++17 · OpenGL · GLFW · Dear ImGui · PCL · libcurl · OpenSSL. Ground methods integrate pinned [FugSeg](https://github.com/Leo-YuLi/FugSeg), [GSeg3D](https://github.com/dfki-ric/ground_segmentation), [Patchwork++](https://github.com/url-kaist/patchwork-plusplus) and [LineFit](https://github.com/lorenwel/linefit_ground_segmentation) implementations.
 
 Run checks with `ctest --test-dir build --output-on-failure`. GitHub Actions builds Ubuntu, Windows and macOS packages. Every successful **main** build automatically publishes a versioned Release after **all three platforms** pass. Versions use the CMake major/minor series and the workflow run number; explicit `vMAJOR.MINOR.PATCH` tags retain their version. Packages and checksums are uploaded before the release becomes public. The [guide](docs/guide.md) contains advanced settings and validation details. [KITTI credit and screenshot license](docs/images/README.md).
