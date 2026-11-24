@@ -53,10 +53,11 @@ its noncommercial model terms during setup.
 - UrbanV2X driving examples: CC BY-NC-SA 4.0, credited in `docs/examples.md`.
   The app downloads these separately; they are not licensed under MIT.
 - Ouster SDK recordings: CC BY-NC-SA 2.0, downloaded from Ouster.
-- Elevator-LIO Office1 excerpt: CC BY 4.0, attributed in the archive and
-  `docs/examples.md`.
 - Patchwork++ sample scans: retain the source repository's applicable terms
   and attribution described in `docs/examples.md`.
 
 In particular, commercial permission for the original application code does
 not remove noncommercial restrictions from example data or derived media.
+
+The archived Elevator-LIO Office1 excerpt from earlier releases retains its
+CC BY 4.0 license and the attribution to Yifan Zhang et al. in the archive.

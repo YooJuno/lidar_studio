@@ -18,7 +18,7 @@ struct ExampleFile {
   const char * xyzi_sha256{nullptr};
   const char * archive_name{nullptr};
 };
-enum class ExampleKind {Quick,Urban30,Urban60,Velodyne30,Velodyne60,At12830,At12860,OusterOs0,OusterOs1,OusterOs2,ElevatorOffice};
+enum class ExampleKind {Quick,Urban30,Urban60,Velodyne30,Velodyne60,At12830,At12860,OusterOs0,OusterOs1,OusterOs2};
 struct ExampleDefinition {
   ExampleKind kind;const char * id;const char * title;const char * source;
   const char * base_url;const ExampleFile * files;std::size_t count;
@@ -38,7 +38,7 @@ struct ExampleDefinition {
   std::uint64_t TotalBytes() const;
   bool IsExampleVariant(const ExampleDefinition & other) const {return files==other.files;}
 };
-const std::array<ExampleDefinition,11> & DrivingExamples();
+const std::array<ExampleDefinition,10> & DrivingExamples();
 const ExampleDefinition & DrivingExample(ExampleKind kind);
 const ExampleDefinition * FindExampleProfile(std::string_view profile);
 const std::array<ExampleFile,6> & DrivingExampleFiles();

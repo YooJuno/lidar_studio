@@ -25,10 +25,6 @@ constexpr ExampleFile hdl32_files[]{
 constexpr ExampleFile at128_files[]{
 #include "example_at128.inc"
 };
-constexpr ExampleFile office_files[]{
-#include "example_office.inc"
-};
-
 constexpr auto urban_source="TAS Lab, Hong Kong Polytechnic University";
 constexpr auto urban_license="CC BY-NC-SA 4.0 (non-commercial)";
 constexpr auto hdl32_url="https://huggingface.co/datasets/polyutaslab/UrbanV2X/resolve/71a5320fd03b42026fd2b6154ae9e84653c9de08/hkstp_s_01/lidar/hdl32/";
@@ -58,16 +54,14 @@ constexpr ExampleFile os2_files[]{
   {"lidar.pcap",425779826,"508cddfcc3c67b553161f13b55970a9d41f6c2b1cb71defc7562243926f04177",nullptr,"OS2-128_Rev-06_fw23_Urban-Drive_Dual-Returns.pcap"},
   {"lidar.json",7138,"3bc686fd6659b9a935578bf280cff361a71063c087ad18b71bc3e44d75ec3bca",nullptr,"OS2-128_Rev-06_fw23_Urban-Drive_Dual-Returns.json"}
 };
-constexpr ExampleFile office_zip{"elevator-lio-office1-mid360.zip",38939854,
-  "422e19d11b2ebd6620a0b970f365f49d4edddc3998406c073527f18c104c9824"};
 }
 
 std::uint64_t ExampleDefinition::TotalBytes() const {
   std::uint64_t bytes=0;for(std::size_t i=0;i<count;++i) bytes+=files[i].bytes;return bytes;
 }
 
-const std::array<ExampleDefinition,11> & DrivingExamples() {
-  static const std::array<ExampleDefinition,11> examples{{
+const std::array<ExampleDefinition,10> & DrivingExamples() {
+  static const std::array<ExampleDefinition,10> examples{{
     {ExampleKind::Quick,"driving-v1","Quick preview | 6 frames","Patchwork++ public sample",
       "https://raw.githubusercontent.com/url-kaist/patchwork-plusplus/3e6903a1d5537a4cc2ace897b0bbb98a92d6014c/data/",DrivingExampleFiles().data(),6,"Quick preview",0,"example",
       "Patchwork++","Sample scans","","",0,6,"example_quick"},
@@ -95,10 +89,6 @@ const std::array<ExampleDefinition,11> & DrivingExamples() {
       ouster_url,&os1_zip,1,"Ouster OS1-128",128,"example-os1","Ouster SDK","Urban drive / low bandwidth",ouster_license,"360 deg",10,258,"example_os1",true,os1_files,std::size(os1_files)},
     {ExampleKind::OusterOs2,"ouster-os2-urban-v1","Ouster OS2-128 | Urban drive | 201 frames","Ouster",
       ouster_url,&os2_zip,1,"Ouster OS2-128",128,"example-os2","Ouster SDK","Urban drive / long range",ouster_license,"360 deg / dual returns",10,201,"example_os2",true,os2_files,std::size(os2_files)},
-    {ExampleKind::ElevatorOffice,"elevator-lio-office1-v1","Elevator-LIO Office1 | MID-360 | 300 frames","Yifan Zhang et al.",
-      "https://github.com/YooJuno/lidar_studio/releases/download/example-data-v1/",&office_zip,1,
-      "Livox MID-360",0,"example-mid360","Elevator-LIO","Office1 / indoor","CC BY 4.0","360 deg / non-repetitive scan",10,300,"example_mid360",
-      true,office_files,std::size(office_files),{-90.f,0,0},"LiDAR to published vehicle axes"}
   }};
   return examples;
 }

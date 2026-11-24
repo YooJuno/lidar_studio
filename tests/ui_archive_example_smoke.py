@@ -17,7 +17,6 @@ EXAMPLES = {
     "os0": ("ouster-os0-urban-v1", 201, "example-os0"),
     "os1": ("ouster-os1-urban-v1", 258, "example-os1"),
     "os2": ("ouster-os2-urban-v1", 201, "example-os2"),
-    "mid360": ("elevator-lio-office1-v1", 300, "example-mid360"),
 }
 
 
@@ -71,30 +70,12 @@ def main():
         wait(lambda: saw(f" | {frames} frames"))
         assert saw("Example ready | cached 0 / 1"), "Initial open did not download the archive"
         assert not list(cache.glob("*.zip")) and not list(cache.glob("*.part"))
-        if args.dataset == "mid360":
-            assert len(list(cache.glob("*.bin"))) == frames
-            assert "Yifan Zhang" in (cache / "ATTRIBUTION.txt").read_text()
-        else:
-            assert (cache / "lidar.pcap").is_file() and (cache / "lidar.json").is_file()
+        assert (cache / "lidar.pcap").is_file() and (cache / "lidar.json").is_file()
         capture(x11, window, output / "playing.png")
         controls.click("tab_Align")
         controls.chord("s")
         saved = output / "settings/lidar_viewer/profiles" / (profile + ".cfg")
         wait(saved.is_file, 5)
-        if args.dataset == "mid360":
-            assert "calibration_yaw_deg=-90" in saved.read_text()
-            controls.enter("##Yaw", 5)
-            controls.chord("s")
-            wait(lambda: "calibration_yaw_deg=5\n" in saved.read_text(), 5)
-            controls.click("align_reset_all")
-            controls.chord("s")
-            wait(lambda: "calibration_yaw_deg=-90\n" in saved.read_text(), 5)
-            extra_scan = cache / "user-export.bin"
-            extra_scan.write_bytes(next(cache.glob("*.bin")).read_bytes())
-            inspected = subprocess.run([str(viewer),str(cache),"--inspect"],env=env,cwd=output,
-                                       capture_output=True,text=True,check=True,timeout=15)
-            assert f" | {frames} frames" in inspected.stdout
-            extra_scan.unlink()
         timestamps = {p.name: p.stat().st_mtime_ns for p in cache.iterdir()}
         controls.click("open_input")
         controls.click("example_start")

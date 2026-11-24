@@ -26,7 +26,7 @@ UI는 고정 버전의 [Dear ImGui](https://github.com/ocornut/imgui/tree/f5befd
 
 ## Run
 
-**공개 예제**는 **Open → Public examples**에서 센서와 환경을 골라 바로 내려받아 재생할 수 있습니다. 같은 화면에서 로컬 파일과 녹화 폴더도 엽니다. UrbanV2X의 Velodyne·Hesai 야외 주행, Ouster OS0·OS1·OS2 원본 패킷 기록, Elevator-LIO의 Livox MID-360 실내 30초가 제공됩니다. 저장된 데이터는 오프라인 재생 및 삭제가 가능합니다. [예제별 출처·정렬·라이선스](examples.md).
+**공개 예제**는 **Open → Public examples**에서 센서와 환경을 골라 바로 내려받아 재생할 수 있습니다. 같은 화면에서 로컬 파일과 녹화 폴더도 엽니다. UrbanV2X의 Velodyne·Hesai 야외 주행과 Ouster OS0·OS1·OS2 원본 패킷 기록을 제공합니다. 저장된 데이터는 오프라인 재생 및 삭제가 가능합니다. [예제별 출처·정렬·라이선스](examples.md).
 
 입력 경로를 생략하면 **빈 뷰어가 먼저 열립니다.** 상단 **Open → Open file...**을 누르면 시스템 파일 탐색 창이 열립니다. bag 폴더 안의 `metadata.yaml` 또는 `.db3`·`.mcap` 파일을 선택하세요. 분할 파일을 골라도 같은 폴더의 기록 전체를 엽니다. 탐색 창을 취소해도 뷰어는 계속 열려 있습니다. 재생 컨트롤은 입력을 연 뒤 표시됩니다.
 

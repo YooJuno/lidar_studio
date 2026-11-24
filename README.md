@@ -87,7 +87,6 @@ Choose **Open → Public examples**, select a sensor and scene, then **Download 
 
 | Dataset | Sensors | Scene and length |
 | --- | --- | --- |
-| Elevator-LIO | Livox MID-360 | Indoor office, 30 s · 39 MB |
 | Ouster SDK | OS0-128, OS1-128, OS2-128 | Urban driving, 20–26 s · 99–200 MB |
 | UrbanV2X | Velodyne HDL-32E, Hesai XT32 and AT128P | Hong Kong Science Park, 30 or 60 s |
 | Patchwork++ | Velodyne | Six-scan preview, 12 MB |

@@ -275,14 +275,12 @@ jobs:
           ctest --test-dir build --output-on-failure
           LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s '-screen 0 1920x1200x24' \
             /usr/bin/python3 tests/ui_direct_live_smoke.py --viewer build/lidar_studio --output build/test_artifacts/direct-live
-      - name: Download and replay archived example datasets without ROS
+      - name: Download and replay the Ouster PCAP example without ROS
         if: matrix.ubuntu == '24.04'
         run: |
-          for dataset in mid360 os1; do
-            LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s '-screen 0 1920x1200x24' \
-              /usr/bin/python3 tests/ui_archive_example_smoke.py --viewer build/lidar_studio \
-              --output build/test_artifacts/archive-examples --dataset "$dataset"
-          done
+          LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s '-screen 0 1920x1200x24' \
+            /usr/bin/python3 tests/ui_archive_example_smoke.py --viewer build/lidar_studio \
+            --output build/test_artifacts/archive-examples --dataset os1
       - name: Package and verify runtime dependencies
         run: |
           cpack --config build/CPackConfig.cmake
