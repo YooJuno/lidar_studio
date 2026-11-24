@@ -15,7 +15,7 @@ import tempfile
 import time
 import urllib.request
 
-from macos_gl_probe import lacks_runner_opengl, probe_library
+from macos_gl_probe import extract_app, lacks_runner_opengl, probe_library
 
 
 def run(*args, **kwargs):
@@ -103,6 +103,8 @@ def check_app(app, workspace, require_gui=False, require_detector=False):
     inspect = run(str(executable), str(fixture), '--inspect', cwd=workspace, env=env)
     if '961' not in inspect.stdout + inspect.stderr:
         raise RuntimeError('Packaged app could not load the point-cloud fixture')
+    native = app / 'Contents/Resources/python/lidar_detection/liblidar_viewer_native.dylib'
+    run(sys.executable, str(Path(__file__).with_name('detector_native_smoke.py')), str(native))
     if require_detector:
         check_detector(app,executable,workspace,env)
     graphics = probe_library(next((app / "Contents/Frameworks").glob("libglfw.3.dylib")))
@@ -140,28 +142,15 @@ def main():
     args.packages = args.packages.resolve()
     if sys.platform != 'darwin':
         parser.error('Run this verification on a macOS runner')
-    packages = sorted([*args.packages.glob('*.zip'), *args.packages.glob('*.dmg')])
-    if len(packages) != 2:
-        raise RuntimeError('Expected a ZIP and DMG macOS package')
-    for package in packages:
+    dmgs = list(args.packages.glob('*.dmg'))
+    zips = list(args.packages.glob('*.zip'))
+    if len(dmgs) != 1 or len(zips) > 1:
+        raise RuntimeError('Expected one DMG and at most one legacy ZIP macOS package')
+    for package in [*dmgs, *zips]:
         with tempfile.TemporaryDirectory(prefix='lidar-macos-package-') as temporary:
             workspace = Path(temporary)
-            if package.suffix == '.zip':
-                run('ditto', '-x', '-k', str(package.resolve()), str(workspace / 'extracted'))
-            else:
-                mount = workspace / 'mounted'
-                run('hdiutil', 'attach', '-readonly', '-nobrowse', '-mountpoint', str(mount), str(package.resolve()))
-                try:
-                    apps = list(mount.glob('*.app'))
-                    if len(apps) != 1:
-                        raise RuntimeError('DMG must contain exactly one app')
-                    run('ditto', str(apps[0]), str(workspace / 'extracted' / apps[0].name))
-                finally:
-                    run('hdiutil', 'detach', str(mount))
-            apps = list((workspace / 'extracted').rglob('*.app'))
-            if len(apps) != 1:
-                raise RuntimeError('Package must contain exactly one app')
-            print(json.dumps(dict(package=package.name, **check_app(apps[0], workspace, args.require_gui,args.require_detector))), flush=True)
+            app = extract_app(package, workspace)
+            print(json.dumps(dict(package=package.name, **check_app(app, workspace, args.require_gui,args.require_detector))), flush=True)
 
 
 if __name__ == '__main__':

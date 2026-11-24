@@ -57,12 +57,13 @@ jobs:
             ros-jazzy-rosbag2-cpp ros-jazzy-sensor-msgs ros-jazzy-tf2-msgs ros-jazzy-rclcpp \
             ros-jazzy-rclpy ros-jazzy-rosbag2-py ros-jazzy-rmw-fastrtps-cpp ros-jazzy-rosbag2-storage-mcap ros-jazzy-rosbag2-storage-sqlite3 \
             zenity xvfb xauth x11-utils x11-xserver-utils libxtst6 ffmpeg \
-            python3-pil python3-yaml python3-numpy libgl1-mesa-dri dpkg-dev
+            python3-pil python3-yaml python3-numpy libgl1-mesa-dri dpkg-dev file
       - name: Configure
         run: |
           source /opt/ros/jazzy/setup.bash
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
             -DLIDAR_VIEWER_ENABLE_CUDA=OFF -DLIDAR_VIEWER_ENABLE_ROSBAG=ON \
+            -DLIDAR_STUDIO_UBUNTU_VERSION=24.04 \
             -DLIDAR_VIEWER_USER_SETTINGS=ON -DCPACK_PACKAGE_VERSION="$RELEASE_VERSION"
       - name: Build and test
         run: |
@@ -233,9 +234,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: packages-Ubuntu
-          path: |
-            build/packages/*.deb
-            build/packages/*.tar.gz
+          path: build/packages/*-jazzy.deb
           if-no-files-found: error
       - name: Upload diagnostics
         if: failure()
@@ -247,10 +246,14 @@ jobs:
             build/test_artifacts/
 
   ubuntu-standalone:
-    name: Ubuntu 24.04 / standalone
+    name: Ubuntu ${{ matrix.ubuntu }} / standalone
     needs: metadata
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-${{ matrix.ubuntu }}
     timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: ['22.04', '24.04']
     env:
       RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
     steps:
@@ -261,17 +264,19 @@ jobs:
         run: |
           bash tools/install_ubuntu_ci_dependencies.sh ninja-build libglfw3-dev libglew-dev libpcl-dev \
             libnanoflann-dev libcurl4-openssl-dev libssl-dev libarchive-dev zenity xvfb xauth x11-utils x11-xserver-utils \
-            libxtst6 ffmpeg python3-pil python3-numpy libgl1-mesa-dri dpkg-dev
+            libxtst6 ffmpeg python3-pil python3-numpy libgl1-mesa-dri dpkg-dev file
       - name: Build and test without ROS
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
             -DLIDAR_VIEWER_ENABLE_CUDA=OFF -DLIDAR_VIEWER_ENABLE_ROSBAG=OFF \
+            -DLIDAR_STUDIO_UBUNTU_VERSION="${{ matrix.ubuntu }}" \
             -DLIDAR_VIEWER_USER_SETTINGS=ON -DCPACK_PACKAGE_VERSION="$RELEASE_VERSION"
           cmake --build build --parallel 2
           ctest --test-dir build --output-on-failure
           LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s '-screen 0 1920x1200x24' \
             /usr/bin/python3 tests/ui_direct_live_smoke.py --viewer build/lidar_studio --output build/test_artifacts/direct-live
       - name: Download and replay archived example datasets without ROS
+        if: matrix.ubuntu == '24.04'
         run: |
           for dataset in mid360 os1; do
             LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a -s '-screen 0 1920x1200x24' \
@@ -285,18 +290,18 @@ jobs:
           deb=(build/packages/*-standalone.deb)
           depends=$(dpkg-deb --field "${deb[0]}" Depends)
           if [[ "$depends" == *ros-jazzy* ]]; then exit 1; fi
-          dpkg-deb --extract "${deb[0]}" build/package-smoke
-          build/package-smoke/usr/lib/lidar_studio/lidar_studio --help | grep -F 'ROS 2 bag backend: not built'
+          sudo apt-get install -y "./${deb[0]}"
+          lidar_studio --help | grep -F 'ROS 2 bag backend: not built'
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: packages-Ubuntu-standalone
-          path: build/packages/*-standalone.*
+          name: packages-Ubuntu-${{ matrix.ubuntu }}-standalone
+          path: build/packages/*-standalone.deb
           if-no-files-found: error
       - name: Upload diagnostics
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: diagnostics-Ubuntu-standalone
+          name: diagnostics-Ubuntu-${{ matrix.ubuntu }}-standalone
           path: |
             build/Testing/Temporary/
             build/test_artifacts/
@@ -379,6 +384,7 @@ jobs:
       - name: Package
         run: cpack --config build/CPackConfig.cmake -C Release
       - name: Verify packaged preprocessing runtime
+        if: runner.os == 'Windows'
         run: cmake --build build --target check-native-package --config Release
       - name: Verify extracted macOS app signature and GUI runtime
         if: runner.os == 'macOS'

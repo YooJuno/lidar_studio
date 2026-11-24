@@ -45,13 +45,21 @@ Both demos play consecutive KITTI Raw scans at **10 Hz**. [Source and recording 
 
 Get the newest verified package from [Latest release](https://github.com/YooJuno/lidar_studio/releases/latest) or an artifact from [Actions](https://github.com/YooJuno/lidar_studio/actions/workflows/build-release.yml).
 
-| Platform | Launch | Connectivity |
+| Platform | Download | Launch |
 | --- | --- | --- |
-| Ubuntu 24.04 | Install the `-standalone.deb`, then run `lidar_studio` | Direct Ethernet and PCAP. The Jazzy package also opens ROS 2 bags and topics. |
-| Windows | Extract the ZIP and run `lidar_studio.exe` | Direct Ethernet and PCAP |
-| macOS 15+ (Apple Silicon) | Copy `LiDAR Studio.app` to Applications | Direct Ethernet and PCAP |
+| Ubuntu 22.04 x86-64 | `Ubuntu22.04-x86_64-standalone.deb` | Install with APT, then open LiDAR Studio from the app menu |
+| Ubuntu 24.04 x86-64 | `Ubuntu24.04-x86_64-standalone.deb` | Install with APT, then open LiDAR Studio from the app menu |
+| Ubuntu 24.04 with ROS 2 Jazzy | `Ubuntu24.04-x86_64-jazzy.deb` | Install with APT after configuring the Jazzy repository |
+| Windows x64 | `Windows-AMD64.zip` | Extract the ZIP and run `lidar_studio.exe` |
+| macOS 15+ (Apple Silicon) | `Darwin-arm64.dmg` | Open the DMG and copy `LiDAR Studio.app` to Applications |
 
-For standalone Ubuntu use `sudo apt install ./lidar_studio-*-standalone.deb`. To use ROS 2 bags and topics, install the `.deb` without `-standalone` with ROS 2 Jazzy configured.
+On Ubuntu, download the `.deb` for your Ubuntu version. APT installs its dependencies in the same step. Run this command from the download folder on Ubuntu 22.04.
+
+```bash
+sudo apt install ./lidar_studio-*-Ubuntu22.04-x86_64-standalone.deb
+```
+
+The standalone packages support direct Ethernet, PCAP and point-cloud files. The Jazzy package also opens ROS 2 bags and topics. The older `Linux-x86_64` files in v0.2.88 were built for Ubuntu 24.04.
 
 The macOS download is **ad-hoc signed, not Apple-notarized**; macOS may block its first launch. See [macOS launch troubleshooting](docs/guide.md#macos-first-launch) for signature verification and a per-app exception. Intel Macs are not supported by the ARM64 download.
 

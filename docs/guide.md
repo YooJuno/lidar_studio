@@ -111,17 +111,18 @@ source /opt/ros/jazzy/setup.bash
 
 | 배포 | 지원 기능 | 실행 환경 |
 | --- | --- | --- |
-| Ubuntu 24.04 x86_64 `-standalone.deb`, `-standalone.tar.gz` | 직접 Ethernet, PCAP, BIN·NPY·PCD | Ubuntu 24.04 |
-| Ubuntu 24.04 x86_64 `.deb`, `.tar.gz` | 직접 연결 및 ROS bag·실시간 ROS 토픽·MCAP 녹화 | ROS 2 Jazzy APT 저장소 및 런타임 |
+| `Ubuntu22.04-x86_64-standalone.deb` | 직접 Ethernet, PCAP, BIN·NPY·PCD | Ubuntu 22.04 |
+| `Ubuntu24.04-x86_64-standalone.deb` | 직접 Ethernet, PCAP, BIN·NPY·PCD | Ubuntu 24.04 |
+| `Ubuntu24.04-x86_64-jazzy.deb` | 직접 연결 및 ROS bag·실시간 ROS 토픽·MCAP 녹화 | Ubuntu 24.04, ROS 2 Jazzy APT 저장소 |
 | Windows x64 `.zip` | 직접 Ethernet, PCAP, BIN·NPY·PCD | 포함된 DLL과 `lidar_studio.exe`를 같은 폴더에 유지 |
-| macOS ARM64 `.zip`, `.dmg` | 직접 Ethernet, PCAP, BIN·NPY·PCD | Apple Silicon, macOS 15 이상 (Intel Mac 미지원) |
+| macOS ARM64 `.dmg` | 직접 Ethernet, PCAP, BIN·NPY·PCD | Apple Silicon, macOS 15 이상 (Intel Mac 미지원) |
 
 배포 파일은 CPU 빌드입니다. CUDA는 소스에서 선택적으로 켭니다. Windows/macOS 배포에는 ROS 2가 포함되지 않아 ROS bag·실시간 ROS 연결은 비활성화됩니다. macOS 번들은 ad-hoc 서명이며 Apple Developer ID 서명·공증은 포함하지 않습니다.
 
-- Ubuntu에서 ROS 없이 사용하려면 `sudo apt install ./lidar_studio-*-standalone.deb`를 실행합니다. ROS가 필요한 경우 Jazzy 저장소를 설정하고 `-standalone`이 없는 `.deb` 파일을 설치합니다. 앱 메뉴의 **LiDAR Studio** 또는 `lidar_studio`로 실행합니다.
+- Ubuntu 버전에 맞는 `-standalone.deb`를 다운로드합니다. Ubuntu 22.04에서는 다운로드 폴더에서 `sudo apt install ./lidar_studio-*-Ubuntu22.04-x86_64-standalone.deb`를 실행하면 의존성도 함께 설치됩니다. Ubuntu 24.04에서 ROS가 필요하다면 Jazzy 저장소를 설정하고 `-jazzy.deb`를 설치합니다. 앱 메뉴의 **LiDAR Studio** 또는 `lidar_studio`로 실행합니다. v0.2.88의 `Linux-x86_64` 파일은 Ubuntu 24.04용입니다.
 - 저장소·실행 파일·배포 파일 이름은 `lidar_studio`입니다. Ubuntu 패키지 ID는 Debian 명명 규칙에 맞춘 `lidar-studio`이며, 이전 `lidar-viewer` 실행 명령도 지원합니다. 설정·모델 저장 위치와 desktop ID는 기존 값을 유지해 ROI와 설치한 모델, 독 아이콘 연결을 이어 씁니다.
 - Windows: ZIP을 풀고 `lidar_studio.exe`를 실행합니다. **Open → Open file...**에서 `.bin`도 선택할 수 있습니다.
-- macOS: DMG의 `LiDAR Studio.app`을 Applications에 복사하거나 ZIP의 앱을 실행합니다.
+- macOS에서는 DMG를 열고 `LiDAR Studio.app`을 Applications에 복사합니다.
 - 패키지 빌드는 `-DLIDAR_VIEWER_USER_SETTINGS=ON`을 사용해 사용자 설정을 Windows `%APPDATA%/LiDARViewer`, macOS `~/Library/Application Support/LiDARViewer`, Ubuntu `~/.config/lidar_viewer`에 저장합니다. 기본 설정은 배포 리소스에서 읽고 사용자 설정으로 덮어씁니다. 업데이트해도 사용자 ROI를 패키지 설정으로 덮어쓰지 않습니다. `XDG_CONFIG_HOME`도 지원합니다.
 - 소스 빌드는 기존처럼 프로젝트 `config/profiles`에 저장합니다. 사용자 경로를 쓰려면 위 CMake 옵션을 켭니다.
 
@@ -146,7 +147,7 @@ open "/Applications/LiDAR Studio.app"
 
 이 명령은 해당 앱에만 예외를 적용합니다. 시스템 전체의 Gatekeeper 설정은 변경하지 않습니다. 이후에도 종료되면 터미널에서 `"/Applications/LiDAR Studio.app/Contents/MacOS/lidar_studio"`를 실행해 오류를 확인합니다.
 
-CI에서는 ZIP·DMG를 각각 추출해 서명 무결성, 라이브러리 포함, CLI 실행, 점군 파일 읽기를 필수 검사합니다. 별도의 GLFW 3.3·4.1 검사까지 모두 동일한 NSGL pixel-format 오류를 내는 호스트에서는 GUI를 **미검증**으로 표시합니다. 그래픽 지원이 있는 Mac에서는 GUI 검사도 통과해야 하며, `python3 tests/macos_package_smoke.py --packages build/packages --require-gui`로 GUI 검증을 강제할 수 있습니다. Apple 공증 여부도 별도로 표시합니다. 일반 다운로드에서 경고 없는 실행을 제공하려면 Developer ID 인증서로 서명하고 Apple 공증을 완료해야 합니다.
+CI에서는 DMG에서 앱을 복사한 후 서명 무결성, 라이브러리 포함, CLI 실행, 점군 파일 읽기를 검사합니다. 별도의 GLFW 3.3·4.1 검사까지 모두 동일한 NSGL pixel-format 오류를 내는 호스트에서는 GUI를 **미검증**으로 표시합니다. 그래픽 지원이 있는 Mac에서는 GUI 검사도 통과해야 하며, `python3 tests/macos_package_smoke.py --packages build/packages --require-gui`로 GUI 검증을 강제할 수 있습니다. Apple 공증 여부도 별도로 표시합니다. 일반 다운로드에서 경고 없는 실행을 제공하려면 Developer ID 인증서로 서명하고 Apple 공증을 완료해야 합니다.
 
 GitHub Actions의 **Build and release**는 PR·main push·수동 실행에서 세 플랫폼을 빌드하고 CTest와 Ubuntu 실시간 GUI 검사와 ROI 생성·편집·복구 검사를 실행한 뒤 패키지를 아티팩트로 올립니다. **main 빌드가 세 플랫폼에서 모두 통과하면 버전을 자동 생성하고 GitHub Release에 패키지와 SHA256SUMS를 게시합니다.** CMake의 major/minor와 워크플로 실행 번호로 버전을 만들며, `vMAJOR.MINOR.PATCH` 태그 빌드는 지정한 버전을 유지합니다. 모든 파일의 업로드·검증이 끝나기 전에는 초안 상태를 유지하고, 완료한 릴리스를 Latest로 표시합니다. 이미 게시된 같은 버전은 재실행해도 덮어쓰지 않습니다. 릴리스용 비밀 토큰은 추가로 필요하지 않고, 해당 작업의 `GITHUB_TOKEN`에만 `contents: write` 권한을 부여합니다.
 

@@ -45,9 +45,9 @@ def find_release(gh, api_root, tag):
 def package_files(directory, version):
     files = sorted(path for path in directory.iterdir() if path.is_file() and path.name != 'SHA256SUMS')
     expected = {
-        'Linux-x86_64.deb', 'Linux-x86_64.tar.gz',
-        'Linux-x86_64-standalone.deb', 'Linux-x86_64-standalone.tar.gz',
-        'Windows-AMD64.zip', 'Darwin-arm64.zip', 'Darwin-arm64.dmg',
+        'Ubuntu22.04-x86_64-standalone.deb',
+        'Ubuntu24.04-x86_64-standalone.deb', 'Ubuntu24.04-x86_64-jazzy.deb',
+        'Windows-AMD64.zip', 'Darwin-arm64.dmg',
     }
     expected = {f'lidar_studio-{version}-{name}' for name in expected}
     seen = {p.name for p in files if p.stat().st_size}
@@ -85,13 +85,16 @@ def publish(directory, repo, sha, version, tag, run_url, gh=None):
         f'Automatically built from [{sha[:7]}](https://github.com/{repo}/commit/{sha}) after all platform checks passed.\n\n'
         f'[Build and validation]({run_url})\n\n'
         '- **Direct Ethernet on Ubuntu, Windows and macOS:** receive supported LiDARs and record raw UDP packets to PCAP.\n'
-        '- **Ubuntu 24.04:** choose the standalone package for direct sensor input, or the Jazzy package for ROS 2 bags, topics and MCAP recording.\n'
+        '- On **Ubuntu 22.04 or 24.04**, download the standalone `.deb` matching your Ubuntu version and install it with APT. '
+        f'On 22.04, run `sudo apt install ./lidar_studio-{version}-Ubuntu22.04-x86_64-standalone.deb` in the download folder.\n'
+        '- On **Ubuntu 24.04 with ROS 2 Jazzy**, use the `-jazzy.deb` for ROS 2 bags, topics and MCAP recording.\n'
         '- **Mac object detection is ready offline:** original CenterPoint tiny + AWML ShortRange weights and a private CPU Python runtime are included; no Homebrew/model setup is needed.\n'
         '- Linux/Windows learned detection and all custom training environments use the optional setup described in the README.\n'
         '- **macOS requires Apple Silicon and macOS 15 or later.** Intel Macs are not supported by the ARM64 package.\n'
         '- macOS bundles are ad-hoc signed and **not Apple-notarized**; Gatekeeper can block downloaded apps. '
         f'[First-launch instructions](https://github.com/{repo}/blob/{sha}/docs/guide.md#macos-first-launch).\n\n'
-        'Download the package for your platform and verify it with `SHA256SUMS`.\n'
+        '- On **Windows x64**, extract the ZIP and run `lidar_studio.exe`. On **macOS**, open the DMG and copy the app to Applications.\n\n'
+        'You can verify each download with `SHA256SUMS`.\n'
     )
     if release is None:
         with tempfile.TemporaryDirectory(prefix='lidar-release-') as temporary:
@@ -102,6 +105,8 @@ def publish(directory, repo, sha, version, tag, run_url, gh=None):
     gh.run('release', 'upload', tag, '--repo', repo, *map(str, files), '--clobber')
     uploaded = gh.run('api', f'{api_root}/releases/{release["id"]}')
     assets = {asset['name']: asset for asset in uploaded['assets']}
+    if assets.keys() != {path.name for path in files}:
+        raise RuntimeError('Release remains a draft: uploaded assets differ from the expected set')
     for path in files:
         asset = assets.get(path.name)
         if not asset or asset['size'] != path.stat().st_size:

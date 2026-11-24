@@ -45,15 +45,34 @@ def lacks_runner_opengl(results):
                     and all(e.get("code") == 65545 and e.get("message") == "NSGL: Failed to find a suitable pixel format"
                             for e in r["errors"]) for r in results))
 
+def extract_app(package, workspace):
+    extracted = workspace / 'extracted'
+    if package.suffix == '.zip':
+        subprocess.run(['ditto', '-x', '-k', str(package.resolve()), str(extracted)], check=True, timeout=90)
+    else:
+        mount = workspace / 'mounted'
+        subprocess.run(['hdiutil', 'attach', '-readonly', '-nobrowse', '-mountpoint', str(mount),
+                        str(package.resolve())], check=True, timeout=90)
+        try:
+            apps = list(mount.glob('*.app'))
+            if len(apps) != 1:
+                raise RuntimeError('DMG must contain exactly one app')
+            subprocess.run(['ditto', str(apps[0]), str(extracted / apps[0].name)], check=True, timeout=90)
+        finally:
+            subprocess.run(['hdiutil', 'detach', str(mount)], check=True, timeout=90)
+    apps = list(extracted.rglob('*.app'))
+    if len(apps) != 1:
+        raise RuntimeError('Package must contain exactly one app')
+    return apps[0]
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--packages", type=Path, required=True)
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="lidar-gl-probe-") as temporary:
-        root = Path(temporary)
-        archive = next(args.packages.glob("*.zip"))
-        subprocess.run(["ditto", "-x", "-k", str(archive.resolve()), str(root)], check=True)
-        results = probe_library(next(root.rglob("libglfw.3.dylib")))
+        archive = next(args.packages.glob("*.dmg"))
+        app = extract_app(archive, Path(temporary))
+        results = probe_library(app / 'Contents/Frameworks/libglfw.3.dylib')
         print(json.dumps(results, indent=2), flush=True)
 
 if __name__ == "__main__":
