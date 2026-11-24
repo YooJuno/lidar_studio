@@ -475,6 +475,7 @@ struct ViewerState
   std::unique_ptr<lidar_viewer::BackgroundWorker> frame_reader;
   std::future<FrameData> prefetch_future;
   std::optional<std::size_t> requested_frame;
+  std::optional<std::size_t> manual_frame_target;
   std::optional<std::size_t> prefetched_index;
   std::unique_ptr<lidar_viewer::BackgroundWorker> geometry_worker;
   std::future<GeometryWork> geometry_future;
@@ -1107,12 +1108,23 @@ void CommitFramePosition(ViewerState & state, std::size_t index)
 {
   const auto previous = state.current_index;
   state.current_index = index;
+  if (state.manual_frame_target == index) state.manual_frame_target.reset();
   UpdateCurrentFileGroup(state);
   const auto first = state.file_groups.empty() ? 0 : state.file_groups[state.current_file_group].first_index;
   if (previous != index && index == first) {
     // Reset before the first scan's paired detector result reaches tracking.
     ResetTracking(state, /*new_sequence=*/true);
   }
+}
+
+const ViewerState::FileGroup & CurrentFileGroup(const ViewerState & state)
+{
+  return state.file_groups[state.current_file_group];
+}
+
+std::size_t NextGroupFrame(const ViewerState::FileGroup & group, std::size_t index)
+{
+  return index == group.last_index ? group.first_index : index + 1;
 }
 
 const FrameData & ProcessedFrame(const std::shared_ptr<const FrameData> & frame)
@@ -1414,7 +1426,9 @@ void QueueFramePrefetch(ViewerState & state, std::size_t next_index)
 
 void QueueNextFramePrefetch(ViewerState & state)
 {
-  if (state.frames.size()>1) QueueFramePrefetch(state,(state.current_index+1)%state.frames.size());
+  const auto & group = CurrentFileGroup(state);
+  if (group.first_index != group.last_index)
+    QueueFramePrefetch(state, NextGroupFrame(group, state.current_index));
 }
 
 void CommitGeometry(ViewerState & state, GeometryWork & work,
@@ -1463,10 +1477,13 @@ void CommitGeometry(ViewerState & state, GeometryWork & work,
 
 bool ShouldPairDetection(const ViewerState & state, const frames::DetectorFrame & input)
 {
-  const bool looping = state.is_playing && state.loop_playback && state.frames.size() > 1 &&
-    state.current_index + 1 == state.frames.size();
-  const bool next_playback_frame = state.geometry_index &&
-    (*state.geometry_index == state.current_index + 1 || (looping && *state.geometry_index == 0));
+  bool next_playback_frame = false;
+  if (state.geometry_index) {
+    const auto & group = CurrentFileGroup(state);
+    next_playback_frame = group.first_index != group.last_index &&
+      *state.geometry_index == NextGroupFrame(group, state.current_index) &&
+      (state.current_index != group.last_index || state.is_playing);
+  }
   const bool next_scan = (state.geometry_live_sequence && state.live_has_frame) || next_playback_frame;
   return next_scan && state.geometry_updates_detector && input.points &&
     !input.points->empty() && state.detector_completed == state.detector_revision &&
@@ -1544,6 +1561,7 @@ bool CompleteGeometry(ViewerState & state)
     message = std::string("Frame processing failed: ") + error.what();
     state.is_playing=false;
     if (state.live_mode) state.live_paused=true;
+    if (state.manual_frame_target == state.geometry_index) state.manual_frame_target.reset();
     state.geometry_index.reset();state.geometry_live_sequence.reset();return false;
   }
 }
@@ -1572,7 +1590,9 @@ void LoadFrameByIndex(ViewerState & state, std::size_t index, bool defer_terrase
   if (state.async_geometry) {
     state.global_ground_offset=offset;state.alignment_initialized=true;
     QueueGeometry(state,std::move(next_base),next_index);
-    if (state.frames.size()>1) QueueFramePrefetch(state,(next_index+1)%state.frames.size());
+    const auto & group = CurrentFileGroup(state);
+    if (next_index >= group.first_index && next_index <= group.last_index && group.first_index != group.last_index)
+      QueueFramePrefetch(state, NextGroupFrame(group, next_index));
     return;
   }
   ApplyCalibration(state, &next_base, offset, true, defer_terraseg);
@@ -1583,11 +1603,9 @@ void LoadFrameByIndex(ViewerState & state, std::size_t index, bool defer_terrase
   QueueNextFramePrefetch(state);
 }
 
-bool TryLoadFrame(ViewerState & state, std::size_t index)
+bool ProcessFrameRequest(ViewerState & state, std::size_t index)
 {
   try {
-    if (state.frames.empty() || state.dataset_edit_future.valid()) return false;
-    index%=state.frames.size();
     if (GeometryPending(state) && state.geometry_index==index) {
       state.requested_frame.reset();
       return false;
@@ -1610,16 +1628,26 @@ bool TryLoadFrame(ViewerState & state, std::size_t index)
   } catch (const std::exception & error) {
     state.is_playing = false;
     state.requested_frame.reset();
+    state.manual_frame_target.reset();
     state.frame_load_error = "Could not load frame " + std::to_string(index + 1) + ": " + error.what();
     std::cerr << state.frame_load_error << '\n';
     return false;
   }
 }
 
+enum class FrameRequestOrigin { User, Playback };
+
+bool TryLoadFrame(ViewerState & state, std::size_t index, FrameRequestOrigin origin = FrameRequestOrigin::User)
+{
+  if (index >= state.frames.size() || state.dataset_edit_future.valid()) return false;
+  if (origin == FrameRequestOrigin::User) state.manual_frame_target = index;
+  return ProcessFrameRequest(state, index);
+}
+
 bool CompleteFrameRequest(ViewerState & state)
 {
   if (state.loading_bag_source || state.dataset_edit_future.valid()) return false;
-  if (state.requested_frame) return TryLoadFrame(state,*state.requested_frame);
+  if (state.requested_frame) return ProcessFrameRequest(state,*state.requested_frame);
   ConsumeReadyPrefetch(state);
   return false;
 }
@@ -1721,6 +1749,7 @@ void OpenBagSource(ViewerState & state, std::size_t index, bool reload = false)
   state.input_load_previous_playing=state.is_playing;
   state.is_playing = false;
   state.requested_frame.reset();
+  state.manual_frame_target.reset();
   state.timeline_dragging = false;
   state.frame_load_error.clear();
   try {
@@ -1975,6 +2004,7 @@ void ClearDeletedExampleInput(ViewerState & state,const fs::path & directory)
   if(!state.frames.empty() && state.frames.front().path.parent_path()==directory) {
     if(state.frame_reader) state.frame_reader->CancelPending();
     state.prefetch_future={};CancelGeometry(state);state.prefetched_index.reset();state.requested_frame.reset();
+    state.manual_frame_target.reset();
     state.frame_cache.clear();state.frame_cache_order.clear();state.frames.clear();state.file_groups.clear();
     state.base_frame={};state.frame={};state.processed_frame={};state.processed_obstacles=0;state.frame_dirty=true;
     state.is_playing=false;state.timeline_dragging=false;state.current_index=0;state.current_file_group=0;state.seek_draft=0;
@@ -2078,6 +2108,7 @@ void CompleteBagLoad(ViewerState & state)
     CancelGeometry(state);
     state.prefetched_index.reset();
     state.requested_frame.reset();
+    state.manual_frame_target.reset();
     state.frame_cache.clear();
     state.frame_cache_order.clear();
     state.frames = std::move(result.frames);
@@ -2281,6 +2312,7 @@ void ConnectLive(ViewerState & state)
   state.prefetch_future={};
   CancelGeometry(state);
   state.prefetched_index.reset(); state.requested_frame.reset(); state.frame_cache.clear(); state.frame_cache_order.clear();
+  state.manual_frame_target.reset();
   state.frames.clear(); state.file_groups.clear(); state.current_bag_source.reset();
   state.loaded_source_path.clear();state.frame_load_error.clear();
   ResetTracking(state, /*new_sequence=*/true);
@@ -2876,29 +2908,29 @@ void SaveAppSettings(ViewerState & state)
 
 void AdvanceFrame(ViewerState & state, int direction)
 {
-  if (state.live_mode || state.frames.empty() || state.loading_bag_source) {
-    return;
-  }
+  if (state.live_mode || state.file_groups.empty() || state.loading_bag_source) return;
+  const auto & group = CurrentFileGroup(state);
   const auto index=state.requested_frame.value_or(state.geometry_index.value_or(state.current_index));
+  if (group.first_index == group.last_index || index < group.first_index || index > group.last_index) return;
   if (direction > 0) {
-    if (index + 1 >= state.frames.size() && !state.loop_playback) {
-      state.is_playing = false;
-      return;
-    }
-    TryLoadFrame(state, (index + 1) % state.frames.size());
+    if (index < group.last_index || state.loop_playback) TryLoadFrame(state, NextGroupFrame(group, index));
   } else {
-    if (index == 0 && !state.loop_playback) {
-      return;
-    }
-    TryLoadFrame(state, index == 0 ? state.frames.size() - 1 : index - 1);
+    if (index > group.first_index || state.loop_playback)
+      TryLoadFrame(state, index == group.first_index ? group.last_index : index - 1);
   }
 }
 
 bool AdvancePlayback(ViewerState & state, bool detector_result_ready)
 {
   if (!state.is_playing || state.dataset_edit_future.valid() || state.timeline_dragging ||
-      state.requested_frame || state.frames.size() <= 1 || GeometryPending(state) ||
+      state.requested_frame || state.file_groups.empty() || GeometryPending(state) ||
       DetectorFramePending(state) || detector_result_ready) {
+    return false;
+  }
+  const auto & group = CurrentFileGroup(state);
+  if (group.first_index == group.last_index ||
+      (state.current_index == group.last_index && !state.loop_playback)) {
+    state.is_playing = false;
     return false;
   }
   const double now = glfwGetTime();
@@ -2906,11 +2938,19 @@ bool AdvancePlayback(ViewerState & state, bool detector_result_ready)
   const double due = state.last_frame_advance_time + interval;
   if (now < due) return false;
   const auto previous = state.current_index;
-  AdvanceFrame(state, 1);
+  TryLoadFrame(state, NextGroupFrame(group, previous), FrameRequestOrigin::Playback);
   // Preserve the fractional delay from the render tick. Rebase after a long
   // stall so slow disk reads or inference cannot trigger catch-up playback.
   if (state.is_playing) state.last_frame_advance_time = now - due < interval ? due : now;
   return state.current_index != previous;
+}
+
+void CancelAutomaticAdvance(ViewerState & state)
+{
+  // Pause freezes autoplay but still lets an explicit seek or an ROI Apply finish.
+  if (state.requested_frame != state.manual_frame_target) state.requested_frame.reset();
+  if (state.geometry_index && state.geometry_index != state.manual_frame_target && !state.applying_exclusions)
+    CancelGeometry(state);
 }
 
 void TogglePlayback(ViewerState & state)
@@ -2921,14 +2961,14 @@ void TogglePlayback(ViewerState & state)
     return;
   }
   if (state.live_mode) {SetLivePaused(state,!state.live_paused);return;}
-  if (state.frames.empty() || state.loading_bag_source) return;
+  if (state.file_groups.empty() || state.loading_bag_source) return;
+  const auto & group = CurrentFileGroup(state);
+  if (group.first_index == group.last_index) return;
   state.is_playing=!state.is_playing;
   if (!state.is_playing) {
-    state.requested_frame.reset();
-    if (state.algorithm_config.detection.enabled && state.geometry_index) CancelGeometry(state);
-  } else if (state.frames.size()>1 && state.current_index==state.frames.size()-1 &&
-             !state.requested_frame && !state.geometry_index) {
-    TryLoadFrame(state, 0);
+    CancelAutomaticAdvance(state);
+  } else if (state.current_index == group.last_index && !state.requested_frame && !state.geometry_index) {
+    TryLoadFrame(state, group.first_index, FrameRequestOrigin::Playback);
   }
   state.last_frame_advance_time=glfwGetTime();
 }
@@ -2958,7 +2998,7 @@ bool PointerInScene(GLFWwindow *, const ViewerState & state)
 
 void FreezeForRoi(ViewerState & state)
 {
-  state.is_playing=false;state.requested_frame.reset();SetLivePaused(state,true);
+  state.is_playing=false;CancelAutomaticAdvance(state);SetLivePaused(state,true);
 }
 
 void FinishRoiGesture(ViewerState & state, bool cancel);
@@ -3390,10 +3430,11 @@ void TraceUi(const char * id);
 void BuildSourceSelector(ViewerState & state, float width)
 {
   const auto * group = state.file_groups.empty() ? nullptr : &state.file_groups[state.current_file_group];
+  const bool multiple_sequences = state.file_groups.size() > 1;
   const bool dataset=!state.frames.empty() && state.frames.front().dataset_sample!=nullptr;
   const auto preview = dataset ? std::string("Dataset | ")+std::to_string(state.frames.size())+" samples | "+
       (state.current_bag_source ? state.bag_sources[*state.current_bag_source].path.filename().u8string() : (group ? group->display_name : "")) :
-    state.current_bag_source ? state.bag_sources[*state.current_bag_source].display_name :
+    state.current_bag_source && !multiple_sequences ? state.bag_sources[*state.current_bag_source].display_name :
     (group ? group->display_name : "Browse recordings");
   const char * title = preview.c_str();
   if (state.current_bag_source) {
@@ -3408,12 +3449,29 @@ void BuildSourceSelector(ViewerState & state, float width)
   const float popup_width = std::min(720.f * state.ui_layout.scale, ImGui::GetIO().DisplaySize.x - 32.f);
   ImGui::SetNextWindowSizeConstraints({popup_width, 0}, {popup_width, 600.f * state.ui_layout.scale});
   ImGui::BeginDisabled((state.example_dataset && state.example_dataset->Progress().Active()) || state.loading_bag_source.has_value() || state.folder_scan_future.valid() ||
-    state.bag_picker.Active() || state.live.Active() || (!group && state.bag_sources.empty() && state.hidden_sources.empty()));
+    state.bag_picker.Active() || state.live.Active() || (!multiple_sequences && state.bag_sources.empty() && state.hidden_sources.empty()));
   std::optional<fs::path> remove_source;
   const bool sources_open = ImGui::BeginCombo("##Source", title, ImGuiComboFlags_HeightLarge);
   if (!sources_open) TraceUi("source_selector");
   if (sources_open) {
     if (ImGui::IsWindowAppearing()) state.check_source_availability=true;
+    if (multiple_sequences) {
+      ImGui::TextDisabled("Sequences in this folder");
+      ImGuiListClipper clipper;
+      clipper.Begin(static_cast<int>(state.file_groups.size()));
+      while (clipper.Step()) for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
+        const auto & sequence = state.file_groups[i];
+        ImGui::PushID(i);
+        if (ImGui::Selectable(sequence.display_name.c_str(), static_cast<std::size_t>(i) == state.current_file_group)) {
+          state.is_playing = false;
+          TryLoadFrame(state, sequence.first_index);
+        }
+        TraceUi(("sequence_" + std::to_string(i)).c_str());
+        Tip(sequence.path.u8string().c_str());
+        ImGui::PopID();
+      }
+      if (!state.bag_sources.empty()) ImGui::Separator();
+    }
     if (!state.bag_sources.empty()) {
       ImGui::TextUnformatted("Recordings");
       std::vector<std::string> dates;
@@ -3492,20 +3550,6 @@ void BuildSourceSelector(ViewerState & state, float width)
         ImGui::EndTable();
       }
       if (!shown) ImGui::TextDisabled("No matching recordings.");
-    }
-    if (!state.current_bag_source && !state.frames.empty() && state.frames.front().format != InputFormat::Ros2Bag &&
-        state.frames.front().format != InputFormat::LidarPcap) {
-      if (!state.bag_sources.empty()) {
-        ImGui::Separator();
-        ImGui::TextDisabled(state.frames.front().dataset_sample ? "Current dataset" : "Current BIN sequence");
-      }
-      for (std::size_t i = 0; i < state.file_groups.size(); ++i) {
-        const bool selected = i == state.current_file_group;
-        if (ImGui::Selectable(state.file_groups[i].display_name.c_str(), selected)) {
-          state.is_playing = false;
-          TryLoadFrame(state, state.file_groups[i].first_index);
-        }
-      }
     }
     if (!state.hidden_sources.empty()) {
       ImGui::Separator();
@@ -4938,6 +4982,11 @@ void BuildPlaybackTransport(ViewerState & state, const ViewerState::FileGroup * 
 
   const auto first_index = group->first_index;
   const auto frame_count = group->last_index - first_index + 1;
+  const bool seek_pending = state.manual_frame_target &&
+    *state.manual_frame_target >= first_index && *state.manual_frame_target <= group->last_index;
+  if (!state.timeline_dragging)
+    state.seek_draft = static_cast<int>((seek_pending ? *state.manual_frame_target : state.current_index) - first_index);
+  const auto playhead_index = first_index + std::min(static_cast<std::size_t>(state.seek_draft), frame_count - 1);
   const auto & first = state.frames[first_index];
   const bool recorded = first.format == InputFormat::Ros2Bag || first.format == InputFormat::LidarPcap;
   const auto seconds = [&](std::size_t index) {
@@ -4952,7 +5001,7 @@ void BuildPlaybackTransport(ViewerState & state, const ViewerState::FileGroup * 
     return std::string(label);
   };
   const std::string duration = format_time(seconds(group->last_index));
-  const std::string time = format_time(seconds(state.current_index)) + " / " + duration;
+  const std::string time = format_time(seconds(playhead_index)) + " / " + duration;
   const float time_width = ImGui::CalcTextSize(duration.c_str()).x * 2 + ImGui::CalcTextSize(" / ").x;
   const float time_x = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - time_width;
   const float source_width = std::max(1.f, ImGui::GetContentRegionAvail().x - time_width - 12.f * scale);
@@ -4970,7 +5019,6 @@ void BuildPlaybackTransport(ViewerState & state, const ViewerState::FileGroup * 
   ImGui::TextDisabled("%s", time.c_str());
   Tip(recorded ? "Position in recorded time" : "Estimated time at the input scan rate");
 
-  if (!state.timeline_dragging) state.seek_draft = static_cast<int>(state.current_index - first_index);
   const bool multiple = frame_count > 1;
   ImGui::BeginDisabled(state.dataset_edit_future.valid() || state.loading_bag_source.has_value());
   ImGui::BeginDisabled(!multiple);
@@ -4983,13 +5031,10 @@ void BuildPlaybackTransport(ViewerState & state, const ViewerState::FileGroup * 
   }
   TraceUi("timeline");
   Tip("Drag to seek. Left / Right step a frame.");
-  if (ImGui::IsItemActivated()) {
-    state.timeline_dragging = true;
-    state.requested_frame.reset();
-  }
+  if (ImGui::IsItemActivated()) state.timeline_dragging = true;
   if (ImGui::IsItemDeactivated()) {
     if (ImGui::IsItemDeactivatedAfterEdit())
-      TryLoadFrame(state, first_index + static_cast<std::size_t>(state.seek_draft));
+      TryLoadFrame(state, first_index + std::min(static_cast<std::size_t>(state.seek_draft), frame_count - 1));
     state.timeline_dragging = false;
     state.last_frame_advance_time = glfwGetTime();
   }
@@ -4997,6 +5042,7 @@ void BuildPlaybackTransport(ViewerState & state, const ViewerState::FileGroup * 
 
   using lidar_viewer::UiIcon;
   const bool playing = state.is_playing;
+  ImGui::BeginDisabled(!multiple);
   ImGui::PushStyleColor(ImGuiCol_Button, ui::SelectionColor());
   if (lidar_viewer::ActionButton("##PlayPause", playing ? UiIcon::Pause : UiIcon::Play,
       playing ? "Pause" : "Play", {88.f * scale, 0}, scale)) TogglePlayback(state);
@@ -5005,7 +5051,6 @@ void BuildPlaybackTransport(ViewerState & state, const ViewerState::FileGroup * 
   TraceUi(playing ? "playback_playing" : "playback_paused");
   Tip("Play or pause [Space]");
 
-  ImGui::BeginDisabled(!multiple);
   ImGui::SameLine();
   if (lidar_viewer::ActionButton("##Previous", UiIcon::Previous, nullptr, {30.f * scale, 0}, scale))
     AdvanceFrame(state, -1);
@@ -5030,13 +5075,17 @@ void BuildPlaybackTransport(ViewerState & state, const ViewerState::FileGroup * 
   state.playback_fps = std::isfinite(state.playback_fps) ? std::clamp(state.playback_fps, .1, 120.) : 10.;
   ImGui::EndDisabled();
 
-  const std::string frame = "Frame " + CountText(static_cast<std::size_t>(state.seek_draft) + 1) + " / " + CountText(frame_count);
+  const bool seeking = seek_pending && !state.timeline_dragging;
+  const std::string frame = (seeking ? "Seeking " : "Frame ") +
+    CountText(static_cast<std::size_t>(state.seek_draft) + 1) + " / " + CountText(frame_count);
   const float frame_x = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize(frame.c_str()).x;
   const float controls_right = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x;
   if (frame_x > controls_right + 8.f * scale) {
     ImGui::SameLine(frame_x);
     ImGui::AlignTextToFramePadding();
-    ImGui::TextDisabled("%s", frame.c_str());
+    if (seeking) ImGui::TextColored(ui::InfoColor(), "%s", frame.c_str());
+    else ImGui::TextDisabled("%s", frame.c_str());
+    if (seeking) TraceUi("timeline_seeking");
   } else {
     Tip(frame.c_str());
   }
@@ -6094,13 +6143,18 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     state.analysis_roi=state.roi;state.applying_exclusions=true;reprocess=true;
     SetTransientStatus(state,"Applying ground ROI...");
   }
-  const bool apply_to_next_frame=(state.is_playing && state.frames.size()>1) ||
+  const bool scan_in_flight = state.geometry_index || state.geometry_live_sequence;
+  const bool can_advance = state.is_playing && !state.file_groups.empty() &&
+    (state.current_index < CurrentFileGroup(state).last_index || state.loop_playback);
+  const bool apply_to_next_frame=(can_advance && CurrentFileGroup(state).first_index != CurrentFileGroup(state).last_index) ||
     (state.live_mode && !state.live_paused && state.live_stats.connected && state.live_stats.cloud_age_ms<200);
   if (reprocess || refresh_objects || refresh_detector) ++state.geometry_config;
   if (reprocess) {++state.geometry_ground_config;state.ground_average.Reset();state.ground_stage_ms.reset();}
   if (alignment_changed) {++state.geometry_input_config;state.object_average.Reset();state.clustering_average.Reset();}
   if (reprocess) ++state.ground_sequence;
-  if (reprocess && (!apply_to_next_frame || exclusions_changed)) {
+  // In-flight scans pick up updated settings through the geometry revisions.
+  // Reprocessing the displayed scan here would overwrite the requested scan.
+  if (reprocess && !scan_in_flight && (!apply_to_next_frame || exclusions_changed)) {
     try {
       if (state.async_geometry) QueueGeometry(state,state.base_frame,{},{},alignment_changed || refresh_detector);
       else {
@@ -6120,7 +6174,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       }
       state.is_playing=false;state.ui_error=error.what();
     }
-  } else if (!reprocess && !state.applying_exclusions && refresh_objects && !state.roi_gesture.active) {
+  } else if (!reprocess && !scan_in_flight && !state.applying_exclusions && refresh_objects && !state.roi_gesture.active) {
     try {
       if (state.async_geometry) QueueGeometry(state,state.base_frame,{},{},false,true);
       else {

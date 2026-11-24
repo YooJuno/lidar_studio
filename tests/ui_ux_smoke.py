@@ -70,6 +70,10 @@ def main():
   points=[(x*.3,y*.3,0.,.1) for x in range(-20,21) for y in range(-20,21)]
   points.extend((i*.2+x*.1,2+y*.1,z*.1,.9) for x in range(8) for y in range(8) for z in range(15))
   (clouds/f'{i:04d}.bin').write_bytes(b''.join(struct.pack('<4f',*p) for p in points))
+ sequences=private/'sequences'
+ for group,start in [('morning',0),('night',8)]:
+  folder=sequences/group;folder.mkdir(parents=True)
+  for i in range(start,start+4):shutil.copyfile(clouds/f'{i:04d}.bin',folder/f'{i:04d}.bin')
  env=dict(os.environ,XDG_CONFIG_HOME=str(out/'settings'),LIDAR_VIEWER_UI_TRACE='1');profile=out/'settings/lidar_viewer/app_settings.cfg'
  corrupt=out/'corrupt.bin';corrupt.write_bytes(b'invalid')
  picker=out/'picker';picker.mkdir()
@@ -82,10 +86,10 @@ def main():
  def prefs():return dict(s.split('=',1) for s in profile.read_text().splitlines() if '=' in s)
  try:
   x=X11();subprocess.run(['xrdb','-merge'],input='Xft.dpi: 96\n',text=True,check=True)
-  for run in range(3):
+  for run in range(4):
    log_path=out/f'viewer-{run}.log'
    with log_path.open('wb') as log:
-    launch=[str(viewer),str(clouds),'--2d']
+    launch=[str(viewer),str(sequences if run==3 else clouds),'--2d']
     if run<2:launch.append('--play')
     process=subprocess.Popen(launch,cwd=private,env=env,stdout=log,stderr=subprocess.STDOUT)
     deadline=time.monotonic()+20;window=None
@@ -140,9 +144,31 @@ def main():
     elif run==1:
      r=c.rect('inspector_resize');check('panel_width_is_restored_on_launch',440<r[0]<455)
      capture(x,window,out/'05_restored_width.png')
-    else:
+    elif run==2:
      c.rect('timeline')
      check_read_recovery(x,window,c,clouds,out,log_path,check)
+    else:
+     bounds=(500,180,1540,750)
+     check('nested_bin_folders_have_distinct_timelines',
+       'Source frames 0 3\nSource frames 4 7' in log_path.read_text())
+     first=capture(x,window,out/'09_sequence_first.png')
+     c.click('playback_toggle');time.sleep(1)
+     last=capture(x,window,out/'10_sequence_last.png')
+     check('playback_stops_at_selected_sequence_end',bool(c.rect('playback_paused')) and changed_pixels(first,last,bounds)>80)
+     x.key(window,'Right');time.sleep(.25)
+     check('manual_step_cannot_cross_sequence_without_loop',
+       changed_pixels(last,capture(x,window,out/'11_sequence_boundary.png'),bounds)==0)
+     c.enter('playback_speed',.5,ctrl_click=True)
+     c.click('playback_toggle');time.sleep(.3)
+     check('replay_at_end_returns_to_selected_sequence_start',
+       changed_pixels(first,capture(x,window,out/'12_sequence_restart.png'),bounds)==0)
+     c.click('playback_toggle')
+     c.click('source_selector');c.click('sequence_1');time.sleep(.25)
+     second=capture(x,window,out/'13_second_sequence.png')
+     check('another_sequence_can_be_opened_from_the_selector',changed_pixels(first,second,bounds)>80)
+     c.click('playback_loop');c.click('timeline',.999);time.sleep(.25);x.key(window,'Right');time.sleep(.25)
+     check('loop_wraps_to_the_start_of_the_selected_sequence',
+       changed_pixels(second,capture(x,window,out/'14_sequence_loop.png'),bounds)==0)
     process.terminate();process.wait(timeout=5);process=None;window=None
   check('original_profiles_unchanged',before==settings_inventory(repo));result['status']='passed'
  except Exception as e:

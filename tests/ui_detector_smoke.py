@@ -137,6 +137,29 @@ while True:
                   abs(rows()[-1][0] - paused[-1][0]) > 5)
             paused = rows()
 
+            controls.enter('playback_speed', .1, ctrl_click=True)
+            held.unlink(missing_ok=True)
+            hold.touch()
+            try:
+                controls.click('playback_toggle')
+                offset = log_path.stat().st_size
+                controls.click('playback_next')
+                wait(held.is_file, timeout=4)
+                selected_revision = int(held.read_text())
+                controls.click('playback_toggle')
+                controls.rect('playback_paused', after=offset)
+                controls.rect('timeline_seeking', after=offset)
+                check('pending_manual_step_remains_visible_when_paused', rows() == paused)
+            finally:
+                hold.unlink(missing_ok=True)
+            wait(lambda: len(rows()) > len(paused), timeout=4)
+            check('pause_preserves_the_selected_frame_and_its_detector_result',
+                  rows()[-1][:2] == (paused[-1][0] + 1, selected_revision))
+            paused = rows()
+            time.sleep(.35)
+            check('manual_step_finishes_in_the_paused_state', rows() == paused)
+            controls.enter('playback_speed', 10, ctrl_click=True)
+
             before_score=capture(x11,window,out/'score_before.png')
             controls.enter('object_score',.95);controls.chord('s')
             profile=out/'settings/lidar_viewer/profiles/rosbag.cfg'
