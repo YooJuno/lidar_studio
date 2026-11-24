@@ -39,7 +39,7 @@ struct DetectorFrame
 
 struct DisplayFrame
 {
-  FrameData frame;
+  std::shared_ptr<const FrameData> frame;
   std::vector<algorithms::Cluster> clusters;
   std::size_t ground_points{0};
   std::optional<double> clustering_ms;
@@ -60,7 +60,7 @@ struct GeometryResult
 };
 
 void ApplyGlobalAlignment(FrameData & frame, float ground_offset);
-DisplayFrame BuildDisplayFrame(const FrameData & processed, std::size_t obstacles,
+DisplayFrame BuildDisplayFrame(const std::shared_ptr<const FrameData> & processed, std::size_t obstacles,
   const RoiCoordinateFrame & coordinates, const RoiSettings & display_roi,
   bool ground_enabled, const algorithms::ClusteringParams & clustering);
 DetectorFrame BuildDetectorFrame(const FrameData & source, const AlignmentOptions & options);

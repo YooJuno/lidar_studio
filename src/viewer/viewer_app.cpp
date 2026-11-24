@@ -191,6 +191,12 @@ struct GeometryWork
   lidar_viewer::RoiSettings applied_exclusions;
 };
 
+const FrameData & FrameOrEmpty(const std::shared_ptr<const FrameData> & frame)
+{
+  static const FrameData empty;
+  return frame ? *frame : empty;
+}
+
 struct ViewerState
 {
   enum class GroundView {All, Ground, Obstacles};
@@ -288,8 +294,9 @@ struct ViewerState
   std::size_t current_index{0};
   std::size_t current_file_group{0};
   FrameData base_frame;
-  FrameData frame;
-  std::shared_ptr<const FrameData> processed_frame;
+  std::shared_ptr<const FrameData> display_frame, processed_frame;
+  const FrameData & DisplayedFrame() const {return FrameOrEmpty(display_frame);}
+  const FrameData & ProcessedFrame() const {return FrameOrEmpty(processed_frame);}
   std::size_t processed_obstacles{0};
   double processing_ms{0}, roi_ms{0};
   std::optional<double> ground_stage_ms,clustering_stage_ms;
@@ -545,7 +552,7 @@ struct VisiblePointRange {std::size_t first{0}, count{0};};
 
 VisiblePointRange VisiblePoints(const ViewerState & state)
 {
-  const auto total=state.frame.points.size(),ground=std::min(total,state.ground_removed_count);
+  const auto total=state.DisplayedFrame().points.size(),ground=std::min(total,state.ground_removed_count);
   switch (state.ground_view) {
     case ViewerState::GroundView::Ground:return {total-ground,ground};
     case ViewerState::GroundView::Obstacles:return {0,total-ground};
@@ -562,17 +569,18 @@ const char * GroundViewKey(ViewerState::GroundView mode)
 
 void ResetCameraToFrame(ViewerState & state)
 {
-  lidar_viewer::viewer::ResetCameraToFrame(state.camera, state.frame, state.base_frame, state.global_ground_offset);
+  lidar_viewer::viewer::ResetCameraToFrame(state.camera, state.DisplayedFrame(), state.base_frame, state.global_ground_offset);
 }
 
 void FitDatasetSample(ViewerState & state)
 {
   if(state.camera.projection_mode==CameraState::ProjectionMode::Panorama) {ResetCameraToFrame(state);return;}
-  state.camera.target=state.frame.center;
+  const auto center = state.DisplayedFrame().center;
+  state.camera.target=center;
   float radius=state.base_frame.radius;
   if(const auto labels=state.base_frame.annotations) for(const auto & object:labels->boxes) {
     lidar_viewer::RoiBox box{object.class_name,true,object.center,object.size,object.yaw_deg};
-    for(const auto corner:lidar_viewer::RoiCorners(box)) {const auto d=corner-state.frame.center;radius=std::max(radius,std::sqrt(d.x*d.x+d.y*d.y+d.z*d.z));}
+    for(const auto corner:lidar_viewer::RoiCorners(box)) {const auto d=corner-center;radius=std::max(radius,std::sqrt(d.x*d.x+d.y*d.y+d.z*d.z));}
   }
   state.camera.distance=state.camera.projection_mode==CameraState::ProjectionMode::View2D ?
     lidar_viewer::TopViewHalfHeight(std::max(.1f,radius*1.15f)) : std::max(1.f,radius*2.8f);
@@ -591,20 +599,21 @@ void TraceReviewCamera(const ViewerState & state)
 
 void SetProjectionMode(ViewerState & state, CameraState::ProjectionMode mode)
 {
-  lidar_viewer::viewer::SetProjectionMode(state.camera, mode, state.frame, state.base_frame, state.global_ground_offset);
+  lidar_viewer::viewer::SetProjectionMode(state.camera, mode, state.DisplayedFrame(), state.base_frame, state.global_ground_offset);
 }
 
 void UploadFrame(ViewerState & state)
 {
+  const auto & frame = state.DisplayedFrame();
   glBindVertexArray(state.vao);
   glBindBuffer(GL_ARRAY_BUFFER, state.vbo);
   glBufferData(
     GL_ARRAY_BUFFER,
-    static_cast<GLsizeiptr>(state.frame.points.size() * sizeof(KittiPoint)),
-    state.frame.points.data(),
+    static_cast<GLsizeiptr>(frame.points.size() * sizeof(KittiPoint)),
+    frame.points.data(),
     GL_STATIC_DRAW);
-  const auto labels=state.frame.annotations;
-  if(labels && labels->point_labels.size()==state.frame.points.size() && !labels->point_labels.empty()) {
+  const auto labels=frame.annotations;
+  if(labels && labels->point_labels.size()==frame.points.size() && !labels->point_labels.empty()) {
     glBindBuffer(GL_ARRAY_BUFFER,state.label_vbo);
     glBufferData(GL_ARRAY_BUFFER,static_cast<GLsizeiptr>(labels->point_labels.size()*sizeof(std::int32_t)),labels->point_labels.data(),GL_STATIC_DRAW);
     glEnableVertexAttribArray(2);glVertexAttribIPointer(2,1,GL_INT,sizeof(std::int32_t),nullptr);
@@ -1127,12 +1136,6 @@ std::size_t NextGroupFrame(const ViewerState::FileGroup & group, std::size_t ind
   return index == group.last_index ? group.first_index : index + 1;
 }
 
-const FrameData & ProcessedFrame(const std::shared_ptr<const FrameData> & frame)
-{
-  static const FrameData empty;
-  return frame ? *frame : empty;
-}
-
 void RebuildRoiGeometry(ViewerState & state)
 {
   auto & vertices=state.roi_renderer.vertices;
@@ -1154,7 +1157,7 @@ void StoreDisplayResult(ViewerState & state, frames::DisplayFrame result)
     state.clustering_average.Add(*result.clustering_ms);
   }
   state.ground_removed_count = result.ground_points;
-  state.frame = std::move(result.frame);
+  state.display_frame = std::move(result.frame);
   state.clusters = std::move(result.clusters);
   state.roi_ms = result.elapsed_ms;
 }
@@ -1196,7 +1199,7 @@ frames::GeometryOptions GeometryOptionsFor(const ViewerState & state, float grou
 void ApplyRoiResult(ViewerState & state)
 {
   state.clustering_stage_ms.reset();
-  StoreDisplayResult(state, frames::BuildDisplayFrame(ProcessedFrame(state.processed_frame),
+  StoreDisplayResult(state, frames::BuildDisplayFrame(state.processed_frame,
     state.processed_obstacles, state.roi_frame, state.display_roi,
     state.ground_removal_enabled, state.algorithm_config.clustering));
   RebuildRoiGeometry(state);
@@ -1232,9 +1235,10 @@ void ApplyCalibration(ViewerState & state, const FrameData * source = nullptr,
   state.ground_stage_ms.reset();
   if (raw.annotations) {
     // Review stored data without changing coordinates, ordering or labels.
-    state.frame = raw;
-    state.frame.source_intensities.reset();
-    state.processed_frame = std::make_shared<const FrameData>(state.frame);
+    FrameData sample = raw;
+    sample.source_intensities.reset();
+    state.display_frame = std::make_shared<const FrameData>(std::move(sample));
+    state.processed_frame = state.display_frame;
     state.processed_obstacles = raw.points.size();
     state.ground_removed_count = 0;
     state.ground_view = ViewerState::GroundView::All;
@@ -1307,7 +1311,7 @@ void QueueGeometry(ViewerState & state, FrameData base, std::optional<std::size_
      update_detector, detector_enabled, roi_only]() mutable {
       auto & result = work.result;
       if (roi_only) {
-        result.display = frames::BuildDisplayFrame(ProcessedFrame(result.processed), result.obstacles,
+        result.display = frames::BuildDisplayFrame(result.processed, result.obstacles,
           result.coordinates, options.display_roi, options.ground_enabled, options.clustering);
         if (update_detector) result.detector = frames::BuildDetectorFrame(work.base_frame, options.alignment);
       } else {
@@ -1453,7 +1457,7 @@ void CommitGeometry(ViewerState & state, GeometryWork & work,
     state.applying_exclusions=false;SetTransientStatus(state,"ROI applied to ground segmentation");
   }
   if (state.geometry_roi_only)
-    std::cout<<"ROI applied: "<<state.roi.boxes.size()<<" boxes | "<<state.frame.points.size()<<" points | "
+    std::cout<<"ROI applied: "<<state.roi.boxes.size()<<" boxes | "<<state.DisplayedFrame().points.size()<<" points | "
       <<state.roi_ms<<" ms | ground passes "<<state.ground_passes<<std::endl;
   if (std::getenv("LIDAR_VIEWER_ROI_TRACE"))
     std::cout<<"Analysis input: excluded "<<state.exclusion_removed_count<<" | detector "
@@ -1465,7 +1469,7 @@ void CommitGeometry(ViewerState & state, GeometryWork & work,
     state.live_display_sequence=*state.geometry_live_sequence;
     if (!state.live_has_frame) {
       state.fit_view_requested=true;
-      std::cout<<"Live first frame: "<<state.frame.points.size()<<" points"<<std::endl;
+      std::cout<<"Live first frame: "<<state.DisplayedFrame().points.size()<<" points"<<std::endl;
     }
     state.live_has_frame=true;
   }
@@ -1530,7 +1534,7 @@ bool CompleteGeometry(ViewerState & state)
            ground_enabled=state.ground_removal_enabled, alignment=AlignmentFor(state, state.global_ground_offset),
            prepare_detector]() mutable {
             auto & result = work.result;
-            result.display = frames::BuildDisplayFrame(ProcessedFrame(result.processed), result.obstacles,
+            result.display = frames::BuildDisplayFrame(result.processed, result.obstacles,
               result.coordinates, display_roi, ground_enabled, clustering);
             if (prepare_detector) result.detector = frames::BuildDetectorFrame(work.base_frame, alignment);
             return std::move(work);
@@ -2006,7 +2010,7 @@ void ClearDeletedExampleInput(ViewerState & state,const fs::path & directory)
     state.prefetch_future={};CancelGeometry(state);state.prefetched_index.reset();state.requested_frame.reset();
     state.manual_frame_target.reset();
     state.frame_cache.clear();state.frame_cache_order.clear();state.frames.clear();state.file_groups.clear();
-    state.base_frame={};state.frame={};state.processed_frame={};state.processed_obstacles=0;state.frame_dirty=true;
+    state.base_frame={};state.display_frame={};state.processed_frame={};state.processed_obstacles=0;state.frame_dirty=true;
     state.is_playing=false;state.timeline_dragging=false;state.current_index=0;state.current_file_group=0;state.seek_draft=0;
     state.ground_removed_count=0;state.exclusion_removed_count=0;state.ground_stage_ms.reset();state.clustering_stage_ms.reset();
     state.ground_average.Reset();state.object_average.Reset();state.clustering_average.Reset();
@@ -2116,7 +2120,7 @@ void CompleteBagLoad(ViewerState & state)
     state.base_frame = std::move(result.first_frame);
     state.live_mode = false;
     state.live_has_frame = false;
-    state.frame = std::move(staged.frame);
+    state.display_frame = std::move(staged.display_frame);
     state.detector_input=std::move(staged.detector_input);state.detector_yaw=staged.detector_yaw;
     state.detector_alignment=state.geometry_input_config;
     InvalidateDetectorFrame(state);
@@ -2316,7 +2320,7 @@ void ConnectLive(ViewerState & state)
   state.frames.clear(); state.file_groups.clear(); state.current_bag_source.reset();
   state.loaded_source_path.clear();state.frame_load_error.clear();
   ResetTracking(state, /*new_sequence=*/true);
-  state.base_frame = {}; state.frame = {}; state.processed_frame={}; state.processed_obstacles=0;
+  state.base_frame = {}; state.display_frame = {}; state.processed_frame={}; state.processed_obstacles=0;
   state.roi_gesture.active=false;state.roi_pending=false;state.display_roi_pending=false;
   state.roi_tool=ViewerState::RoiTool::Navigate;
   state.exclusion_removed_count=0;
@@ -2355,7 +2359,7 @@ void UpdateLiveFrame(ViewerState & state)
     state.live_display_sequence = next->sequence;
     if (!state.live_has_frame) {
       state.fit_view_requested = true;
-      std::cout << "Live first frame: " << state.frame.points.size() << " points" << std::endl;
+      std::cout << "Live first frame: " << state.DisplayedFrame().points.size() << " points" << std::endl;
     }
     state.live_has_frame = true;
   } catch (const std::exception & error) {
@@ -4233,7 +4237,7 @@ void BuildRoiEditor(ViewerState & state)
     "Draw a box around points that should skip ground detection, then Apply. Points remain visible.");
   ImGui::EndDisabled();
   if (display) {
-    ImGui::TextDisabled("%s / %s points shown",CountText(state.frame.points.size()).c_str(),CountText(ProcessedFrame(state.processed_frame).points.size()).c_str());
+    ImGui::TextDisabled("%s / %s points shown",CountText(state.DisplayedFrame().points.size()).c_str(),CountText(state.ProcessedFrame().points.size()).c_str());
   } else {
     ImGui::SameLine();ImGui::BeginDisabled(!pending || state.roi_gesture.active || state.applying_exclusions);
     ImGui::PushStyleColor(ImGuiCol_Button,ui::SelectionColor());
@@ -4555,7 +4559,7 @@ void UpdateDatasetEdits(ViewerState & state)
       state.frame_cache.clear();state.frame_cache_order.clear();BuildFileGroups(state);
       state.fit_view_requested=false;state.dataset_fit_pending=false;
       if(state.frames.empty()) {
-        state.base_frame={};state.processed_frame={};state.frame={};state.frame_dirty=true;state.is_playing=false;
+        state.base_frame={};state.processed_frame={};state.display_frame={};state.frame_dirty=true;state.is_playing=false;
       } else if(reload) TryLoadFrame(state,next);
       else {UpdateCurrentFileGroup(state);QueueNextFramePrefetch(state);}
       state.ui_error.clear();
@@ -5226,8 +5230,8 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     if(dataset_input && begin_tab("Data")) {BuildDatasetPanel(state);end_tab();}
     if (begin_tab("View")) {
       const bool panorama=state.camera.projection_mode==CameraState::ProjectionMode::Panorama;
-      const bool labels = state.dataset_show_labels && state.frame.annotations &&
-        !state.frame.annotations->point_labels.empty();
+      const auto & annotations = state.DisplayedFrame().annotations;
+      const bool labels = state.dataset_show_labels && annotations && !annotations->point_labels.empty();
       SectionTitle("Point appearance");
       ImGui::TextDisabled("Color by");ImGui::SetNextItemWidth(-1);
       if(panorama) {
@@ -5579,7 +5583,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
 #endif
       }
       ImGui::Spacing();Metric("Ground points", CountText(state.status_ground));
-      const auto total_classified=ProcessedFrame(state.processed_frame).points.size();
+      const auto total_classified=state.ProcessedFrame().points.size();
       if (gseg3d && state.ground_removal_enabled && state.ground_stage_ms && !reprocess &&
           !GeometryPending(state) && state.processed_obstacles==total_classified &&
           state.exclusion_removed_count<total_classified) {
@@ -6052,8 +6056,8 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
     BeginPanel("Empty region",{view.x+(view.w-width)*.5f,view.y+(view.h-156*s)*.5f,width,156*s},false);
     const bool ground_only=state.ground_view==ViewerState::GroundView::Ground;
     const bool ground_outside_roi=ground_only && state.display_roi.enabled &&
-      ProcessedFrame(state.processed_frame).points.size()>state.processed_obstacles;
-    const bool cropped=state.display_roi.enabled && (state.frame.points.empty() || ground_outside_roi);
+      state.ProcessedFrame().points.size()>state.processed_obstacles;
+    const bool cropped=state.display_roi.enabled && (state.DisplayedFrame().points.empty() || ground_outside_roi);
     if (cropped) {
       ImGui::TextUnformatted(ground_outside_roi ? "Ground is outside the display regions" :
         "No points inside the display regions");
@@ -6179,7 +6183,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       if (state.async_geometry) QueueGeometry(state,state.base_frame,{},{},false,true);
       else {
         ApplyRoiResult(state);
-        std::cout<<"ROI applied: "<<state.roi.boxes.size()<<" boxes | "<<state.frame.points.size()<<" points | "
+        std::cout<<"ROI applied: "<<state.roi.boxes.size()<<" boxes | "<<state.DisplayedFrame().points.size()<<" points | "
           <<state.roi_ms<<" ms | ground passes "<<state.ground_passes<<std::endl;
       }
       state.ui_error.clear();
@@ -6286,7 +6290,7 @@ void RenderClusterBoxes(ViewerState & state,const Mat4 & mvp)
 
 void RenderDatasetBoxes(const ViewerState & state,const Mat4 & mvp)
 {
-  const auto labels=state.frame.annotations;if(!labels || !state.dataset_show_boxes) return;
+  const auto labels=state.DisplayedFrame().annotations;if(!labels || !state.dataset_show_boxes) return;
   const auto & v=state.ui_layout.viewport;auto * draw=ImGui::GetBackgroundDrawList();
   draw->PushClipRect({v.x,v.y},{v.x+v.w,v.y+v.h},true);
   for(const auto & annotation:labels->boxes) {
@@ -6384,7 +6388,7 @@ void RenderDetectionLabels(const ViewerState & state,const Mat4 & mvp)
 
 void RenderAxes(ViewerState & state, const Mat4 & mvp)
 {
-  const float length=std::max(8.f,std::min(state.frame.radius*.45f,30.f));
+  const float length=std::max(8.f,std::min(state.DisplayedFrame().radius*.45f,30.f));
   glUseProgram(state.grid.program);
   glUniformMatrix4fv(state.grid.mvp_loc,1,GL_FALSE,mvp.m.data());
   glBindVertexArray(state.axes_vao);
@@ -6688,13 +6692,13 @@ int RunViewer(int argc, char ** argv)
     }
     if (inspect) {
       std::cout << "ROI: " << (state.roi.enabled ? "on" : "off") << " | " << state.roi.boxes.size()
-                << " boxes | retained " << state.frame.points.size() << " / " << state.base_frame.points.size() << " points\n";
+                << " boxes | retained " << state.DisplayedFrame().points.size() << " / " << state.base_frame.points.size() << " points\n";
       std::cout << "Display ROI: " << (state.display_roi.enabled ? "on" : "off") << " | "
-                << state.display_roi.boxes.size() << " boxes | retained " << state.frame.points.size()
-                << " / " << ProcessedFrame(state.processed_frame).points.size() << " points\n";
+                << state.display_roi.boxes.size() << " boxes | retained " << state.DisplayedFrame().points.size()
+                << " / " << state.ProcessedFrame().points.size() << " points\n";
       std::cout << "Display: " << GroundViewKey(state.ground_view) << " | visible " << VisiblePoints(state).count
                 << " | ground " << state.ground_removed_count << " | obstacles "
-                << state.frame.points.size()-std::min(state.frame.points.size(),state.ground_removed_count)
+                << state.DisplayedFrame().points.size()-std::min(state.DisplayedFrame().points.size(),state.ground_removed_count)
                 << " | ground passes " << state.ground_passes << '\n';
       std::cout << "Ground ROI: skipped " << state.exclusion_removed_count << " | input "
                 << state.base_frame.points.size()-state.exclusion_removed_count << " | detector input "
@@ -6952,10 +6956,11 @@ int RunViewer(int argc, char ** argv)
       glViewport(canvas_x, canvas_y, canvas_w, canvas_h);
       glEnable(GL_SCISSOR_TEST);
       glScissor(canvas_x, canvas_y, canvas_w, canvas_h);
+      const auto & display = state.DisplayedFrame();
       const auto visible = VisiblePoints(state);
       const auto & p=state.camera.panorama;
       const int color_mode = panorama && p.color_mode==0 ? 4 :
-        state.dataset_show_labels && state.frame.annotations && !state.frame.annotations->point_labels.empty()
+        state.dataset_show_labels && display.annotations && !display.annotations->point_labels.empty()
         ? 3 : state.color_mode;
       const lidar_viewer::PanoramaCanvas bounds{canvas_x, canvas_y, canvas_w, canvas_h};
       const auto & sensor_translation = state.roi_frame.translation;
@@ -7010,7 +7015,7 @@ int RunViewer(int argc, char ** argv)
         glUniform4fv(background_color_loc,1,&background_color.x);
         glUniform4fv(plain_color_loc,1,&plain_color.x);
         glUniform1i(color_mode_loc,color_mode);
-        const auto first_ground=state.frame.points.size()-std::min(state.frame.points.size(),state.ground_removed_count);
+        const auto first_ground=display.points.size()-std::min(display.points.size(),state.ground_removed_count);
         glUniform1i(first_ground_loc,state.ground_removed_count ? static_cast<GLint>(first_ground) : -1);
         glUniform1f(min_height_loc,state.height_color_min);
         glUniform1f(max_height_loc,state.height_color_max);
@@ -7019,9 +7024,9 @@ int RunViewer(int argc, char ** argv)
         if (!panorama) {
           if (state.grid.dirty) RebuildGrid(state);
           RenderGrid(state, mvp);
-          if(!state.review_window && !state.frame.annotations) RenderClusterBoxes(state, mvp);
-          if(!state.review_window && !state.frame.annotations) RenderDetectionLabels(state,mvp);
-          if(!state.review_window && !state.frame.annotations) RenderRoiBoxes(state, mvp);
+          if(!state.review_window && !display.annotations) RenderClusterBoxes(state, mvp);
+          if(!state.review_window && !display.annotations) RenderDetectionLabels(state,mvp);
+          if(!state.review_window && !display.annotations) RenderRoiBoxes(state, mvp);
           RenderDatasetBoxes(state,mvp);
           RenderAxes(state, mvp);
         }

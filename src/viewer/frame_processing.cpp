@@ -170,41 +170,51 @@ void ApplyGlobalAlignment(FrameData & frame, float ground_offset)
   frame.ground_z -= ground_offset;
 }
 
-DisplayFrame BuildDisplayFrame(const FrameData & processed, std::size_t obstacles,
+DisplayFrame BuildDisplayFrame(const std::shared_ptr<const FrameData> & processed, std::size_t obstacles,
   const RoiCoordinateFrame & coordinates, const RoiSettings & display_roi,
   bool ground_enabled, const algorithms::ClusteringParams & clustering)
 {
   const auto started = Clock::now();
   DisplayFrame result;
-  auto & frame = result.frame;
-  frame.frame_id = processed.frame_id;
-  frame.imu = processed.imu;
-  frame.ground_z = processed.ground_z;
-  frame.timestamp_ns = processed.timestamp_ns;
-  frame.acquisition_timestamp_ns = processed.acquisition_timestamp_ns;
-  frame.receipt_timestamp_ns = processed.receipt_timestamp_ns;
+  if (!processed) {
+    FrameData empty;
+    RecomputeBounds(empty);
+    result.frame = std::make_shared<const FrameData>(std::move(empty));
+    result.elapsed_ms = Elapsed(started);
+    return result;
+  }
   if (ground_enabled && clustering.enabled && obstacles) {
     // Clustering sees the obstacle prefix before the visual crop.
     const auto clustering_started = Clock::now();
-    result.clusters = algorithms::RunClusteringPrefix(processed.points, obstacles, clustering);
+    result.clusters = algorithms::RunClusteringPrefix(processed->points, obstacles, clustering);
     result.clustering_ms = Elapsed(clustering_started);
   }
   std::size_t visible_obstacles = obstacles;
   if (display_roi.enabled) {
+    FrameData frame;
+    frame.frame_id = processed->frame_id;
+    frame.imu = processed->imu;
+    frame.ground_z = processed->ground_z;
+    frame.timestamp_ns = processed->timestamp_ns;
+    frame.acquisition_timestamp_ns = processed->acquisition_timestamp_ns;
+    frame.receipt_timestamp_ns = processed->receipt_timestamp_ns;
     const PreparedRoi display(display_roi, coordinates);
-    frame.points.reserve(std::min(processed.points.size(), std::max<std::size_t>(8192, processed.points.size()/2)));
+    const auto & points = processed->points;
+    frame.points.reserve(std::min(points.size(), std::max<std::size_t>(8192, points.size()/2)));
     visible_obstacles = 0;
-    for (std::size_t i = 0; i < processed.points.size(); ++i) {
-      const auto & point = processed.points[i];
+    for (std::size_t i = 0; i < points.size(); ++i) {
+      const auto & point = points[i];
       if (!display.Contains({point.x, point.y, point.z})) continue;
       frame.points.push_back(point);
       if (i < obstacles) ++visible_obstacles;
     }
+    RecomputeBounds(frame);
+    result.frame = std::make_shared<const FrameData>(std::move(frame));
   } else {
-    frame.points = processed.points;
+    // The full display shares the classified points and their bounds.
+    result.frame = processed;
   }
-  RecomputeBounds(frame);
-  result.ground_points = frame.points.size()-visible_obstacles;
+  result.ground_points = result.frame->points.size()-visible_obstacles;
   result.elapsed_ms = Elapsed(started);
   return result;
 }
@@ -230,8 +240,8 @@ GeometryResult ProcessFrame(const FrameData & source, const GeometryOptions & op
   frame.source_intensities.reset();
   if (frame.annotations) {
     output.obstacles = frame.points.size();
-    output.display.frame = frame;
     output.processed = std::make_shared<const FrameData>(std::move(frame));
+    output.display.frame = output.processed;
     return output;
   }
 
@@ -253,9 +263,10 @@ GeometryResult ProcessFrame(const FrameData & source, const GeometryOptions & op
     output.detector = PrepareDetector(source, yaw, options.alignment.ground_offset,
       [&](std::size_t i) {return frame.points[i];});
   RemoveGround(frame, output, options, exclusions, transform, yaw, terraseg);
-  output.display = BuildDisplayFrame(frame, output.obstacles, output.coordinates, options.display_roi,
-    options.ground_enabled, options.clustering);
+  RecomputeBounds(frame);
   output.processed = std::make_shared<const FrameData>(std::move(frame));
+  output.display = BuildDisplayFrame(output.processed, output.obstacles, output.coordinates, options.display_roi,
+    options.ground_enabled, options.clustering);
   output.elapsed_ms = Elapsed(started);
   return output;
 }
