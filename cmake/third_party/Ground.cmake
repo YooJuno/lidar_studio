@@ -8,7 +8,7 @@ add_library(lidar_viewer_linefit STATIC
   "${linefit_root}/src/bin.cc"
   "${linefit_root}/src/segment.cc")
 target_include_directories(lidar_viewer_linefit SYSTEM PUBLIC "${linefit_root}/include" ${PCL_INCLUDE_DIRS})
-target_link_libraries(lidar_viewer_linefit PUBLIC Eigen3::Eigen)
+target_link_libraries(lidar_viewer_linefit PUBLIC Eigen3::Eigen Boost::headers)
 
 set(patchwork_root "${CMAKE_CURRENT_SOURCE_DIR}/third_party/patchwork_plusplus/cpp")
 if(NOT EXISTS "${patchwork_root}/patchworkpp/src/patchworkpp.cpp")
