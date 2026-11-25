@@ -12,3 +12,5 @@ The scans were rendered in LiDAR Studio with FugSeg ground classification, a man
 [Reproduce the example](../examples.md).
 
 The animated **ground segmentation** and **object detection** previews use consecutive frames 20–109 from this same KITTI Raw sequence. See [animation source and recording details](../media/SOURCE.md).
+
+`perception-benchmark.png` shows FugSeg and Fast grid in a LiDAR Studio report from the nuScenes Mini validation split. The run replayed 788 scans across two scenes and scored 81 labeled keyframes. The reported times are from that run. [Benchmark protocol and data sources](../benchmark.md).

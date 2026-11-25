@@ -1,12 +1,38 @@
 # LiDAR Studio
 
-**Inspect point clouds. Separate ground. Prepare labeled datasets.**
+**Open real LiDAR recordings. Try multiple algorithms. Compare accuracy and speed.**
 
-A desktop workspace for LiDAR playback, ground segmentation, clustering, object detection and interactive ROI editing—from a raw scan to a dataset ready for annotation.
+LiDAR Studio is a desktop workspace for testing LiDAR perception. Download public recordings in the app or open your own data, switch algorithms on the same scan, and measure their performance against labeled nuScenes data.
 
-**About** in the top bar shows the version, build revision, developer contact and a license browser.
+[Download latest](https://github.com/YooJuno/lidar_studio/releases/latest) · [Example datasets](#example-datasets) · [Perception benchmark](#perception-benchmark) · [Detailed guide (Korean)](docs/guide.md)
 
-[Download latest](https://github.com/YooJuno/lidar_studio/releases/latest) · [Latest builds](https://github.com/YooJuno/lidar_studio/actions/workflows/build-release.yml) · [Detailed guide (Korean)](docs/guide.md)
+## Example datasets
+
+**Open → Public examples** downloads and opens real sensor recordings without an account, Python, ROS or a GPU. The same opener takes local BIN, NPY, PCD and LiDAR PCAP files or recording folders. The Jazzy build also opens ROS 2 bags.
+
+| Dataset | Sensors | Recording |
+| --- | --- | --- |
+| UrbanV2X | Velodyne HDL-32E, Hesai XT32 and AT128P | 30 or 60 seconds of outdoor driving |
+| Ouster SDK | OS0-128, OS1-128 and OS2-128 | 20–26 seconds of urban driving, with calibration |
+| Patchwork++ | Velodyne | Six-scan preview, 12 MB |
+
+Downloads show progress. Cached recordings reopen offline and can be deleted in the app. [Example sources, licenses and KITTI instructions](docs/examples.md).
+
+## Perception benchmark
+
+Replay the same scans through selected ground methods, learned detectors and tracking profiles. Import the extracted **nuScenes** dataset for quantitative scores. For pointwise ground evaluation, include the **LiDARSeg** labels. [Benchmark guide and dataset downloads](docs/benchmark.md).
+
+| Stage | What you can compare |
+| --- | --- |
+| Ground segmentation | IoU, precision, recall and how many non-ground points each method misclassifies |
+| Object detection | Local AP, false positives and missed detections by class |
+| Tracking | Local IDF1, ID switches and track interruptions across tracker settings |
+
+Check per-stage latency, inspect scene and class breakdowns, and identify failure frames. Load a previous report to see score and latency changes on matched inputs. Reports include per-frame results and TSV exports.
+
+![LiDAR Studio report comparing FugSeg and Fast grid on the same nuScenes scans, with ground IoU, p50 and p95 latency and baseline deltas](docs/images/perception-benchmark.png)
+
+*Example run on nuScenes Mini validation, with 81 labeled keyframes across two scenes. The screenshot shows the accuracy, processing time and error counts for each ground method.*
 
 ## Highlights
 
@@ -15,7 +41,6 @@ A desktop workspace for LiDAR playback, ground segmentation, clustering, object 
 - **Visual ground segmentation.** Choose **FugSeg, GSeg3D, Patchwork++, Patchwork, LineFit, Fast grid, Grid, RANSAC or TerraSeg Small**. Tune parameters and show all points, ground only or obstacles only. Align scans manually or use IMU leveling.
 - **Clustering for obstacle analysis.** Group points with **Euclidean 3D** or **Projected XY** clustering, adjust distance and vertical separation, and inspect cluster boxes.
 - **Learned object detection.** Use **AWML ShortRange**, **CenterPoint tiny**, **CenterPoint base** or **TransFusion LiDAR** for people, bicycles, cars, trucks and buses. Filter classes and confidence, and follow persistent object IDs with Kalman tracking.
-- **Perception benchmark.** Compare ground segmentation, learned detectors and tracking profiles on labelled nuScenes recordings. Review accuracy, latency and failure frames. [Benchmark guide](docs/benchmark.md)
 - **ROI labeling and dataset export.** Draw, move, resize and rotate 3D boxes. Name and color regions, attach class-name hints and export cropped points with frame, ROI and coordinate metadata.
 
 Background loading and analysis keep the interface usable. Separate **Ground avg / Objects avg** indicators show recent processing times without rapidly changing labels.
@@ -81,24 +106,12 @@ The core viewer and ground algorithms work without Python or a GPU. Detection an
 
 </details>
 
-## Try an example dataset
-
-Choose **Open → Public examples**, select a sensor and scene, then **Download and open**. No login, Python, ROS or GPU is needed.
-
-| Dataset | Sensors | Scene and length |
-| --- | --- | --- |
-| Ouster SDK | OS0-128, OS1-128, OS2-128 | Urban driving, 20–26 s · 99–200 MB |
-| UrbanV2X | Velodyne HDL-32E, Hesai XT32 and AT128P | Hong Kong Science Park, 30 or 60 s |
-| Patchwork++ | Velodyne | Six-scan preview, 12 MB |
-
-Downloads show size and progress. Open saved recordings offline or remove them with **Delete download**. [Example sources, licenses and KITTI instructions](docs/examples.md).
-
 ## Find your workflow
 
 | Workspace | What to do |
 | --- | --- |
 | **Open / Viewer** | Open or drop a recording. Add a recordings folder to the source list, then play, pause or seek. |
-| **Align / Ground** | Set sensor height and orientation, choose a ground method and inspect its classification. |
+| **Align / Ground** | Adjust the scan's orientation and vertical offset, set the expected ground Z, and inspect the selected method's classification. |
 | **Objects** | Select learned detection or geometric clustering; adjust targets, confidence or cluster settings. |
 | **ROI** | Draw in 2D and edit directly on the canvas. Right-click a region for details, rename, duplicate or delete. |
 | **Point clouds** | Open a file or dataset folder, step through samples and inspect point labels or annotated boxes. Delete unwanted samples with undo support. |
