@@ -116,7 +116,7 @@ DetectorFrame PrepareDetector(const FrameData & source, float yaw, float ground_
 }
 
 void RemoveGround(FrameData & frame, GeometryResult & output, const GeometryOptions & options,
-  const PreparedRoi & exclusions, const CalibrationTransform & transform, float yaw, TerraSeg * terraseg)
+  const PreparedRoi & exclusions, float yaw, TerraSeg * terraseg)
 {
   output.obstacles = frame.points.size();
   const bool learned = options.ground.mode == "terraseg";
@@ -129,13 +129,14 @@ void RemoveGround(FrameData & frame, GeometryResult & output, const GeometryOpti
   output.excluded_points = skipped.size();
   auto params = options.ground;
   params.enabled = true;
-  params.sensor_height_m = std::max(.05f, transform.z_offset-options.alignment.ground_offset-params.gseg3d_ground_height_m);
+  // Dataset pre-leveling translates the sensor origin before rotation.
+  const auto & sensor_origin = output.coordinates.translation;
+  params.sensor_height_m = std::max(.05f, sensor_origin.z - params.gseg3d_ground_height_m);
   std::optional<algorithms::GroundRemovalResult> result;
   if (!frame.points.empty()) {
     double ground_ms = 0;
     if (learned) {
-      const auto origin = transform.Apply({0, 0, -options.alignment.ground_offset, 0});
-      result = terraseg->Segment(frame.points, params.gseg3d_ground_height_m, yaw, origin, ground_ms);
+      result = terraseg->Segment(frame.points, params.gseg3d_ground_height_m, yaw, sensor_origin, ground_ms);
     } else {
       const auto started = Clock::now();
       result = algorithms::RunGroundSegmentation(frame.points, params);
@@ -262,7 +263,7 @@ GeometryResult ProcessFrame(const FrameData & source, const GeometryOptions & op
   if (prepare_detector)
     output.detector = PrepareDetector(source, yaw, options.alignment.ground_offset,
       [&](std::size_t i) {return frame.points[i];});
-  RemoveGround(frame, output, options, exclusions, transform, yaw, terraseg);
+  RemoveGround(frame, output, options, exclusions, yaw, terraseg);
   RecomputeBounds(frame);
   output.processed = std::make_shared<const FrameData>(std::move(frame));
   output.display = BuildDisplayFrame(output.processed, output.obstacles, output.coordinates, options.display_roi,

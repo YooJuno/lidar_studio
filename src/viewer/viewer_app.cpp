@@ -5353,7 +5353,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
             read_only ? ImGuiInputTextFlags_ReadOnly : 0);
           TraceUi(id);
           if (read_only) Tip("Controlled by IMU. Turn off auto level to edit the saved manual angle.");
-          else Tip(height ? "Vertical display offset in metres. Set the expected floor height under Ground." :
+          else Tip(height ? "Moves the scan vertically. Shift Expected ground Z under Ground by the same amount to keep the floor reference aligned." :
             "Type an angle in degrees. Full turns wrap into -180 to 180.");
           if (changed && !read_only) {
             if (!std::isfinite(value)) {value=previous;state.ui_error="Alignment values must be finite.";return false;}
@@ -5376,7 +5376,7 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
       if (ImGui::Button("Reset rotation",{half,0})) {
         lidar_viewer::ResetDisplayRotation(state.calibration,state.imu_level_enabled);reprocess=true;
       }
-      TraceUi("align_reset_rotation");Tip("Turn off IMU correction and reset yaw/pitch/roll to zero. Keep sensor height and mount settings.");
+      TraceUi("align_reset_rotation");Tip("Turn off IMU correction and reset yaw/pitch/roll to zero. Keep Z offset and mount settings.");
       ImGui::SameLine();
       if (ImGui::Button(example ? "Example default" : "Reset all",{half,0})) {
         state.calibration=example ? example->default_alignment : CalibrationSettings{};
@@ -5480,16 +5480,16 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         ground.mode=="fugseg" ? "Original FugSeg: uncertainty-aware polar terrain extraction, including sparse and occluded areas." :
         gseg3d ? "Original GSeg3D: plane geometry and connected 3D cells. Ground reference controls the region-growing seeds." :
         "Ground reference and slope limits guide connected local heights. Compare Ground only and Obstacles only when tuning.");
-      if (gseg3d) {
-        ImGui::TextDisabled("Expected ground Z (m)");ImGui::SetNextItemWidth(-1);
-        float reference=ground.gseg3d_ground_height_m;
-        if (ImGui::InputFloat("##GroundReferenceZ", &reference, .05f, .5f, "%.2f") && std::isfinite(reference)) {
-          ground.gseg3d_ground_height_m=std::clamp(reference,-5.f,5.f);
-          reprocess=true;
-        }
-        TraceUi("gseg3d_reference");
-        Tip("Use the floor height in the aligned view. Use 0 m when the floor is on the grid.");
+      ImGui::TextDisabled("Expected ground Z (m)");
+      ImGui::SetNextItemWidth(-1);
+      float reference = ground.gseg3d_ground_height_m;
+      if (ImGui::InputFloat("##GroundReferenceZ", &reference, .05f, .5f, "%.2f") && std::isfinite(reference)) {
+        ground.gseg3d_ground_height_m = std::clamp(reference, -5.f, 5.f);
+        reprocess = true;
       }
+      TraceUi("ground_reference");
+      if (gseg3d) TraceUi("gseg3d_reference");
+      Tip("Set the floor height in aligned coordinates. Use 0 m when the floor is on the grid.");
       if (terraseg && state.ground_removal_enabled) {
         const auto status=EnsureTerraSeg(state).Status();
         ImGui::TextWrapped("%s",status.message.c_str());
@@ -5580,13 +5580,6 @@ void BuildViewerInterface(ViewerState & state, GLFWwindow *)
         ImGui::SetNextItemWidth(-1);
         reprocess|=ImGui::SliderFloat("##GroundContinuity",&ground.gseg3d_max_ground_height_deviation_m,.05f,.6f,"Height continuity: %.2f m",ImGuiSliderFlags_AlwaysClamp);
         Tip("Maximum centroid height change between connected cells. A limit below slope x cell width breaks ramps.");
-      } else if (ground.mode=="fast_grid" || ground.mode=="patchworkpp" ||
-          ground.mode=="fugseg" || classic_patchwork || terraseg || linefit) {
-        if (ImGui::CollapsingHeader("Ground reference")) {
-          ImGui::TextDisabled("Expected ground Z after Align");ImGui::SetNextItemWidth(-1);
-          reprocess|=ImGui::DragFloat("##GroundReferenceZ",&ground.gseg3d_ground_height_m,.01f,-5,5,"%.2f m",ImGuiSliderFlags_AlwaysClamp);
-          Tip("Use 0 m when Align has placed the ground on the grid. This is a ground seed height, not a display translation.");
-        }
       }
 #ifdef LIDAR_VIEWER_HAS_CUDA
       if (ground.mode!="gseg3d" && ground.mode!="patchworkpp" && ground.mode!="fugseg" && !classic_patchwork && !terraseg && !linefit) {

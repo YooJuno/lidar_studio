@@ -189,7 +189,7 @@ source /opt/ros/jazzy/setup.bash
 - bag 폴더, `metadata.yaml`, 개별 `.mcap`·`.db3` 파일을 직접 읽습니다. 원본을 변경하거나 `.bin`으로 변환하지 않습니다.
 - 처음에는 선택한 토픽의 프레임 시각을 색인하고, 화면에 필요한 프레임만 읽습니다. 큰 bag은 최초 색인에 시간이 걸립니다.
 - `--play` 없이 실행하면 첫 프레임에서 일시정지합니다. `Space`로 재생/정지, 타임라인으로 이동합니다. 재생 FPS는 기록 시각 간격의 중앙값으로 초기화하며, 기록 중 긴 공백을 실시간 그대로 재현하는 플레이어는 아닙니다.
-- `--sensor-height 0.57`은 측정한 라이다 높이에 따른 **표시용 Z +0.57 m**입니다. 생략하면 별도 `rosbag` 프로파일의 보정값을 사용합니다(초기값 0). bag에는 기존 BIN의 자동 지면 높이 이동을 적용하지 않습니다.
+- `--sensor-height 0.57`은 **Align → Z offset**과 같은 점군 Z 이동입니다. 표시와 분석 입력을 +0.57 m 옮깁니다. 생략하면 `rosbag` 프로파일의 보정값을 사용합니다(초기값 0). bag에는 BIN의 자동 지면 높이 이동을 적용하지 않습니다.
 - `rosbag` 프로파일은 기존 Gangnam/KITTI의 회전·높이 설정을 사용하지 않습니다. 처음에는 노면 제거·클러스터링이 꺼져 있으므로 원시 점군을 본 뒤 `Ground` 탭에서 켜서 비교할 수 있습니다.
 - PointCloud2의 필드 offset·26바이트 stride·행 padding·endian을 읽어 XYZI를 추출합니다. 반사 강도는 읽기 단계에서 기존 방식대로 프레임별 정규화하며, 색상 표현은 기존 뷰어 설정을 따릅니다. IMU/odom 기반 deskew·SLAM은 수행하지 않습니다.
 - ROS 노드나 DDS 통신 없이 오프라인으로 읽으므로 `ros2 bag play`, 센서 드라이버, RViz는 필요 없습니다.
@@ -200,11 +200,11 @@ source /opt/ros/jazzy/setup.bash
 
 `Align`은 현재 상태를 **MANUAL / MANUAL FALLBACK / AUTO · IMU ACTIVE**로 표시합니다. IMU가 없거나 장착 회전·시각 대응을 사용할 수 없으면 자동 보정을 요청한 상태에서도 수동 pitch/roll을 입력할 수 있습니다. 자동 보정이 실제 적용될 때는 입력 칸에 **실제로 적용된 IMU pitch/roll**을 보여 주며, 기존 수동 각도는 보존합니다. 자동 보정을 끄면 그 수동 각도로 돌아갑니다. 각도와 높이는 직접 입력하거나 +/- 버튼으로 조절합니다.
 
-**Reset rotation**은 IMU 자동 보정을 끄고 표시 yaw/pitch/roll을 0도로 돌리며, 센서 높이를 유지합니다. **Reset all**은 높이까지 0으로 돌립니다. 두 동작 모두 센서 장착 설정을 바꾸지 않습니다.
+**Reset rotation**은 IMU 자동 보정을 끄고 표시 yaw/pitch/roll을 0도로 돌립니다. **Reset all**은 Z offset까지 0으로 돌립니다.
 
 **Sensor mounting (advanced)**는 IMU 센서축을 LiDAR 센서축으로 바꾸는 설정입니다. 화면의 작은 기울기를 조정하는 값과 구분하세요. 기본으로 켜진 **Automatic sensor axes**는 똑바로 장착한 `vn100_link_ned → pandar_xt32 / pandar_xt32_forward` 조합에서 빠진 NED/FRD→FLU 축 변환을 보완합니다. 작은 장착 각도와 축 변환을 함께 처리하고, 이미 변환된 데이터·기존 roll 180° 설정에 변환을 중복 적용하지 않습니다. 저장된 장착 각도는 덮어쓰지 않습니다. 의도적으로 뒤집어 장착한 장비에서는 이 옵션을 끄고 정확한 외부 보정값을 사용하세요. 정적 TF가 있으면 이를 우선하고 프로파일 장착 입력은 잠급니다. 옵션 변경은 실행 중 즉시 반영하며 **Save profile**로 저장합니다.
 
-왼쪽 **Align → IMU auto level**을 켜면 기록된 IMU의 중력 방향이 표시 좌표계의 +Z가 되도록 roll/pitch를 보정합니다. 보정한 점군을 지면 분할에도 사용하며 yaw와 센서 높이는 기존 설정을 유지합니다. 실제 경사로는 경사로로 남고, 지형을 평면에 강제로 맞추지는 않습니다.
+왼쪽 **Align → IMU auto level**을 켜면 기록된 IMU의 중력 방향이 표시 좌표계의 +Z가 되도록 roll/pitch를 보정합니다. 보정한 점군을 지면 분할에도 사용합니다. yaw와 Z offset은 수동으로 설정합니다.
 
 ```bash
 ./build/lidar_studio ~/shalom_ws/data/bags --topic /b2/points \
@@ -219,6 +219,8 @@ source /opt/ros/jazzy/setup.bash
 - IMU·장착 회전·시각 대응이 불충분하면 이유를 표시하고 기존 수동 보정을 유지합니다. 자동 보정 토글과 장착 회전은 `Save profile`로 저장합니다.
 
 ### 지면만 표시하기
+
+**Ground → Expected ground Z**는 Align 적용 후 좌표계에서 예상하는 바닥 높이입니다. 바닥이 격자에 있으면 0 m를 사용합니다. 좌표 원점만 옮길 때는 **Align → Z offset**과 **Expected ground Z**를 같은 양만큼 옮깁니다. pitch나 roll을 바꾸면 점군의 방향이 바뀌므로 지면 분류도 달라질 수 있습니다.
 
 **Ground → Show → Ground only**를 선택하면 지면으로 분류된 포인트만 표시합니다. ROI 안에서 판정을 건너뛴 점에는 지면 색을 붙이지 않습니다. **All points / Obstacles only**로 전체·지면 외 점을 표시할 수도 있습니다. 제한된 표시 모드를 선택하면 지면분리를 자동으로 켜고, 분류를 끄면 전체 표시로 복귀합니다. **Save profile**로 선택을 저장합니다.
 

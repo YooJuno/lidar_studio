@@ -14,7 +14,7 @@ The [Ouster SDK recordings](https://docs.ouster.com/sdk-docs/0.5.1/sample-data.h
 
 The app checks the archive and unpacked files against pinned SHA-256 checksums. Prepared recordings open offline and contain no extra copy of the ZIP. **Delete download** removes the selected cache and closes its playback if open.
 
-**Align** shows each example's reference frame. Ouster examples use their calibrated sensor axes. **Example default** restores the preset and **Save profile** remembers edits for that sensor and recording. Set the vertical display position with **Align → Z offset** and the floor seed height with **Ground → Expected ground Z** for GSeg3D.
+**Align** shows each example's reference frame. Ouster examples use their calibrated sensor axes. **Example default** restores the preset and **Save profile** remembers edits for that sensor profile. Set the scan's vertical position with **Align → Z offset** and the floor height in aligned coordinates with **Ground → Expected ground Z**.
 
 ### UrbanV2X lengths
 
