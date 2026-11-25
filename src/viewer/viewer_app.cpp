@@ -2863,10 +2863,10 @@ void LoadSettings(ViewerState & state)
 #ifdef LIDAR_VIEWER_USER_SETTINGS
   LoadSettingsFile(state,lidar_viewer::ProjectResourcePath(kProfilesDir)/(state.dataset_profile+".cfg"));
 #endif
-  LoadSettingsFile(state, ProfileSettingsPath(state.dataset_profile));
   if (state.dataset_profile == "default") {
     LoadSettingsFile(state, SettingsPath());
   }
+  LoadSettingsFile(state, ProfileSettingsPath(state.dataset_profile));
   state.camera.distance=std::clamp(state.camera.distance,
     state.camera.projection_mode==CameraState::ProjectionMode::View2D ? lidar_viewer::kMinTopViewHalfHeight : 1.f,5000.f);
   lidar_viewer::ClampPanorama(state.camera.panorama);

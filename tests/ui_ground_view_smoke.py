@@ -104,6 +104,10 @@ def main():
             check('moving_the_cloud_away_from_its_floor_changes_ground_seeds',inspect()[2]==0)
             controls.enter('ground_reference',4);save()
             check('moving_cloud_and_floor_together_preserves_class_counts',inspect()==original)
+            legacy=private/'lidar_viewer_settings.cfg'
+            legacy.write_text('calibration_z_m=4\ngseg3d_ground_height_m=0\n')
+            check('saved_ground_reference_overrides_legacy_settings',inspect()==original)
+            legacy.unlink()
             controls.click('tab_Align');controls.enter('##Z',0)
             controls.click('tab_Ground');controls.enter('ground_reference',0)
             select(1);controls.click('ground_enabled');save();disabled=inspect()
