@@ -90,7 +90,9 @@ while True:
     def frames():return re.findall(r'Detector frame (\d+) revision (\d+)',log())
     def wait(condition,timeout=20):
         deadline=time.monotonic()+timeout
-        while not condition():
+        while True:
+            result=condition()
+            if result:return result
             if process.poll() is not None:raise RuntimeError(log())
             if time.monotonic()>deadline:raise AssertionError('Timed out waiting for tracker GUI')
             time.sleep(.03)
@@ -174,9 +176,12 @@ while True:
             before_switch=len(log())
             c.click('source_selector')
             target_row=re.compile(r'^Source row: "'+re.escape(str(target))+r'" \| select ([\d.-]+) ([\d.-]+) .* \| available 1$',re.M)
-            wait(lambda: target_row.search(log()[before_switch:]))
-            row=target_row.search(log()[before_switch:])
-            x11.click(window,*(round(float(value)) for value in row.groups()))
+            # The source menu moves when ImGui finishes sizing it.
+            def settled_source_row():
+                rows=target_row.findall(log()[before_switch:])
+                return rows[-1] if len(rows)>=2 and rows[-1]==rows[-2] else None
+            row=wait(settled_source_row)
+            x11.click(window,*(round(float(value)) for value in row))
             wait(lambda: f'Opened bag: "{target}"' in log()[before_switch:])
             new_tracks=lambda: re.findall(r'^Track frame 0 id (\d+) .* predicted (\d+)',log()[before_switch:],re.M)
             wait(lambda: len(new_tracks())>=2)
