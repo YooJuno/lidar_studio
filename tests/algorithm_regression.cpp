@@ -184,6 +184,51 @@ void TestFastGroundBackends()
   }
 }
 
+void TestGroundReferenceTranslation()
+{
+  std::vector<KittiPoint> cloud;
+  for (int x = -48; x <= 48; ++x) {
+    for (int y = -48; y <= 48; ++y) {
+      cloud.push_back({x * .25f, y * .25f, (x + y) * .015625f, static_cast<float>(cloud.size())});
+    }
+  }
+  for (int x = 8; x < 20; ++x) {
+    for (int y = 6; y < 13; ++y) {
+      cloud.push_back({x * .25f, y * .25f, (x + y) * .015625f + .75f,
+        static_cast<float>(cloud.size())});
+    }
+  }
+
+  GroundRemovalParams params;
+  params.enabled = true;
+  params.max_candidate_radius_m = 24.f;
+  params.gseg3d_cell_size_z_phase2_m = .5f;
+  for (const auto * mode : {"fast_grid", "grid", "ransac", "gseg3d"}) {
+    params.mode = mode;
+    for (const bool use_cuda : {false, true}) {
+      if (use_cuda && params.mode == "gseg3d") continue;
+      params.use_cuda = use_cuda;
+      params.gseg3d_ground_height_m = 0;
+      const auto baseline = RunGroundSegmentation(cloud, params);
+      Check(baseline.ground_points.size() > cloud.size() / 2 && !baseline.non_ground_points.empty(),
+        "Ground reference regression did not exercise both classes");
+      for (const float shift : {.375f, 4.375f, -4.375f}) {
+        const auto shifted = [shift](auto points) {
+          for (auto & point : points) point.z += shift;
+          return points;
+        };
+        params.gseg3d_ground_height_m = shift;
+        const auto translated = RunGroundSegmentation(shifted(cloud), params);
+        if (!SamePoints(translated.ground_points, shifted(baseline.ground_points)) ||
+            !SamePoints(translated.non_ground_points, shifted(baseline.non_ground_points))) {
+          throw std::runtime_error(std::string(mode) + " changed point labels, order or attributes at Z shift " +
+            std::to_string(shift) + (use_cuda ? " (CUDA requested)" : " (CPU)"));
+        }
+      }
+    }
+  }
+}
+
 void TestThreeDimensionalClusters()
 {
   auto params=Unfiltered();params.mode="euclidean_3d";params.tolerance_m=.5f;params.max_tolerance_m=.5f;params.range_tolerance_scale=0;
@@ -383,6 +428,7 @@ void RunAlgorithmRegressionTests()
   TestConnectivity();
   TestThreeDimensionalClusters();
   TestFastGroundBackends();
+  TestGroundReferenceTranslation();
   TestGroundQuality();
   TestLongRampAndSourceAttributes();
   TestFugSegSensorContract();

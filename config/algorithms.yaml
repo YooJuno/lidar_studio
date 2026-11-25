@@ -28,6 +28,7 @@ ground_removal:
   max_adaptive_threshold_m: 0.36
 
   max_ground_angle_deg: 15.0
+  # Heights relative to gseg3d_ground_height_m for Fast grid, Grid and RANSAC.
   min_candidate_z: -3.0
   max_candidate_z: 1.5
   max_candidate_radius_m: 160.0

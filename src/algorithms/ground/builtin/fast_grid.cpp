@@ -60,7 +60,8 @@ bool Candidate(const KittiPoint & point, const GroundRemovalParams & params, flo
   const float range_squared=point.x*point.x+point.y*point.y;
   const float allowance=height_slope*std::sqrt(range_squared);
   return std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z) &&
-    point.z >= params.min_candidate_z-allowance && point.z <= params.max_candidate_z+allowance &&
+    point.z >= params.MinCandidateZInFrame() - allowance &&
+    point.z <= params.MaxCandidateZInFrame() + allowance &&
     range_squared <= radius_squared;
 }
 

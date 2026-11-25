@@ -34,6 +34,7 @@ struct GroundRemovalParams
   float adaptive_threshold_scale{0.0025f};
   float max_adaptive_threshold_m{0.36f};
   float max_ground_angle_deg{15.0f};
+  // Height offsets from the expected ground Z for Fast grid, Grid and RANSAC.
   float min_candidate_z{-3.0f};
   float max_candidate_z{1.5f};
   float max_candidate_radius_m{160.0f};
@@ -84,10 +85,14 @@ struct GroundRemovalParams
   float gseg3d_slope_threshold_deg{20.0f};
   float gseg3d_ground_inlier_threshold_m{0.20f};
   float gseg3d_centroid_search_radius_m{5.0f};
+  // Expected ground Z in the input frame, also used by Fast grid, Grid and RANSAC.
   float gseg3d_ground_height_m{0.0f};
   float gseg3d_max_ground_height_deviation_m{0.30f};
   float gseg3d_cuda_seed_radius_m{15.0f};
   float gseg3d_cuda_cell_size_m{0.50f};
+
+  float MinCandidateZInFrame() const { return gseg3d_ground_height_m + min_candidate_z; }
+  float MaxCandidateZInFrame() const { return gseg3d_ground_height_m + max_candidate_z; }
 };
 
 struct GroundRemovalResult

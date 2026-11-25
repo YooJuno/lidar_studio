@@ -560,8 +560,8 @@ bool BuildMinZGridCuda(
   BuildMinZGridKernel<<<blocks, kThreadsPerBlock>>>(
     device_points,
     input.size(),
-    params.min_candidate_z,
-    params.max_candidate_z,
+    params.MinCandidateZInFrame(),
+    params.MaxCandidateZInFrame(),
     max_radius * max_radius,
     0.f,
     grid_min_x,
@@ -687,7 +687,7 @@ bool ClassifyGroundPointsGridCuda(
     0.5f,
     4.0f,
     1.4f,
-    0.2f,
+    params.gseg3d_ground_height_m + 0.2f,
     grid_min_x,
     grid_min_y,
     grid_width,
@@ -797,12 +797,14 @@ bool ClassifyGroundPointsGSeg3DCuda(
   InitializeGroundGridKernel<<<phase_two_blocks, kThreadsPerBlock>>>(
     phase_two_min_z, phase_two_valid, phase_two_cells);
   const float height_slope=std::tan(std::clamp(params.gseg3d_slope_threshold_deg,0.f,45.f)*kPi/180.f);
+  const float min_candidate_z = params.MinCandidateZInFrame();
+  const float max_candidate_z = params.MaxCandidateZInFrame();
   BuildMinZGridKernel<<<point_blocks, kThreadsPerBlock>>>(
-    device_points, input.size(), params.min_candidate_z, params.max_candidate_z,
+    device_points, input.size(), min_candidate_z, max_candidate_z,
     max_radius * max_radius,height_slope, grid_min_x, grid_min_y, phase_one_width, phase_one_height,
     phase_one_cell_size, phase_one_min_z, phase_one_valid);
   BuildMinZGridKernel<<<point_blocks, kThreadsPerBlock>>>(
-    device_points, input.size(), params.min_candidate_z, params.max_candidate_z,
+    device_points, input.size(), min_candidate_z, max_candidate_z,
     max_radius * max_radius,height_slope, grid_min_x, grid_min_y, phase_two_width, phase_two_height,
     phase_two_cell_size, phase_two_min_z, phase_two_valid);
 
@@ -840,7 +842,7 @@ bool ClassifyGroundPointsGSeg3DCuda(
     refinement_deviation, phase_two_state);
   ClassifyGSeg3DPointsKernel<<<point_blocks, kThreadsPerBlock>>>(
     device_points, input.size(), max_radius * max_radius,
-    params.min_candidate_z, params.max_candidate_z,height_slope,
+    min_candidate_z, max_candidate_z, height_slope,
     grid_min_x, grid_min_y, phase_two_width, phase_two_height, phase_two_cell_size,
     phase_two_min_z, phase_two_state,
     fmaxf(params.gseg3d_ground_inlier_threshold_m, 0.05f), device_mask);

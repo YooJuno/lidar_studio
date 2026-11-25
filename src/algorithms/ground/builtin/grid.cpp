@@ -256,13 +256,14 @@ GroundRemovalResult RunGroundRemovalGrid(
 
   result.ground_points.reserve(input.size() / 3);
   result.non_ground_points.reserve(input.size());
+  const float ego_hood_min_z = params.gseg3d_ground_height_m + 0.2f;
   if (used_cuda_classification) {
     for (std::size_t i = 0; i < input.size(); ++i) {
       const auto & point = input[i];
       const bool inside_ego_hood_box =
         point.x >= 0.5f && point.x <= 4.0f &&
         std::abs(point.y) <= 1.4f &&
-        point.z >= 0.2f;
+        point.z >= ego_hood_min_z;
       const float signed_distance =
         has_plane_prior ? SignedDistanceToPlane(best_plane, point) : 0.0f;
       const bool plane_ok =
@@ -288,7 +289,7 @@ GroundRemovalResult RunGroundRemovalGrid(
       const bool inside_ego_hood_box =
         point.x >= 0.5f && point.x <= 4.0f &&
         std::abs(point.y) <= 1.4f &&
-        point.z >= 0.2f;
+        point.z >= ego_hood_min_z;
       if (inside_ego_hood_box) {
         result.non_ground_points.push_back(point);
         continue;

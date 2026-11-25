@@ -31,7 +31,7 @@ inline float SignedDistanceToPlane(const Plane & plane, const KittiPoint & point
 inline bool IsCandidate(const KittiPoint & point, const GroundRemovalParams & params)
 {
   if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z) ||
-    point.z < params.min_candidate_z || point.z > params.max_candidate_z) {
+    point.z < params.MinCandidateZInFrame() || point.z > params.MaxCandidateZInFrame()) {
     return false;
   }
 

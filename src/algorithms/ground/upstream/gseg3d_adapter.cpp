@@ -72,9 +72,9 @@ PointKey MakeKey(float x, float y, float z, float intensity)
   return {FloatBits(x), FloatBits(y), FloatBits(z), FloatBits(intensity)};
 }
 
-PointKey MakeKey(const KittiPoint & point)
+PointKey MakeKey(const KittiPoint & point, float expected_ground_z)
 {
-  return MakeKey(point.x, point.y, point.z, point.intensity);
+  return MakeKey(point.x, point.y, point.z - expected_ground_z, point.intensity);
 }
 
 PointKey MakeKey(const pcl::PointXYZI & point)
@@ -108,7 +108,7 @@ ground_segmentation::GridConfig MakeGridConfig(
     static_cast<double>(params.gseg3d_ground_inlier_threshold_m), 0.01);
   config.centroidSearchRadius = std::max(
     static_cast<double>(params.gseg3d_centroid_search_radius_m), 0.1);
-  config.distToGround = params.gseg3d_ground_height_m;
+  config.distToGround = 0.0;
   config.maxGroundHeightDeviation = std::max(
     static_cast<double>(params.gseg3d_max_ground_height_deviation_m), 0.01);
   config.processing_phase = phase;
@@ -139,10 +139,13 @@ GroundRemovalResult RunGroundRemovalGSeg3D(
   // all attributes from input. Avoid one hash node + small vector per point.
   // Float32 integers remain exact through 2^24; larger scans keep the join.
   const bool indexed=input.size()<=16777216u;
+  // Both upstream voxel grids resolve their Z cells around zero.
+  const float expected_ground_z = params.gseg3d_ground_height_m;
   for (std::size_t i=0;i<input.size();++i) {
     const auto & point=input[i];
-    if (std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z)) {
-      cloud->points.push_back({point.x, point.y, point.z,indexed ? static_cast<float>(i) : point.intensity});
+    const float relative_z = point.z - expected_ground_z;
+    if (std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(relative_z)) {
+      cloud->points.push_back({point.x, point.y, relative_z, indexed ? static_cast<float>(i) : point.intensity});
     }
   }
   cloud->width = static_cast<std::uint32_t>(cloud->points.size());
@@ -166,7 +169,9 @@ GroundRemovalResult RunGroundRemovalGSeg3D(
   std::unordered_map<PointKey, std::vector<std::size_t>, PointKeyHash> input_indices;
   if (!indexed) {
     input_indices.reserve(input.size());
-    for (std::size_t index=0;index<input.size();++index) input_indices[MakeKey(input[index])].push_back(index);
+    for (std::size_t index = 0; index < input.size(); ++index) {
+      input_indices[MakeKey(input[index], expected_ground_z)].push_back(index);
+    }
   }
   static thread_local std::vector<unsigned char> ground;
   if(ground.capacity()/4>std::max<std::size_t>(input.size(),65536)) std::vector<unsigned char>().swap(ground);
