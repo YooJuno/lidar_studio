@@ -229,6 +229,38 @@ void TestGroundReferenceTranslation()
   }
 }
 
+void TestGSeg3DGroundReferenceVoxelLayers()
+{
+  std::vector<KittiPoint> cloud;
+  for (int x = -60; x <= 60; ++x) {
+    for (int y = -48; y <= 48; ++y) {
+      cloud.push_back({x * .25f, y * .25f, -.125f, static_cast<float>(cloud.size())});
+    }
+  }
+  for (int x = -12; x <= 45; ++x) {
+    for (int y = -32; y <= 32; ++y) {
+      cloud.push_back({x * .25f, y * .25f, .375f, static_cast<float>(cloud.size())});
+    }
+  }
+
+  GroundRemovalParams params;
+  params.enabled = true;
+  params.mode = "gseg3d";
+  auto baseline = RunGroundSegmentation(cloud, params);
+  Check(baseline.ground_points.size() > 11000 && baseline.non_ground_points.size() > 3000,
+    "GSeg3D voxel test did not separate the road and raised layer");
+
+  // In absolute Z cells this shift puts both layers on the same side of zero.
+  params.gseg3d_ground_height_m = .25f;
+  for (auto * points : {&cloud, &baseline.ground_points, &baseline.non_ground_points}) {
+    for (auto & point : *points) point.z += params.gseg3d_ground_height_m;
+  }
+  const auto translated = RunGroundSegmentation(cloud, params);
+  Check(SamePoints(translated.ground_points, baseline.ground_points) &&
+    SamePoints(translated.non_ground_points, baseline.non_ground_points),
+    "GSeg3D merged ground and raised voxel layers after a common Z shift");
+}
+
 void TestThreeDimensionalClusters()
 {
   auto params=Unfiltered();params.mode="euclidean_3d";params.tolerance_m=.5f;params.max_tolerance_m=.5f;params.range_tolerance_scale=0;
@@ -429,6 +461,7 @@ void RunAlgorithmRegressionTests()
   TestThreeDimensionalClusters();
   TestFastGroundBackends();
   TestGroundReferenceTranslation();
+  TestGSeg3DGroundReferenceVoxelLayers();
   TestGroundQuality();
   TestLongRampAndSourceAttributes();
   TestFugSegSensorContract();
